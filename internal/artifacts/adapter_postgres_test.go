@@ -96,7 +96,7 @@ func seed(t *testing.T, deadline time.Duration) *fixture {
 	}
 	control := connect(t, "")
 	f := &fixture{store: store, admin: connect(t, "ADMIN_"), environment: "s1t05"}
-	f.binding = storage.TransferBinding{Scope: scope, OperationID: op.ID, AttemptID: "attempt-" + rand.Text(), InstanceID: "instance-" + rand.Text(), ExecutionGeneration: 1}
+	f.binding = storage.TransferBinding{Scope: scope, OperationID: op.ID, AttemptID: "attempt-" + rand.Text(), InstanceID: "instance-" + rand.Text(), ExecutionGeneration: 1, RecoveryGeneration: 1}
 	f.deadline = time.Now().Add(deadline)
 	exec(t, control, `INSERT INTO agent_control.attempts(attempt_id,operation_id,step_execution_id,profile_ref,execution_generation,deadline,state,command_id) VALUES($1,$2,'step-code-1','fixture-profile',1,$3,'running','attempt-command')`, f.binding.AttemptID, op.ID, f.deadline)
 	exec(t, control, `INSERT INTO agent_control.physical_instances(instance_id,attempt_id,operation_id,launch_key,job_uid,pod_uid,image_digests,execution_generation,registration_evidence_ref,state) VALUES($1,$2,$3,'launch-1','job-'||$1,'pod-'||$1,'{"job":"sha256:fixture"}',1,'evidence-fixture','running')`, f.binding.InstanceID, f.binding.AttemptID, op.ID)
@@ -137,13 +137,16 @@ func (f *fixture) effect(t *testing.T, id string) (dispatch, obligation, obligat
 
 // recordingInventory wraps the real inventory to inject persistence outcomes
 // and to observe that no transaction of the Control login is open while the
-// object is written.
+// object is written. "rotate-recovery" persists normally but rotates the
+// operation's recovery generation while the object is being written, which is
+// the window the post-persistence recheck exists for.
 type recordingInventory struct {
-	t     *testing.T
-	real  *intake.Filesystem
-	admin *pgx.Conn
-	mode  string // "ok" | "fail" | "unknown" | "list-fail"
-	calls int
+	t           *testing.T
+	real        *intake.Filesystem
+	admin       *pgx.Conn
+	operationID string
+	mode        string // "ok" | "fail" | "unknown" | "list-fail" | "rotate-recovery"
+	calls       int
 }
 
 func (r *recordingInventory) Persist(key string, body []byte) (string, error) {
@@ -163,6 +166,10 @@ func (r *recordingInventory) Persist(key string, body []byte) (string, error) {
 			return "", err
 		}
 		return "", errors.New("injected: outcome unknown after the write")
+	case "rotate-recovery":
+		if _, err := r.admin.Exec(context.Background(), `UPDATE agent_control.operations SET recovery_generation=recovery_generation+1 WHERE operation_id=$1`, r.operationID); err != nil {
+			r.t.Fatal(err)
+		}
 	}
 	return r.real.Persist(key, body)
 }
@@ -176,7 +183,7 @@ func (r *recordingInventory) List(prefix string) ([]string, error) {
 
 func TestArtifactBoundaries(t *testing.T) {
 	f := seed(t, 10*time.Minute)
-	inventory := &recordingInventory{t: t, real: f.inventory, admin: f.admin, mode: "ok"}
+	inventory := &recordingInventory{t: t, real: f.inventory, admin: f.admin, operationID: f.binding.OperationID, mode: "ok"}
 	adapter, err := NewAdapter(f.store, f.objects, inventory, f.environment)
 	if err != nil {
 		t.Fatal(err)
@@ -381,6 +388,95 @@ func TestArtifactBoundaries(t *testing.T) {
 		}
 	})
 
+	t.Run("an identity from a superseded recovery generation is denied at issue, at confirmation after persistence and at acceptance, while the current identity operates", func(t *testing.T) {
+		// Only recoveryGeneration changes in this subtest: the operation is not
+		// fenced, the execution generation, Attempt, instance, lease and deadline
+		// stay valid throughout.
+		t.Cleanup(func() {
+			if _, err := f.admin.Exec(context.Background(), `UPDATE agent_control.operations SET recovery_generation=1 WHERE operation_id=$1`, f.binding.OperationID); err != nil {
+				t.Error(err)
+			}
+		})
+		// A capability issued under recovery generation 1 with its bytes uploaded.
+		stale, err := adapter.Issue(t.Context(), f.request("transfer-9", "write", "evidence", "ev-9"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		staleStored, err := adapter.Upload(t.Context(), stale, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A transfer prepared under generation 1 whose obligation persistence
+		// straddles the rotation: the object is written, the recheck denies the
+		// confirmation and no capability exists.
+		inventory.mode = "rotate-recovery"
+		if _, err := adapter.Issue(t.Context(), f.request("transfer-10", "write", "evidence", "ev-10")); !errors.Is(err, storage.ErrRevision) {
+			t.Fatalf("confirmation after the recovery generation rotated during persistence: %v", err)
+		}
+		inventory.mode = "ok"
+		var rotated int64
+		if err := f.admin.QueryRow(t.Context(), `SELECT recovery_generation FROM agent_control.operations WHERE operation_id=$1`, f.binding.OperationID).Scan(&rotated); err != nil || rotated != 2 {
+			t.Fatal("recovery generation", rotated, err)
+		}
+		var prepared string
+		if err := f.admin.QueryRow(t.Context(), `SELECT effect_id FROM agent_control.effects WHERE operation_id=$1 AND command_id='transfer-10'`, f.binding.OperationID).Scan(&prepared); err != nil {
+			t.Fatal(err)
+		}
+		if dispatch, obligation, row, _ := f.effect(t, prepared); dispatch != "registered" || obligation != "obligation_pending" || row != "obligation_pending" {
+			t.Fatal("the prepared transfer stays prepared", dispatch, obligation, row)
+		}
+		// The old identity obtains no new capability, ...
+		if _, err := adapter.Issue(t.Context(), f.request("transfer-11", "write", "evidence", "ev-11")); !errors.Is(err, storage.ErrRevision) {
+			t.Fatalf("issue under a superseded recovery generation: %v", err)
+		}
+		if err := f.admin.QueryRow(t.Context(), `SELECT effect_id FROM agent_control.effects WHERE operation_id=$1 AND command_id='transfer-11'`, f.binding.OperationID).Scan(new(string)); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatal("a denied issue registers nothing", err)
+		}
+		// ... cannot confirm the prepared transfer by replaying its command, ...
+		if _, err := adapter.Issue(t.Context(), f.request("transfer-10", "write", "evidence", "ev-10")); !errors.Is(err, storage.ErrRevision) {
+			t.Fatalf("replay of the prepared transfer under a superseded recovery generation: %v", err)
+		}
+		if dispatch, _, row, _ := f.effect(t, prepared); dispatch != "registered" || row != "obligation_pending" {
+			t.Fatal("the replay confirmed a prepared transfer", dispatch, row)
+		}
+		// ... and completes no acceptance: the finalization is retained as
+		// evidence and rejected, the bytes are not accepted.
+		claim := Reference{Kind: "evidence", RefID: "ev-9", SubjectDigest: digestOf([]byte("s")), ContentDigest: staleStored.ContentDigest, SizeBytes: staleStored.SizeBytes, ObjectVersion: staleStored.ObjectVersion}
+		if _, err := adapter.Finalize(t.Context(), stale, claim); !errors.Is(err, storage.ErrRevision) {
+			t.Fatalf("acceptance under a superseded recovery generation: %v", err)
+		}
+		var dispatch, disposition string
+		if err := f.admin.QueryRow(t.Context(), `SELECT dispatch_state,coalesce(disposition,'') FROM agent_control.effects WHERE effect_id=$1`, stale.EffectID).Scan(&dispatch, &disposition); err != nil || dispatch != "superseded" || disposition != "abandon-unresolved" {
+			t.Fatal("retained evidence", dispatch, disposition, err)
+		}
+		// The current identity, differing only in the recovery generation,
+		// issues, uploads and finalizes normally.
+		current := f.binding
+		current.RecoveryGeneration = 2
+		c, err := adapter.Issue(t.Context(), IssueRequest{TransferBinding: current, CommandID: "transfer-12", Operation: "write", Kind: "evidence", RefID: "ev-12", Purpose: "result-output"})
+		if err != nil || c.Secret == "" || c.RecoveryGeneration != 2 {
+			t.Fatal("issue under the current recovery generation", err, c.RecoveryGeneration)
+		}
+		stored, err := adapter.Upload(t.Context(), c, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := adapter.Finalize(t.Context(), c, Reference{Kind: "evidence", RefID: "ev-12", SubjectDigest: digestOf([]byte("s")), ContentDigest: stored.ContentDigest, SizeBytes: stored.SizeBytes, ObjectVersion: stored.ObjectVersion})
+		if err != nil || ref.ContentDigest != stored.ContentDigest {
+			t.Fatal("finalize under the current recovery generation", err)
+		}
+		if dispatch, _, _, _ := f.effect(t, c.EffectID); dispatch != "confirmed" {
+			t.Fatal("current identity's transfer", dispatch)
+		}
+		// The current capability presented with the old generation is a
+		// different binding and is denied.
+		forged := c
+		forged.RecoveryGeneration = 1
+		if _, err := adapter.Upload(t.Context(), forged, body); !errors.Is(err, ErrDenied) {
+			t.Fatalf("capability presented under another recovery generation: %v", err)
+		}
+	})
+
 	t.Run("an expired capability admits nothing", func(t *testing.T) {
 		c, err := adapter.Issue(t.Context(), f.request("transfer-6", "write", "plan", "plan-1"))
 		if err != nil {
@@ -402,6 +498,18 @@ func TestArtifactBoundaries(t *testing.T) {
 		if err != nil || d.Enumerated < 4 || len(d.Missing) != 0 {
 			t.Fatal("complete inventory with surviving rows", d, err)
 		}
+		// A cutoff inside an hour: the listing enumerates the whole hour, so the
+		// rows prepared at or after the cutoff are enumerated too and must be
+		// subtracted, never reported as lost. The cutoff is the latest row's own
+		// prepared_at, which an exact `< cutoff` query would exclude.
+		var latest time.Time
+		if err := f.admin.QueryRow(t.Context(), `SELECT max(prepared_at) FROM agent_control.obligations WHERE class='business-write' AND operation_id=$1`, f.binding.OperationID).Scan(&latest); err != nil {
+			t.Fatal(err)
+		}
+		intraHour, err := adapter.Discover(t.Context(), "business-write", latest.Add(-2*time.Hour), latest)
+		if err != nil || intraHour.Enumerated != d.Enumerated || intraHour.Surviving != d.Surviving || len(intraHour.Missing) != 0 {
+			t.Fatal("rows after an intra-hour cutoff are not lost", intraHour, err)
+		}
 		// A database restore that lost the row: the object remains and is discovered.
 		var lost string
 		if err := f.admin.QueryRow(t.Context(), `SELECT effect_id FROM agent_control.effects WHERE operation_id=$1 AND command_id='transfer-6'`, f.binding.OperationID).Scan(&lost); err != nil {
@@ -411,6 +519,9 @@ func TestArtifactBoundaries(t *testing.T) {
 		d, err = adapter.Discover(t.Context(), "business-write", from, to)
 		if err != nil || !slices.Equal(d.Missing, []string{lost}) {
 			t.Fatal("reconciliation set", d, err)
+		}
+		if d, err := adapter.Discover(t.Context(), "business-write", latest.Add(-2*time.Hour), latest); err != nil || !slices.Equal(d.Missing, []string{lost}) {
+			t.Fatal("the lost row is still discovered with an intra-hour cutoff", d, err)
 		}
 		inventory.mode = "list-fail"
 		if _, err := adapter.Discover(t.Context(), "business-write", from, to); !errors.Is(err, ErrIncomplete) {

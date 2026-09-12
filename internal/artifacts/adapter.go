@@ -32,8 +32,8 @@ type Inventory interface {
 }
 
 // Capability is a restricted transfer grant: one operation on one object key
-// for one tenant, operation, Attempt, physical instance and execution
-// generation, with an explicit byte ceiling and expiry. The secret travels to
+// for one tenant, operation, Attempt, physical instance, execution generation
+// and recovery generation, with an explicit byte ceiling and expiry. The secret travels to
 // the sidecar only and is never persisted or logged; the store keeps its digest.
 type Capability struct {
 	TransferID, EffectID, Operation, Kind, RefID, ObjectKey string
@@ -212,6 +212,10 @@ type Discovery struct {
 // Discover enumerates the inventory hour by hour from `from` to `to` and
 // subtracts the identities the database still holds. An enumeration that does
 // not complete yields ErrIncomplete and no conclusion, never an empty set.
+// The inventory key carries only the hour, so the window is widened to whole
+// hours on both sides and the surviving rows are read for exactly those hours:
+// a row prepared after `to` but inside its hour is enumerated, and it must be
+// subtracted, not reported as lost.
 func (a *Adapter) Discover(ctx context.Context, class string, from, to time.Time) (Discovery, error) {
 	if class != "intake" && class != "job-launch" && class != "model-dispatch" && class != "business-write" {
 		return Discovery{}, storage.ErrInvalid
@@ -219,6 +223,9 @@ func (a *Adapter) Discover(ctx context.Context, class string, from, to time.Time
 	from, to = from.UTC().Truncate(time.Hour), to.UTC()
 	if !from.Before(to) {
 		return Discovery{}, storage.ErrInvalid
+	}
+	if end := to.Truncate(time.Hour); end.Before(to) {
+		to = end.Add(time.Hour)
 	}
 	var keys []string
 	for hour := from; hour.Before(to); hour = hour.Add(time.Hour) {
