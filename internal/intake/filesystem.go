@@ -1,4 +1,8 @@
-// Package intake persists immutable local intake objects independently of SQL.
+// Package intake persists the immutable obligation inventory independently of
+// SQL: the intake objects of local checks and, since S1-T05 (2026-09-12), the
+// job-launch, model-dispatch and business-write records of the DD-02 recovery
+// discovery boundaries. Objects are never deleted here; automatic cleanup stays
+// disabled and any removal is a reviewed operator action.
 package intake
 
 import (
@@ -16,7 +20,7 @@ import (
 )
 
 var ErrConflict = errors.New("intake object conflicts with retained identity")
-var objectKey = regexp.MustCompile(`^obligations/[a-z0-9-]+/[0-9]{4}/[0-9]{2}/[0-9]{2}/[0-9]{2}/[A-Za-z0-9][A-Za-z0-9._:-]*/intake/[A-Za-z0-9][A-Za-z0-9._:-]*$`)
+var objectKey = regexp.MustCompile(`^obligations/[a-z0-9-]+/[0-9]{4}/[0-9]{2}/[0-9]{2}/[0-9]{2}/[A-Za-z0-9][A-Za-z0-9._:-]*/(intake|job-launch|model-dispatch|business-write)/[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
 const maxBytes = 4096
 
