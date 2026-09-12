@@ -121,8 +121,9 @@ func schemas() (*jsonschema.Schema, *jsonschema.Schema, error) {
 	compiler.UseLoader(retainedOnly{})
 	compiler.AssertFormat()
 	// operation-view-v1 is compiled with the payload schema because the operation.lifecycle payload
-	// references its LocalCheckResult definition; the retained loader resolves no other reference.
-	names := []string{"common-v1.schema.json", "agent-enums-v1.schema.json", "operation-view-v1.schema.json", "operation-event-v1.schema.json", "operation-event-payloads-v1.schema.json"}
+	// references its LocalCheckResult definition, and preparation-v1 because both reference its
+	// PreparationProjection (S0-T04, 2026-09-12); the retained loader resolves no other reference.
+	names := []string{"common-v1.schema.json", "agent-enums-v1.schema.json", "preparation-v1.schema.json", "operation-view-v1.schema.json", "operation-event-v1.schema.json", "operation-event-payloads-v1.schema.json"}
 	for _, name := range names {
 		var document map[string]any
 		if err := json.Unmarshal(inputs[name], &document); err != nil {
