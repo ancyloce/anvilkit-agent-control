@@ -27,11 +27,14 @@ var ErrTransferState = errors.New("FAILED_PRECONDITION: artifact transfer is not
 
 // TransferBinding is the scope a capability is bound to. Every field is checked
 // against current records when the transfer is issued and again when it is
-// finalized; the binding alone never grants anything.
+// finalized; the binding alone never grants anything. The recovery generation
+// is the operation's deployment fence (DD-02 #s-4-7-1-1): an identity issued
+// before a recovery rotated it obtains no new capability and completes no
+// acceptance, exactly as a superseded execution generation.
 type TransferBinding struct {
 	Scope
-	OperationID, AttemptID, InstanceID string
-	ExecutionGeneration                int64
+	OperationID, AttemptID, InstanceID      string
+	ExecutionGeneration, RecoveryGeneration int64
 }
 
 // TransferRequest is the adapter's request to issue one transfer.
@@ -94,9 +97,9 @@ func readCurrentAttempt(ctx context.Context, tx pgx.Tx, b TransferBinding, now t
 	var a currentAttempt
 	var tenant string
 	var cancelRequested bool
-	var operationGeneration int64
+	var operationGeneration, recoveryGeneration int64
 	var leaseExpires *time.Time
-	err := tx.QueryRow(ctx, `SELECT tenant_id,cancel_requested,execution_generation,lease_expires_at FROM agent_control.operations WHERE operation_id=$1 FOR UPDATE`, b.OperationID).Scan(&tenant, &cancelRequested, &operationGeneration, &leaseExpires)
+	err := tx.QueryRow(ctx, `SELECT tenant_id,cancel_requested,execution_generation,recovery_generation,lease_expires_at FROM agent_control.operations WHERE operation_id=$1 FOR UPDATE`, b.OperationID).Scan(&tenant, &cancelRequested, &operationGeneration, &recoveryGeneration, &leaseExpires)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -129,6 +132,8 @@ func readCurrentAttempt(ctx context.Context, tx pgx.Tx, b TransferBinding, now t
 		a.reason = "operation fenced"
 	case operationGeneration != b.ExecutionGeneration || attemptGeneration != b.ExecutionGeneration || instanceGeneration != b.ExecutionGeneration:
 		a.reason = "execution generation superseded"
+	case recoveryGeneration != b.RecoveryGeneration:
+		a.reason = "recovery generation superseded"
 	case attemptState != "registered" && attemptState != "running":
 		a.reason = "attempt not current"
 	case instanceState != "registered" && instanceState != "running":
@@ -145,7 +150,7 @@ func readCurrentAttempt(ctx context.Context, tx pgx.Tx, b TransferBinding, now t
 
 func (t *Transfer) subjectRef() map[string]any {
 	return map[string]any{"transferId": t.EffectID, "tenantId": t.TenantID, "attemptId": t.AttemptID, "instanceId": t.InstanceID,
-		"executionGeneration": fmt.Sprint(t.ExecutionGeneration), "operation": t.Operation, "kind": t.Kind, "refId": t.RefID, "purpose": t.Purpose,
+		"executionGeneration": fmt.Sprint(t.ExecutionGeneration), "recoveryGeneration": fmt.Sprint(t.RecoveryGeneration), "operation": t.Operation, "kind": t.Kind, "refId": t.RefID, "purpose": t.Purpose,
 		"objectKey": t.ObjectKey, "byteCeiling": fmt.Sprint(t.ByteCeiling), "expiresAt": t.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		"declaredSizeBytes": fmt.Sprint(t.DeclaredSizeBytes), "declaredContentDigest": t.DeclaredContentDigest, "secretDigest": t.SecretDigest}
 }
@@ -155,7 +160,7 @@ func (t *Transfer) subjectRef() map[string]any {
 func (t Transfer) ObligationBody() ([]byte, error) {
 	return canonical(map[string]any{"schemaVersion": 1, "class": "business-write", "effectId": t.EffectID, "operationId": t.OperationID, "tenantId": t.TenantID,
 		"commandId": t.CommandID, "kind": "artifact-transfer", "subjectRef": map[string]any{"operation": t.Operation, "kind": t.Kind, "refId": t.RefID, "objectKey": t.ObjectKey},
-		"requestDigest": t.RequestDigest, "expectedExecutionGeneration": fmt.Sprint(t.ExecutionGeneration), "attemptId": t.AttemptID, "instanceId": t.InstanceID,
+		"requestDigest": t.RequestDigest, "expectedExecutionGeneration": fmt.Sprint(t.ExecutionGeneration), "expectedRecoveryGeneration": fmt.Sprint(t.RecoveryGeneration), "attemptId": t.AttemptID, "instanceId": t.InstanceID,
 		"expiresAt": t.ExpiresAt.UTC().Format(time.RFC3339Nano)})
 }
 
@@ -188,14 +193,17 @@ func readTransfer(ctx context.Context, q localQuerier, effectID string) (Transfe
 	}
 	t.Receipt = receipt
 	var s struct {
-		AttemptID, InstanceID, ExecutionGeneration, Operation, Kind, RefID, Purpose, ObjectKey string
-		ByteCeiling, ExpiresAt, DeclaredSizeBytes, DeclaredContentDigest, SecretDigest         string
+		AttemptID, InstanceID, ExecutionGeneration, RecoveryGeneration, Operation, Kind, RefID, Purpose, ObjectKey string
+		ByteCeiling, ExpiresAt, DeclaredSizeBytes, DeclaredContentDigest, SecretDigest                             string
 	}
 	if err := json.Unmarshal(subject, &s); err != nil {
 		return t, ErrInvalid
 	}
 	t.AttemptID, t.InstanceID, t.Operation, t.Kind, t.RefID, t.Purpose, t.ObjectKey = s.AttemptID, s.InstanceID, s.Operation, s.Kind, s.RefID, s.Purpose, s.ObjectKey
 	t.DeclaredContentDigest, t.SecretDigest = s.DeclaredContentDigest, s.SecretDigest
+	if _, err := fmt.Sscan(s.RecoveryGeneration, &t.RecoveryGeneration); err != nil || t.RecoveryGeneration < 1 {
+		return t, ErrInvalid
+	}
 	if _, err := fmt.Sscan(s.ByteCeiling, &t.ByteCeiling); err != nil {
 		return t, ErrInvalid
 	}
@@ -231,7 +239,7 @@ func lockTransfer(ctx context.Context, tx pgx.Tx, b TransferBinding, effectID st
 	if err != nil {
 		return t, attempt, err
 	}
-	if t.TenantID != b.TenantID || t.AttemptID != b.AttemptID || t.InstanceID != b.InstanceID || t.ExecutionGeneration != b.ExecutionGeneration {
+	if t.TenantID != b.TenantID || t.AttemptID != b.AttemptID || t.InstanceID != b.InstanceID || t.ExecutionGeneration != b.ExecutionGeneration || t.RecoveryGeneration != b.RecoveryGeneration {
 		return Transfer{}, attempt, ErrNotFound
 	}
 	return t, attempt, nil
@@ -242,13 +250,13 @@ func lockTransfer(ctx context.Context, tx pgx.Tx, b TransferBinding, effectID st
 // record. It hands out no capability and performs no storage I/O; the same
 // scoped command replays to the original transfer.
 func (s *Store) PrepareArtifactTransfer(ctx context.Context, r TransferRequest, ceiling uint64, environment string) (Transfer, error) {
-	if !s.validIDs(r.TenantID, r.ActorID, r.OperationID, r.AttemptID, r.InstanceID, r.CommandID, r.RefID) || r.ExecutionGeneration < 1 || (r.Operation != "read" && r.Operation != "write") || !localEnvironment.MatchString(environment) || r.ObjectKey == "" || !digestShape(r.SecretDigest) || ceiling == 0 {
+	if !s.validIDs(r.TenantID, r.ActorID, r.OperationID, r.AttemptID, r.InstanceID, r.CommandID, r.RefID) || r.ExecutionGeneration < 1 || r.RecoveryGeneration < 1 || (r.Operation != "read" && r.Operation != "write") || !localEnvironment.MatchString(environment) || r.ObjectKey == "" || !digestShape(r.SecretDigest) || ceiling == 0 {
 		return Transfer{}, ErrInvalid
 	}
 	if r.DeclaredContentDigest != "" && !digestShape(r.DeclaredContentDigest) {
 		return Transfer{}, ErrInvalid
 	}
-	semantic, err := canonical(map[string]any{"operation": r.Operation, "kind": r.Kind, "refId": r.RefID, "purpose": r.Purpose, "objectKey": r.ObjectKey, "attemptId": r.AttemptID, "instanceId": r.InstanceID, "executionGeneration": fmt.Sprint(r.ExecutionGeneration), "declaredSizeBytes": fmt.Sprint(r.DeclaredSizeBytes), "declaredContentDigest": r.DeclaredContentDigest})
+	semantic, err := canonical(map[string]any{"operation": r.Operation, "kind": r.Kind, "refId": r.RefID, "purpose": r.Purpose, "objectKey": r.ObjectKey, "attemptId": r.AttemptID, "instanceId": r.InstanceID, "executionGeneration": fmt.Sprint(r.ExecutionGeneration), "recoveryGeneration": fmt.Sprint(r.RecoveryGeneration), "declaredSizeBytes": fmt.Sprint(r.DeclaredSizeBytes), "declaredContentDigest": r.DeclaredContentDigest})
 	if err != nil {
 		return Transfer{}, err
 	}
