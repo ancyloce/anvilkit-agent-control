@@ -266,3 +266,6 @@ func (s *Store) List(prefix string) ([]string, error) {
 // SizeString renders a byte count as the bounded decimal string the JSON
 // contracts carry for 64-bit counters.
 func SizeString(n uint64) string { return strconv.FormatUint(n, 10) }
+
+// Digest is the content digest the store issues for bytes: sha256 over them.
+func Digest(body []byte) string { return fmt.Sprintf("sha256:%x", sha256.Sum256(body)) }
