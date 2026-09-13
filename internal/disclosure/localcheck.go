@@ -8,8 +8,14 @@ import (
 const LocalCheckCreate = "local-check.create"
 const OperationCancel = "operation.cancel"
 
-// AuthorizeLocal confines the explicitly enabled fixture scope to local checks.
-// A create permission never implies either read or cancellation permission.
+// ComponentPrepare is the action of the preparation routes (S2, 2026-09-13):
+// submitting a preparation (no operation yet) and answering its question set
+// (an operation this actor owns). Reads and cancellation keep their own actions.
+const ComponentPrepare = "component.prepare"
+
+// AuthorizeLocal confines the explicitly enabled fixture scope to the fixed
+// local-profile kinds: local checks and, since S2, preparations. A create
+// permission never implies either read or cancellation permission.
 func (s *Service) AuthorizeLocal(ctx context.Context, actor Principal, operationID, action string) (Decision, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
@@ -27,6 +33,17 @@ func (s *Service) AuthorizeLocal(ctx context.Context, actor Principal, operation
 			return Decision{}, nil
 		}
 		resource = "local-check"
+	} else if action == ComponentPrepare {
+		resource = "preparation"
+		if operationID != "" {
+			matched, err := s.store.MatchesLocalCheckScope(ctx, storage.Scope{ActorID: actor.ActorID, TenantID: actor.TenantID}, operationID)
+			if err != nil {
+				return Decision{}, ErrUnavailable
+			}
+			if !matched {
+				return Decision{}, nil
+			}
+		}
 	} else {
 		if action != OperationRead && action != OperationCancel {
 			return Decision{}, nil
