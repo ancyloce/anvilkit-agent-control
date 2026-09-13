@@ -179,6 +179,15 @@ func (s *Store) validIDs(ids ...string) bool {
 }
 
 func hash(raw []byte) string { return fmt.Sprintf("sha256:%x", sha256.Sum256(raw)) }
+
+// Canonical returns the RFC 8785 form of already validated JSON bytes.
+func Canonical(raw []byte) ([]byte, error) {
+	result, err := jsoncanonicalizer.Transform(raw)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	return result, nil
+}
 func canonical(value any) ([]byte, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {

@@ -40,10 +40,15 @@ func (s *Store) transactLocal(ctx context.Context, work func(context.Context, pg
 	return err
 }
 
+// MatchesLocalCheckScope reports whether the operation is one of the fixed
+// local-profile kinds (local-check, or since S2 a preparation) owned by this
+// exact actor and tenant.
 func (s *Store) MatchesLocalCheckScope(ctx context.Context, scope Scope, id string) (bool, error) {
 	var found bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_control.operations o JOIN agent_control.local_checks l USING(operation_id)
-		WHERE o.operation_id=$1 AND o.tenant_id=$2 AND o.actor_id=$3 AND o.kind='local-check')`, id, scope.TenantID, scope.ActorID).Scan(&found)
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_control.operations o
+		WHERE o.operation_id=$1 AND o.tenant_id=$2 AND o.actor_id=$3
+		AND ((o.kind='local-check' AND EXISTS(SELECT 1 FROM agent_control.local_checks l WHERE l.operation_id=o.operation_id))
+		  OR (o.kind='preparation' AND EXISTS(SELECT 1 FROM agent_control.preparations p WHERE p.operation_id=o.operation_id))))`, id, scope.TenantID, scope.ActorID).Scan(&found)
 	return found, err
 }
 
