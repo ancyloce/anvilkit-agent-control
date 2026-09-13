@@ -32,6 +32,14 @@ func New(store, reserved *storage.Store, authorization, cancelAuthorization *dis
 	return &Service{store: store, reserved: reserved, authorization: authorization, cancelAuthorization: cancelAuthorization, intake: objects, temporal: c, namespace: namespace, environment: environment, logger: logger}, nil
 }
 
+// The shared local-profile dependencies the preparation coordinator reuses (S2).
+func (s *Service) Store() *storage.Store                    { return s.store }
+func (s *Service) Reserved() *storage.Store                 { return s.reserved }
+func (s *Service) CancelAuthorization() *disclosure.Service { return s.cancelAuthorization }
+func (s *Service) Intake() *intake.Filesystem               { return s.intake }
+func (s *Service) Temporal() client.Client                  { return s.temporal }
+func (s *Service) Namespace() string                        { return s.namespace }
+
 func (s *Service) Admit(ctx context.Context, actor disclosure.Principal, commandID, fixtureID string) (operation storage.LocalCheck, err error) {
 	defer func() {
 		outcome := "ok"
