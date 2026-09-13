@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/disclosure"
 	"github.com/ancyloce/anvilkit-agent-control/internal/localcheck"
 	"github.com/ancyloce/anvilkit-agent-control/internal/logging"
+	"github.com/ancyloce/anvilkit-agent-control/internal/preparation"
 )
 
 type definitionHandler struct{ validator *definition.Validator }
@@ -46,10 +48,11 @@ func (h definitionHandler) ValidateDefinition(ctx context.Context, request *conn
 	return connect.NewResponse(response), nil
 }
 
-// NewLocalServer keeps the validation credential scoped to definition.validate.
-// Optional disclosure uses its own fixed fixture identities; neither mapping
+// NewLocalServer keeps the validation credential scoped to definition.validate
+// and the Workflow service credential (S2) to the preparation round methods.
+// Optional disclosure uses its own fixed fixture identities; no mapping
 // supplies production workload or delegated actor authority.
-func NewLocalServer(address, credential string, output io.Writer, disclosureService *disclosure.Service, localChecks *localcheck.Service) (*http.Server, error) {
+func NewLocalServer(address, credential string, output io.Writer, disclosureService *disclosure.Service, localChecks *localcheck.Service, preparations *preparation.Service, workflowCredential string) (*http.Server, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, errors.New("Control requires a numeric loopback listen address")
@@ -62,6 +65,9 @@ func NewLocalServer(address, credential string, output io.Writer, disclosureServ
 	if len(credential) < 32 || len(credential) > 256 || strings.ContainsAny(credential, " \t\r\n") {
 		return nil, errors.New("Control requires a 32-256 character development credential without whitespace")
 	}
+	if preparations != nil && (len(workflowCredential) < 32 || len(workflowCredential) > 256 || strings.ContainsAny(workflowCredential, " \t\r\n") || workflowCredential == credential) {
+		return nil, errors.New("preparations require a distinct 32-256 character Workflow service credential without whitespace")
+	}
 	validator, err := definition.New()
 	if err != nil {
 		return nil, err
@@ -69,12 +75,13 @@ func NewLocalServer(address, credential string, output io.Writer, disclosureServ
 	_, handler := rpc.NewDefinitionValidationHandler(definitionHandler{validator}, connect.WithReadMaxBytes(definition.RequestMaxBytes))
 	var disclosureRPC http.Handler
 	if disclosureService != nil {
-		_, disclosureRPC = controlrpc.NewControlServiceHandler(controlHandler{service: disclosureService, localChecks: localChecks}, connect.WithReadMaxBytes(definition.RequestMaxBytes))
+		_, disclosureRPC = controlrpc.NewControlServiceHandler(controlHandler{service: disclosureService, localChecks: localChecks, preparations: preparations}, connect.WithReadMaxBytes(definition.RequestMaxBytes))
 	}
 	errorWriter := connect.NewErrorWriter()
 	logger := log.New(output, "", 0)
 	instanceID := logging.InstanceID()
 	expected := []byte("Bearer " + credential)
+	expectedWorkflow := []byte("Bearer " + workflowCredential)
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start, requestID := time.Now(), "req-"+rand.Text()
 		w.Header().Set("X-Request-Id", requestID)
@@ -83,7 +90,11 @@ func NewLocalServer(address, credential string, output io.Writer, disclosureServ
 		auth := &disclosureRequest{}
 		route := rpc.DefinitionValidationValidateDefinitionProcedure
 		isLocalCommand := localChecks != nil && (r.URL.Path == controlrpc.ControlServiceAdmitOperationProcedure || r.URL.Path == controlrpc.ControlServiceCancelProcedure)
-		if r.URL.Path == controlrpc.ControlServiceGetDisclosureAuthorizationProcedure || isLocalCommand {
+		// The actor-facing preparation methods share the local command lane; the
+		// round methods are the Workflow's, and the read is shared by both callers.
+		isActorPreparation := preparations != nil && (r.URL.Path == controlrpc.ControlServiceRecordPreparationAnswersProcedure || r.URL.Path == controlrpc.ControlServiceReadPreparationProcedure)
+		isWorkflowPreparation := preparations != nil && (r.URL.Path == controlrpc.ControlServiceRecordPreparationRoundProcedure || r.URL.Path == controlrpc.ControlServiceReadPreparationProcedure)
+		if r.URL.Path == controlrpc.ControlServiceGetDisclosureAuthorizationProcedure || isLocalCommand || isActorPreparation || isWorkflowPreparation {
 			route = r.URL.Path
 		}
 		defer func() {
@@ -137,24 +148,46 @@ func NewLocalServer(address, credential string, output io.Writer, disclosureServ
 			code = reason
 			_ = errorWriter.Write(w, r, connect.NewError(reason, errors.New(message)))
 		}
-		canValidate, canDisclose := false, false
-		if len(r.Header.Values("Authorization")) == 1 {
-			canValidate = subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), expected) == 1
-			if disclosureService != nil {
-				auth.principal, canDisclose = disclosureService.Authenticate(r.Header.Get("Authorization"))
+		// Each credential class is bound to the mTLS workload that presents it:
+		// the API's credentials over the API identity, the Workflow credential
+		// over the Worker identity. The h2c test profile carries no workload.
+		workload := ""
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			switch names := r.TLS.PeerCertificates[0].DNSNames; {
+			case slices.Contains(names, WorkflowWorkload):
+				workload = WorkflowWorkload
+			case slices.Contains(names, APIWorkload):
+				workload = APIWorkload
 			}
 		}
-		if !canValidate && !canDisclose {
+		canValidate, canDisclose, canRecordRounds := false, false, false
+		if len(r.Header.Values("Authorization")) == 1 {
+			if workload != WorkflowWorkload {
+				canValidate = subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), expected) == 1
+				if disclosureService != nil {
+					auth.principal, canDisclose = disclosureService.Authenticate(r.Header.Get("Authorization"))
+				}
+			}
+			if workload != APIWorkload {
+				canRecordRounds = preparations != nil && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), expectedWorkflow) == 1
+			}
+		}
+		if !canValidate && !canDisclose && !canRecordRounds {
 			deny(connect.CodeUnauthenticated, "UNAUTHENTICATED: a mapped development credential is required")
 			return
 		}
 		caller = "anvilkit-agent-api"
 		if canDisclose {
 			actorID, tenantID = auth.principal.ActorID, auth.principal.TenantID
+		} else if canRecordRounds {
+			caller = preparation.WorkflowService
+			auth.workflow = true
 		} else {
 			actorID = "fixture-platform-developer"
 		}
-		if (r.URL.Path != rpc.DefinitionValidationValidateDefinitionProcedure || !canValidate) && ((r.URL.Path != controlrpc.ControlServiceGetDisclosureAuthorizationProcedure && !isLocalCommand) || !canDisclose) {
+		if (r.URL.Path != rpc.DefinitionValidationValidateDefinitionProcedure || !canValidate) &&
+			((r.URL.Path != controlrpc.ControlServiceGetDisclosureAuthorizationProcedure && !isLocalCommand && !isActorPreparation) || !canDisclose) &&
+			(!isWorkflowPreparation || !canRecordRounds) {
 			deny(connect.CodePermissionDenied, "PERMISSION_DENIED: credential is not mapped to this method")
 			return
 		}
@@ -164,7 +197,7 @@ func NewLocalServer(address, credential string, output io.Writer, disclosureServ
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, definition.RequestMaxBytes+5)
-		if route == controlrpc.ControlServiceGetDisclosureAuthorizationProcedure || isLocalCommand {
+		if route == controlrpc.ControlServiceGetDisclosureAuthorizationProcedure || isLocalCommand || isActorPreparation || isWorkflowPreparation {
 			disclosureRPC.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), disclosureContextKey{}, auth)))
 		} else {
 			handler.ServeHTTP(w, r)

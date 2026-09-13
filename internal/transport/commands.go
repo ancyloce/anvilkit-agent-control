@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/ancyloce/anvilkit-agent-control/internal/contracts/controlv1"
 	rpc "github.com/ancyloce/anvilkit-agent-control/internal/contracts/controlv1/controlv1connect"
 	"github.com/ancyloce/anvilkit-agent-control/internal/disclosure"
 	"github.com/ancyloce/anvilkit-agent-control/internal/localcheck"
+	"github.com/ancyloce/anvilkit-agent-control/internal/preparation"
 	"github.com/ancyloce/anvilkit-agent-control/internal/storage"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -46,6 +48,10 @@ func localError(err error) error {
 		code, message = connect.CodePermissionDenied, "PERMISSION_DENIED"
 	case errors.Is(err, storage.ErrLocalCapacity):
 		code, message = connect.CodeResourceExhausted, "OVERLOADED"
+	case errors.Is(err, storage.ErrPreparationTerminal):
+		code, message = connect.CodeAborted, "OPERATION_TERMINAL"
+	case errors.Is(err, preparation.ErrDenied):
+		code, message = connect.CodePermissionDenied, "PERMISSION_DENIED"
 	case errors.Is(err, context.Canceled):
 		code, message = connect.CodeCanceled, "CANCELED"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -66,10 +72,13 @@ func (h controlHandler) AdmitOperation(ctx context.Context, request *connect.Req
 	if m.Kind == nil || m.IntakeSource == nil || m.CommandId == nil {
 		return nil, localError(storage.ErrInvalid)
 	}
+	if m.GetKind() == pb.OperationKind_OPERATION_KIND_PREPARATION {
+		return h.admitPreparation(ctx, auth, m)
+	}
 	if h.localChecks == nil || m.GetKind() != pb.OperationKind_OPERATION_KIND_LOCAL_CHECK {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("QUALIFICATION_REQUIRED"))
 	}
-	if !h.service.ValidID(m.GetCommandId()) || m.GetIntakeSource() != pb.IntakeSource_INTAKE_SOURCE_API || m.LocalCheckFixtureId == nil || len(m.SubjectRefs) > 0 || len(m.ApiSubjectRefs) > 0 || m.ActivationId != nil || m.AuthorizedFundingRef != nil || m.OriginalSourceRevision != nil || m.ClientRequestId != nil || m.ClientSequence != nil {
+	if !h.service.ValidID(m.GetCommandId()) || m.GetIntakeSource() != pb.IntakeSource_INTAKE_SOURCE_API || m.LocalCheckFixtureId == nil || len(m.SubjectRefs) > 0 || len(m.ApiSubjectRefs) > 0 || m.ActivationId != nil || m.AuthorizedFundingRef != nil || m.OriginalSourceRevision != nil || m.ClientRequestId != nil || m.ClientSequence != nil || m.PreparationInput != nil || m.PreparationOperationId != nil || m.BriefRef != nil || m.BriefRevision != nil {
 		return nil, localError(storage.ErrInvalid)
 	}
 	c, err := h.localChecks.Admit(ctx, auth.principal, m.GetCommandId(), m.GetLocalCheckFixtureId())
@@ -103,22 +112,55 @@ func (h controlHandler) Cancel(ctx context.Context, request *connect.Request[pb.
 		return nil, localError(storage.ErrInvalid)
 	}
 	auth.operationID = m.GetOperationId()
-	c, coalesced, err := h.localChecks.Cancel(ctx, auth.principal, m.GetOperationId(), m.GetCommandId(), m.GetReasonCode(), m.GetExpectedOperationRevision())
-	if err != nil {
-		return nil, localError(err)
+	// The two fixed local-profile kinds share the reserved lane; the kind is
+	// resolved from the operation itself, never from the request.
+	var cancelled cancelledOperation
+	var coalesced bool
+	if h.preparations != nil {
+		var p storage.Preparation
+		p, coalesced, err = h.preparations.Cancel(ctx, auth.principal, m.GetOperationId(), m.GetCommandId(), m.GetReasonCode(), m.GetExpectedOperationRevision())
+		if err == nil {
+			cancelled = cancelledOperation{p.ID, p.Revision, p.Status, p.ControlState, p.CancelCommandID, p.CancelAcknowledgedAt}
+		} else if !errors.Is(err, storage.ErrNotFound) {
+			return nil, localError(err)
+		}
 	}
-	status := map[string]pb.PublicStatus{"pending": pb.PublicStatus_PUBLIC_STATUS_PENDING, "running": pb.PublicStatus_PUBLIC_STATUS_RUNNING, "blocked": pb.PublicStatus_PUBLIC_STATUS_BLOCKED, "succeeded": pb.PublicStatus_PUBLIC_STATUS_SUCCEEDED, "failed": pb.PublicStatus_PUBLIC_STATUS_FAILED, "canceled": pb.PublicStatus_PUBLIC_STATUS_CANCELED, "expired": pb.PublicStatus_PUBLIC_STATUS_EXPIRED}[c.Status]
+	if h.preparations == nil || errors.Is(err, storage.ErrNotFound) {
+		var c storage.LocalCheck
+		c, coalesced, err = h.localChecks.Cancel(ctx, auth.principal, m.GetOperationId(), m.GetCommandId(), m.GetReasonCode(), m.GetExpectedOperationRevision())
+		if err != nil {
+			return nil, localError(err)
+		}
+		cancelled = cancelledOperation{c.ID, c.Revision, c.Status, c.ControlState, c.CancelCommandID, c.CancelAcknowledgedAt}
+	}
+	return connect.NewResponse(cancelled.response(m.GetCommandId(), coalesced)), nil
+}
+
+type cancelledOperation struct {
+	id                   string
+	revision             int64
+	status, controlState string
+	cancelCommandID      string
+	cancelAcknowledgedAt *time.Time
+}
+
+func (c cancelledOperation) response(commandID string, coalesced bool) *pb.ControlCommandResponse {
+	status := publicStatus(c.status)
 	control := pb.ControlState_CONTROL_STATE_RUNNING
-	if c.ControlState == "blocked" {
+	if c.controlState == "blocked" {
 		control = pb.ControlState_CONTROL_STATE_BLOCKED
 	}
-	tracked := c.CancelCommandID
+	tracked := c.cancelCommandID
 	if tracked == "" {
-		tracked = m.GetCommandId()
+		tracked = commandID
 	}
-	response := &pb.ControlCommandResponse{OperationId: proto.String(c.ID), OperationRevision: proto.Uint64(uint64(c.Revision)), Status: status.Enum(), ControlState: control.Enum(), Coalesced: proto.Bool(coalesced), TrackedCommandId: proto.String(tracked)}
-	if c.CancelAcknowledgedAt != nil {
-		response.FenceAcknowledgedAt = timestamppb.New(*c.CancelAcknowledgedAt)
+	response := &pb.ControlCommandResponse{OperationId: proto.String(c.id), OperationRevision: proto.Uint64(uint64(c.revision)), Status: status.Enum(), ControlState: control.Enum(), Coalesced: proto.Bool(coalesced), TrackedCommandId: proto.String(tracked)}
+	if c.cancelAcknowledgedAt != nil {
+		response.FenceAcknowledgedAt = timestamppb.New(*c.cancelAcknowledgedAt)
 	}
-	return connect.NewResponse(response), nil
+	return response
+}
+
+func publicStatus(status string) pb.PublicStatus {
+	return map[string]pb.PublicStatus{"pending": pb.PublicStatus_PUBLIC_STATUS_PENDING, "running": pb.PublicStatus_PUBLIC_STATUS_RUNNING, "blocked": pb.PublicStatus_PUBLIC_STATUS_BLOCKED, "succeeded": pb.PublicStatus_PUBLIC_STATUS_SUCCEEDED, "failed": pb.PublicStatus_PUBLIC_STATUS_FAILED, "canceled": pb.PublicStatus_PUBLIC_STATUS_CANCELED, "expired": pb.PublicStatus_PUBLIC_STATUS_EXPIRED}[status]
 }

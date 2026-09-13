@@ -48,7 +48,7 @@ func (b *logBuffer) snapshot() []byte {
 func startServer(t *testing.T) (rpc.DefinitionValidationClient, *logBuffer, *http.Server) {
 	t.Helper()
 	logs := new(logBuffer)
-	server, err := NewLocalServer("127.0.0.1:0", developmentToken, logs, nil, nil)
+	server, err := NewLocalServer("127.0.0.1:0", developmentToken, logs, nil, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestPrivateSemanticReportLimit(t *testing.T) {
 }
 
 func TestPrivateMethodAndProtocolAreRestricted(t *testing.T) {
-	server, err := NewLocalServer("127.0.0.1:0", developmentToken, io.Discard, nil, nil)
+	server, err := NewLocalServer("127.0.0.1:0", developmentToken, io.Discard, nil, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,12 +314,12 @@ func TestPrivateMethodAndProtocolAreRestricted(t *testing.T) {
 
 func TestLocalServerRejectsUnsafeConfiguration(t *testing.T) {
 	for _, address := range []string{":8081", "0.0.0.0:8081", "localhost:8081", "[::]:8081", "127.0.0.1:65536"} {
-		if _, err := NewLocalServer(address, developmentToken, io.Discard, nil, nil); err == nil {
+		if _, err := NewLocalServer(address, developmentToken, io.Discard, nil, nil, nil, ""); err == nil {
 			t.Fatalf("accepted %s", address)
 		}
 	}
 	for _, token := range []string{"", "short", strings.Repeat("x", 257), developmentToken + "\n"} {
-		if _, err := NewLocalServer("127.0.0.1:0", token, io.Discard, nil, nil); err == nil {
+		if _, err := NewLocalServer("127.0.0.1:0", token, io.Discard, nil, nil, nil, ""); err == nil {
 			t.Fatal("accepted invalid credential configuration")
 		}
 	}

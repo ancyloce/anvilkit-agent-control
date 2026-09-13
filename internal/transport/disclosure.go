@@ -9,6 +9,7 @@ import (
 	rpc "github.com/ancyloce/anvilkit-agent-control/internal/contracts/controlv1/controlv1connect"
 	"github.com/ancyloce/anvilkit-agent-control/internal/disclosure"
 	"github.com/ancyloce/anvilkit-agent-control/internal/localcheck"
+	"github.com/ancyloce/anvilkit-agent-control/internal/preparation"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -18,11 +19,15 @@ type disclosureRequest struct {
 	principal   disclosure.Principal
 	operationID string
 	denied      bool
+	// workflow marks the Workflow service credential (S2): no actor, and only
+	// the preparation round methods.
+	workflow bool
 }
 type controlHandler struct {
 	rpc.UnimplementedControlServiceHandler
-	service     *disclosure.Service
-	localChecks *localcheck.Service
+	service      *disclosure.Service
+	localChecks  *localcheck.Service
+	preparations *preparation.Service
 }
 
 func (h controlHandler) GetDisclosureAuthorization(ctx context.Context, request *connect.Request[pb.GetDisclosureAuthorizationRequest]) (*connect.Response[pb.GetDisclosureAuthorizationResponse], error) {

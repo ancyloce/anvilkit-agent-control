@@ -158,7 +158,7 @@ func (f *disclosureFixture) server(t *testing.T) (rpc.ControlServiceClient, *log
 		t.Fatal(err)
 	}
 	logs := new(logBuffer)
-	server, err := NewLocalServer("127.0.0.1:0", developmentToken, logs, service, nil)
+	server, err := NewLocalServer("127.0.0.1:0", developmentToken, logs, service, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
