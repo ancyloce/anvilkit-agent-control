@@ -10,11 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/artifacts"
 	"github.com/ancyloce/anvilkit-agent-control/internal/contracts"
 	"github.com/ancyloce/anvilkit-agent-control/internal/disclosure"
 	"github.com/ancyloce/anvilkit-agent-control/internal/intake"
 	"github.com/ancyloce/anvilkit-agent-control/internal/localcheck"
 	"github.com/ancyloce/anvilkit-agent-control/internal/logging"
+	"github.com/ancyloce/anvilkit-agent-control/internal/preparation"
 	"github.com/ancyloce/anvilkit-agent-control/internal/storage"
 	"github.com/ancyloce/anvilkit-agent-control/internal/transport"
 	"go.temporal.io/sdk/client"
@@ -96,7 +98,25 @@ func run() error {
 			return err
 		}
 	}
-	server, err := transport.NewLocalServer(address, os.Getenv("ANVILKIT_CONTROL_DEVELOPMENT_TOKEN"), os.Stdout, disclosureService, localChecks)
+	// Preparations (S2) reuse the local-check dependencies plus the artifact
+	// store the input, question-set, answer-set and brief documents live in,
+	// and the Workflow service credential the round methods require.
+	var preparations *preparation.Service
+	if directory := os.Getenv("ANVILKIT_CONTROL_ARTIFACT_DIRECTORY"); directory != "" {
+		if localChecks == nil {
+			return errors.New("preparations require the local-check profile, its Temporal client and disclosure")
+		}
+		objects, err := artifacts.Open(directory)
+		if err != nil {
+			return err
+		}
+		defer objects.Close()
+		preparations, err = preparation.New(localChecks.Store(), localChecks.Reserved(), disclosureService, localChecks.CancelAuthorization(), localChecks.Intake(), objects, localChecks.Temporal(), localChecks.Namespace(), os.Getenv("ANVILKIT_CONTROL_ENVIRONMENT"), logger)
+		if err != nil {
+			return err
+		}
+	}
+	server, err := transport.NewLocalServer(address, os.Getenv("ANVILKIT_CONTROL_DEVELOPMENT_TOKEN"), os.Stdout, disclosureService, localChecks, preparations, os.Getenv("ANVILKIT_CONTROL_WORKFLOW_TOKEN"))
 	if err != nil {
 		return err
 	}
@@ -108,6 +128,12 @@ func run() error {
 		recoveryDone := make(chan struct{})
 		go func() { defer close(recoveryDone); localChecks.Run(recovery) }()
 		defer func() { recoveryCancel(); <-recoveryDone }()
+	}
+	if preparations != nil {
+		relay, relayCancel := context.WithCancel(ctx)
+		relayDone := make(chan struct{})
+		go func() { defer close(relayDone); preparations.Run(relay) }()
+		defer func() { relayCancel(); <-relayDone }()
 	}
 	done := make(chan error, 1)
 	go func() {
