@@ -1,0 +1,61 @@
+# anvilkit-agent-control configuration (reviewed, secret-free). Loaded by
+# internal/config with precedence defaults < this file < allowed environment
+# overrides (ANVILKIT_CONTROL_LISTEN, ANVILKIT_CONTROL_DATABASE_URL,
+# ANVILKIT_CONTROL_INVENTORY_DIR, ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT,
+# ANVILKIT_CONTROL_INVENTORY_S3_BUCKET, ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID,
+# ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY, ANVILKIT_CONTROL_TEMPORAL_ADDRESS).
+# Unknown keys fail startup. database.url and the inventory and artifact S3
+# credentials are secrets: they are refused here and come only from the
+# environment (ANVILKIT_CONTROL_ARTIFACTS_S3_{ENDPOINT,BUCKET,ACCESS_KEY_ID,SECRET_ACCESS_KEY}).
+grpc:
+  listen: 127.0.0.1:9101
+  control_capacity: 32
+  execution_capacity: 64
+  shutdown_timeout: 20s
+# inventory: the external-obligation inventory (DD-02 §5). backend is
+# filesystem (DEVELOPMENT_ONLY; inventory.dir comes from
+# ANVILKIT_CONTROL_INVENTORY_DIR) or s3 (an S3-compatible backend through the
+# AWS SDK; endpoint, bucket and credentials come from the environment, and
+# qualify_on_start runs the conditional-create/listing probe before serving).
+# Neither setting establishes the independent failure domain of ENV-02.
+inventory:
+  backend: filesystem
+  s3:
+    region: default
+    prefix: control
+    path_style: true
+    qualify_on_start: true
+# artifacts: the scoped artifact store of the eight artifact classes (DD-02
+# §6, P08): a versioned S3-compatible bucket through the AWS SDK with its own
+# credentials (the development foundation's MinIO, deploy/dev), a separate
+# permission boundary from the inventory. backend disabled answers
+# DEPENDENCY_UNAVAILABLE on every ArtifactService call.
+artifacts:
+  backend: s3
+  max_object_bytes: 67108864
+  max_window: 24h
+  capability_ttl: 15m
+  s3:
+    region: default
+    prefix: artifacts
+    path_style: true
+    qualify_on_start: true
+temporal:
+  address: 127.0.0.1:27233
+  namespace: anvilkit
+  task_queue: anvilkit-workflow
+relay:
+  interval: 500ms
+profiles:
+  local_check_deadline: 15m
+# recovery: bounds of the rollback-window reconciliation (P07).
+recovery:
+  enumeration_page: 500
+dispatch:
+  authority_freshness: 30s
+  # development: DEVELOPMENT_ONLY prices, route authorizations and trusted
+  # not-sent issuers for the admission chain (delivery.md P06). With
+  # enabled: false every paid route is denied; real prices/caps (ENV-06) and
+  # authorization (ENV-07) are deployment inputs, never this file.
+  development:
+    enabled: false

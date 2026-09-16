@@ -1,0 +1,16 @@
+# sqlc (A06): reviewed SQL is primary. The schema is the service-owned
+# migration source (internal/migrate/sql: 00001_init.sql plus the forward
+# migrations); generated code lands in internal/adapters/postgres/sqlc and is
+# regenerated and drift-checked by tools/sqlc.sh.
+version: "2"
+sql:
+  - engine: postgresql
+    schema: internal/migrate/sql
+    queries: internal/adapters/postgres/queries
+    gen:
+      go:
+        package: sqlc
+        out: internal/adapters/postgres/sqlc
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
