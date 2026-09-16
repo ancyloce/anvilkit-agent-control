@@ -1,0 +1,49 @@
+# Independent verification of anvilkit-agent-control from this repository
+# alone: build, vet, test (Docker-backed PostgreSQL 17 and MinIO tests through
+# Testcontainers), the race check of the application and transport, the sqlc
+# drift check, the image from the repository root, and the chart's lint and
+# render. GOWORK=off: the contract module is a versioned requirement.
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+env:
+  GOWORK: "off"
+  GOFLAGS: "-mod=readonly"
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+      - run: go test -race -count=1 ./internal/application/... ./internal/transport/... ./internal/domain/...
+  sqlc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+      - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+      - run: sh tools/sqlc.sh --check
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t anvilkit-agent-control:ci .
+  chart:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.19.0"
+      - run: helm lint deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233
+      - run: helm template anvilkit-agent-control deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233 > /dev/null
