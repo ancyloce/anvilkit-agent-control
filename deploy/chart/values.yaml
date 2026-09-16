@@ -1,0 +1,184 @@
+# Chart values of anvilkit-agent-control. Only what this service needs: its
+# image, its reviewed configuration file, the allowlisted placement overrides,
+# the Secrets it reads its credentials from, probes, resources and the
+# migration Job. Environment values (addresses, buckets, replica counts,
+# Secret names, the pinned image digest) are supplied by the deploying
+# repository per environment; secrets never enter this chart.
+
+image:
+  repository: anvilkit-agent-control
+  # tag defaults to the chart's appVersion; digest, when set, pins the exact
+  # image (repository@sha256:...) and takes precedence over the tag.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+replicaCount: 2
+
+serviceAccount:
+  create: true
+  name: ""
+  # Control needs no Kubernetes API access.
+  automountServiceAccountToken: false
+
+# The gRPC listener inside the Pod (ANVILKIT_CONTROL_LISTEN); the Service
+# targets its port. The health service (grpc.health.v1) answers on it.
+listen:
+  address: 0.0.0.0
+  port: 9101
+
+# The application-role connection (ANVILKIT_CONTROL_DATABASE_URL): a secret,
+# read from an existing Secret that this chart never creates. Required.
+database:
+  secret:
+    name: ""
+    key: url
+
+# The Temporal frontend (ANVILKIT_CONTROL_TEMPORAL_ADDRESS). Required.
+temporal:
+  address: ""
+
+# The obligation inventory (DD-02 §5): in a cluster every replica must share
+# one backend, so the chart renders the S3 backend only (the filesystem
+# adapter is DEVELOPMENT_ONLY and per process). Endpoint and bucket are
+# placements (ANVILKIT_CONTROL_INVENTORY_S3_{ENDPOINT,BUCKET}); the
+# credentials come from an existing Secret (ANVILKIT_CONTROL_INVENTORY_S3_
+# {ACCESS_KEY_ID,SECRET_ACCESS_KEY}). Required.
+inventory:
+  s3:
+    endpoint: ""
+    bucket: ""
+    secret:
+      name: ""
+      accessKeyIdKey: accessKeyId
+      secretAccessKeyKey: secretAccessKey
+
+# The scoped artifact store (DD-02 §6): its own bucket and its own
+# credentials, a permission boundary separate from the inventory; the
+# configuration loader refuses a shared bucket or access key. With
+# enabled: false ArtifactService answers DEPENDENCY_UNAVAILABLE.
+artifacts:
+  enabled: true
+  s3:
+    endpoint: ""
+    bucket: ""
+    secret:
+      name: ""
+      accessKeyIdKey: accessKeyId
+      secretAccessKeyKey: secretAccessKey
+
+# The migration Job (the "migration" Job kind): cmd/anvilkit-migration of the
+# same image, run with the migrator role before the release's Pods roll
+# (Helm pre-install/pre-upgrade hook). The migrator DSN is a secret read
+# from an existing Secret. The service never runs DDL.
+migration:
+  enabled: true
+  secret:
+    name: ""
+    key: url
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+# The reviewed, secret-free configuration file (config.yaml sections):
+# rendered into a ConfigMap and mounted at ANVILKIT_CONTROL_CONFIG. The
+# placement values above override it through the allowlisted environment;
+# the backends are fixed to s3 here (see inventory/artifacts).
+config:
+  grpc:
+    listen: 127.0.0.1:9101
+    control_capacity: 32
+    execution_capacity: 64
+    shutdown_timeout: 20s
+  inventory:
+    backend: s3
+    s3:
+      region: default
+      prefix: control
+      path_style: true
+      qualify_on_start: true
+  artifacts:
+    backend: s3
+    max_object_bytes: 67108864
+    max_window: 24h
+    capability_ttl: 15m
+    s3:
+      region: default
+      prefix: artifacts
+      path_style: true
+      qualify_on_start: true
+  temporal:
+    address: 127.0.0.1:27233
+    namespace: anvilkit
+    task_queue: anvilkit-workflow
+  relay:
+    interval: 500ms
+  profiles:
+    local_check_deadline: 15m
+  recovery:
+    enumeration_page: 500
+  dispatch:
+    authority_freshness: 30s
+    development:
+      enabled: false
+
+service:
+  type: ClusterIP
+  port: 9101
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 1000m
+    memory: 256Mi
+
+# The gRPC health service: SERVING once the listener is up and the relay
+# runs, NOT_SERVING while the server drains.
+probes:
+  startup:
+    periodSeconds: 2
+    failureThreshold: 60
+  readiness:
+    periodSeconds: 5
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 10
+    failureThreshold: 3
+
+# Shutdown: Fx stops the server with grpc.shutdown_timeout from the
+# configuration; the grace period must exceed it.
+terminationGracePeriodSeconds: 30
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+topologySpreadConstraints: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}

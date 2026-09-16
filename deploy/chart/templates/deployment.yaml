@@ -1,0 +1,136 @@
+{{- include "anvilkit-agent-control.require" . -}}
+{{- $cfg := deepCopy .Values.config -}}
+{{- $_ := set $cfg.inventory "backend" "s3" -}}
+{{- $_ = set $cfg.artifacts "backend" (ternary "s3" "disabled" .Values.artifacts.enabled) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "anvilkit-agent-control.fullname" . }}
+  labels:
+    {{- include "anvilkit-agent-control.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "anvilkit-agent-control.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "anvilkit-agent-control.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A changed configuration file rolls the Pods.
+        checksum/config: {{ toYaml $cfg | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "anvilkit-agent-control.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      # No injected service-link variables: the configuration loader rejects
+      # any ANVILKIT_CONTROL_* variable outside its allowlist.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: control
+          image: {{ include "anvilkit-agent-control.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # The allowlisted environment overrides of internal/config: the file
+          # path, the placement values and the secrets from their Secrets.
+          env:
+            - name: ANVILKIT_CONTROL_CONFIG
+              value: /etc/anvilkit/anvilkit-agent-control/config.yaml
+            - name: ANVILKIT_CONTROL_LISTEN
+              value: {{ printf "%s:%d" .Values.listen.address (int .Values.listen.port) | quote }}
+            - name: ANVILKIT_CONTROL_TEMPORAL_ADDRESS
+              value: {{ .Values.temporal.address | quote }}
+            - name: ANVILKIT_CONTROL_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secret.name }}
+                  key: {{ .Values.database.secret.key }}
+            - name: ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT
+              value: {{ .Values.inventory.s3.endpoint | quote }}
+            - name: ANVILKIT_CONTROL_INVENTORY_S3_BUCKET
+              value: {{ .Values.inventory.s3.bucket | quote }}
+            - name: ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.inventory.s3.secret.name }}
+                  key: {{ .Values.inventory.s3.secret.accessKeyIdKey }}
+            - name: ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.inventory.s3.secret.name }}
+                  key: {{ .Values.inventory.s3.secret.secretAccessKeyKey }}
+            {{- if .Values.artifacts.enabled }}
+            - name: ANVILKIT_CONTROL_ARTIFACTS_S3_ENDPOINT
+              value: {{ .Values.artifacts.s3.endpoint | quote }}
+            - name: ANVILKIT_CONTROL_ARTIFACTS_S3_BUCKET
+              value: {{ .Values.artifacts.s3.bucket | quote }}
+            - name: ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifacts.s3.secret.name }}
+                  key: {{ .Values.artifacts.s3.secret.accessKeyIdKey }}
+            - name: ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifacts.s3.secret.name }}
+                  key: {{ .Values.artifacts.s3.secret.secretAccessKeyKey }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.listen.port }}
+              protocol: TCP
+          startupProbe:
+            grpc:
+              port: {{ .Values.listen.port }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            grpc:
+              port: {{ .Values.listen.port }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            grpc:
+              port: {{ .Values.listen.port }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/anvilkit/anvilkit-agent-control
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "anvilkit-agent-control.fullname" . }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

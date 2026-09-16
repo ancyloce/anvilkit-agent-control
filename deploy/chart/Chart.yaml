@@ -1,0 +1,6 @@
+apiVersion: v2
+name: anvilkit-agent-control
+description: The AnvilKit Agent Control service (anvilkit-agent-control) - the service's own chart with its migration Job; environment values and the pinned deployment combination belong to the deploying repository.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

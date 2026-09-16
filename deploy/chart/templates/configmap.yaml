@@ -1,0 +1,15 @@
+{{- include "anvilkit-agent-control.require" . -}}
+{{- /* The rendered file: the reviewed sections with the backends this chart
+supports (the shared S3 inventory; the S3 artifact store or disabled). */ -}}
+{{- $cfg := deepCopy .Values.config -}}
+{{- $_ := set $cfg.inventory "backend" "s3" -}}
+{{- $_ = set $cfg.artifacts "backend" (ternary "s3" "disabled" .Values.artifacts.enabled) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "anvilkit-agent-control.fullname" . }}
+  labels:
+    {{- include "anvilkit-agent-control.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml $cfg | nindent 4 }}
