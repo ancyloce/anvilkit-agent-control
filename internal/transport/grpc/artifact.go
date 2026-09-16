@@ -24,6 +24,8 @@ var artifactClassFromProto = map[controlv1.ArtifactClass]domain.ArtifactClass{
 	controlv1.ArtifactClass_ARTIFACT_CLASS_SOURCE: domain.ArtifactSource, controlv1.ArtifactClass_ARTIFACT_CLASS_STAGE: domain.ArtifactStage,
 	controlv1.ArtifactClass_ARTIFACT_CLASS_RESULT: domain.ArtifactResult, controlv1.ArtifactClass_ARTIFACT_CLASS_EVIDENCE: domain.ArtifactEvidence,
 	controlv1.ArtifactClass_ARTIFACT_CLASS_ANSWER: domain.ArtifactAnswer, controlv1.ArtifactClass_ARTIFACT_CLASS_ARGUMENT: domain.ArtifactArgument,
+	controlv1.ArtifactClass_ARTIFACT_CLASS_NPM: domain.ArtifactNpm, controlv1.ArtifactClass_ARTIFACT_CLASS_BROWSER: domain.ArtifactBrowser,
+	controlv1.ArtifactClass_ARTIFACT_CLASS_CSS: domain.ArtifactCSS,
 }
 
 var artifactClassToProto = map[domain.ArtifactClass]controlv1.ArtifactClass{
@@ -31,6 +33,8 @@ var artifactClassToProto = map[domain.ArtifactClass]controlv1.ArtifactClass{
 	domain.ArtifactSource: controlv1.ArtifactClass_ARTIFACT_CLASS_SOURCE, domain.ArtifactStage: controlv1.ArtifactClass_ARTIFACT_CLASS_STAGE,
 	domain.ArtifactResult: controlv1.ArtifactClass_ARTIFACT_CLASS_RESULT, domain.ArtifactEvidence: controlv1.ArtifactClass_ARTIFACT_CLASS_EVIDENCE,
 	domain.ArtifactAnswer: controlv1.ArtifactClass_ARTIFACT_CLASS_ANSWER, domain.ArtifactArgument: controlv1.ArtifactClass_ARTIFACT_CLASS_ARGUMENT,
+	domain.ArtifactNpm: controlv1.ArtifactClass_ARTIFACT_CLASS_NPM, domain.ArtifactBrowser: controlv1.ArtifactClass_ARTIFACT_CLASS_BROWSER,
+	domain.ArtifactCSS: controlv1.ArtifactClass_ARTIFACT_CLASS_CSS,
 }
 
 var transferStateToProto = map[domain.TransferState]controlv1.TransferState{
