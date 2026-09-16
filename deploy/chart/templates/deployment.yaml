@@ -17,6 +17,11 @@ spec:
     metadata:
       labels:
         {{- include "anvilkit-agent-control.selectorLabels" . | nindent 8 }}
+        # The runtime Pods' component label: the PodDisruptionBudget selects
+        # on it, so the migration Job's Pods (component "migration", which
+        # carry the same selector labels) are never counted or protected.
+        # Not part of the Deployment's immutable selector.
+        app.kubernetes.io/component: control
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

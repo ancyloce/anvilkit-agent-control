@@ -7,7 +7,11 @@ metadata:
     {{- include "anvilkit-agent-control.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  # The runtime Pods only: the migration Job's Pods share the selector
+  # labels but carry component "migration" and must not count towards, or
+  # be held back by, the budget.
   selector:
     matchLabels:
       {{- include "anvilkit-agent-control.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: control
 {{- end }}
