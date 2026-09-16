@@ -45,5 +45,13 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: "v3.19.0"
-      - run: helm lint deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233
-      - run: helm template anvilkit-agent-control deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233 > /dev/null
+      - run: >-
+          helm lint deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233
+          --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
+          --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
+          --set migration.secret.name=control-migrator
+      - run: >-
+          helm template anvilkit-agent-control deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233
+          --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
+          --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
+          --set migration.secret.name=control-migrator > /dev/null
