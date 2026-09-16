@@ -6,9 +6,11 @@ import (
 	"time"
 )
 
-// ArtifactClass is one of the eight artifact classes of the contract
-// (contracts/proto/anvilkit/control/v1/artifact.proto, openapi/agent.yaml);
-// no other class exists on this surface.
+// ArtifactClass is one of the eleven artifact classes of the contract
+// (contracts/proto/anvilkit/control/v1/artifact.proto, openapi/agent.yaml):
+// the eight of P08 and, since P10, the build deliverables of a certified
+// component (the npm tarball, the browser module and a stylesheet); no
+// other class exists on this surface.
 type ArtifactClass string
 
 const (
@@ -20,10 +22,13 @@ const (
 	ArtifactEvidence ArtifactClass = "evidence"
 	ArtifactAnswer   ArtifactClass = "answer"
 	ArtifactArgument ArtifactClass = "argument"
+	ArtifactNpm      ArtifactClass = "npm"
+	ArtifactBrowser  ArtifactClass = "browser"
+	ArtifactCSS      ArtifactClass = "css"
 )
 
 // ArtifactClasses lists the classes in contract order.
-var ArtifactClasses = []ArtifactClass{ArtifactPrompt, ArtifactBrief, ArtifactSource, ArtifactStage, ArtifactResult, ArtifactEvidence, ArtifactAnswer, ArtifactArgument}
+var ArtifactClasses = []ArtifactClass{ArtifactPrompt, ArtifactBrief, ArtifactSource, ArtifactStage, ArtifactResult, ArtifactEvidence, ArtifactAnswer, ArtifactArgument, ArtifactNpm, ArtifactBrowser, ArtifactCSS}
 
 func ParseArtifactClass(s string) (ArtifactClass, error) {
 	for _, c := range ArtifactClasses {
@@ -544,10 +549,13 @@ func (p JobProfile) EmbeddedOutput(out ManifestOutput, verdict Verdict) error {
 }
 
 // outputClasses maps a result manifest output class to the artifact class
-// its handle must be a finalized transfer of. Output classes without an
-// artifact class on this surface (the build deliverables of P10 and the
-// parser chunks of P15) cannot be bound here.
-var outputClasses = map[string]ArtifactClass{"source": ArtifactSource, "evidence": ArtifactEvidence, "result": ArtifactResult}
+// its handle must be a finalized transfer of: the P08 classes and, since
+// P10, the build deliverables of a certified component. The parser chunks
+// of P15 have no artifact class on this surface yet and cannot be bound.
+var outputClasses = map[string]ArtifactClass{
+	"source": ArtifactSource, "evidence": ArtifactEvidence, "result": ArtifactResult,
+	"npm": ArtifactNpm, "browser": ArtifactBrowser, "css": ArtifactCSS,
+}
 
 // BindArtifact verifies that a manifest output names a finalized transfer
 // of the result's own scope and exact content: same tenant and operation,
