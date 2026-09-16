@@ -36,7 +36,11 @@ import (
 // these tests run the artifact adapter against: a real S3 API with a
 // versioned bucket. It is not the production object backend and passing
 // here qualifies no placement, retention or failure domain.
-const minioImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+// The MinIO image of the foundation (deploy/dev), by the registry that still
+// serves this release publicly: Docker Hub denies the pull of this tag on a
+// fresh machine (GitHub-hosted runners), quay.io serves the same digest
+// (sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e).
+const minioImage = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
 
 // startArtifactStore starts MinIO, creates a versioned artifact bucket and
 // returns the qualified adapter.

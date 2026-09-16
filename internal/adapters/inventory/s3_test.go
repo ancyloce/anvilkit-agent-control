@@ -23,7 +23,11 @@ import (
 // and the conditional-create and listing contract on a real S3 API; it is
 // not the Ceph RGW backend of C09, and passing here qualifies neither RGW
 // nor the independent failure domain of ENV-02.
-const minioImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+// The MinIO image of the foundation (deploy/dev), by the registry that still
+// serves this release publicly: Docker Hub denies the pull of this tag on a
+// fresh machine (GitHub-hosted runners), quay.io serves the same digest
+// (sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e).
+const minioImage = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
 
 type s3Backend struct {
 	endpoint string
