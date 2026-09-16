@@ -122,11 +122,14 @@ func classifyS3(err error) string {
 		return "canceled"
 	case errors.As(err, &api):
 		code := "api error " + api.ErrorCode()
-		if errors.As(err, &resp) {
+		if errors.As(err, &resp) && resp.HTTPStatusCode() > 0 {
 			code += " (http " + strconv.Itoa(resp.HTTPStatusCode()) + ")"
 		}
 		return code
-	case errors.As(err, &resp):
+	// A response error without a status is a transport failure the SDK
+	// wrapped before any answer existed (a refused connection on some
+	// hosts): it is unreachability, not an HTTP outcome.
+	case errors.As(err, &resp) && resp.HTTPStatusCode() > 0:
 		return "http " + strconv.Itoa(resp.HTTPStatusCode())
 	case errors.As(err, &netErr):
 		if netErr.Timeout() {
