@@ -549,11 +549,14 @@ func (p JobProfile) EmbeddedOutput(out ManifestOutput, verdict Verdict) error {
 }
 
 // outputClasses maps a result manifest output class to the artifact class
-// its handle must be a finalized transfer of: the P08 classes and, since
-// P10, the build deliverables of a certified component. The parser chunks
-// of P15 have no artifact class on this surface yet and cannot be bound.
+// its handle must be a finalized transfer of: the P08 classes, since P10
+// the build deliverables of a certified component and, since P12, the
+// joint stage of a codegen team attempt (the checkpoint snapshot, the Pi
+// session and the stage manifest in one archive, bound beside its sealed
+// source). The parser chunks of P15 have no artifact class on this surface
+// yet and cannot be bound.
 var outputClasses = map[string]ArtifactClass{
-	"source": ArtifactSource, "evidence": ArtifactEvidence, "result": ArtifactResult,
+	"source": ArtifactSource, "stage": ArtifactStage, "evidence": ArtifactEvidence, "result": ArtifactResult,
 	"npm": ArtifactNpm, "browser": ArtifactBrowser, "css": ArtifactCSS,
 }
 

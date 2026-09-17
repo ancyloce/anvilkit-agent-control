@@ -38,6 +38,9 @@ func TestBuildDeliverableClassesBind(t *testing.T) {
 		{"a browser output does not bind a begun transfer", ManifestOutput{Class: "browser", Digest: digest, SizeBytes: 2637, Handle: "hdl_browser"}, func() *Transfer { x := finalized(ArtifactBrowser); x.State = TransferBegun; return x }(), true},
 		{"a css output of another digest is refused", ManifestOutput{Class: "css", Digest: "sha256:7777777777777777777777777777777777777777777777777777777777777777", SizeBytes: 2637, Handle: "hdl_css"}, finalized(ArtifactCSS), true},
 		{"a chunks output has no class on this surface", ManifestOutput{Class: "chunks", Digest: digest, SizeBytes: 1, Handle: "hdl_x"}, finalized(ArtifactCSS), true},
+		// The joint stage of a codegen team attempt (P12) binds a finalized stage transfer and nothing else.
+		{"a stage output binds a finalized stage transfer", ManifestOutput{Class: "stage", Digest: digest, SizeBytes: 2637, Handle: "hdl_stage"}, finalized(ArtifactStage), false},
+		{"a stage output does not bind an evidence transfer", ManifestOutput{Class: "stage", Digest: digest, SizeBytes: 2637, Handle: "hdl_evidence"}, finalized(ArtifactEvidence), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
