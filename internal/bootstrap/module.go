@@ -28,22 +28,58 @@ import (
 	grpctransport "github.com/ancyloce/anvilkit-agent-control/internal/transport/grpc"
 )
 
-// LocalCheckWorkflowName is the stable registered workflow type of the
-// LocalCheck fixture (architecture.md "API, events and Temporal");
-// RecoveryWorkflowName the reconciliation workflow of a recovery run (P07).
+// The stable registered workflow types (architecture.md "API, events and
+// Temporal"): the LocalCheck fixture, the Preparation and Generation
+// business workflows (P13) and the reconciliation workflow of a recovery
+// run (P07). Every other kind has no registration and is not started.
 const (
-	LocalCheckWorkflowName = "LocalCheckWorkflow"
-	RecoveryWorkflowName   = "RecoveryWorkflow"
+	LocalCheckWorkflowName  = "LocalCheckWorkflow"
+	PreparationWorkflowName = "PreparationWorkflow"
+	GenerationWorkflowName  = "GenerationWorkflow"
+	RecoveryWorkflowName    = "RecoveryWorkflow"
 )
 
-// Profiles returns the reviewed operation profiles of this build. The only
-// initial profile is the LocalCheck fixture; other kinds are rejected with
-// PROFILE_UNQUALIFIED until their units deliver reviewed profiles.
+// GenerationPoolID is the execution capacity pool of the Generation
+// profile (contracts.md §2 resource_pools).
+const GenerationPoolID = "generation"
+
+// WorkflowNames binds each startable operation kind to its workflow type.
+func WorkflowNames() map[domain.OperationKind]string {
+	return map[domain.OperationKind]string{
+		domain.KindLocalCheck: LocalCheckWorkflowName, domain.KindPreparation: PreparationWorkflowName, domain.KindGeneration: GenerationWorkflowName,
+	}
+}
+
+// Profiles returns the reviewed operation profiles of this build: the
+// LocalCheck fixture, the Preparation profile and the Generation profile
+// (P13); other kinds are rejected with PROFILE_UNQUALIFIED until their
+// units deliver reviewed profiles. The money values were validated by the
+// configuration.
 func Profiles(cfg config.Config) []domain.Profile {
-	return []domain.Profile{{
-		ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: cfg.Profiles.LocalCheckDeadline,
-		StepID: "local-check", JobProfileID: "local-check-v1",
-	}}
+	prep, gen := cfg.Profiles.Preparation, cfg.Profiles.Generation
+	prepFunding, _ := domain.ParseMoney(prep.Funding.Currency, prep.Funding.Amount)
+	genFunding, _ := domain.ParseMoney(gen.Funding.Currency, gen.Funding.Amount)
+	return []domain.Profile{
+		{
+			ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: cfg.Profiles.LocalCheckDeadline,
+			StepID: "local-check", JobProfileID: "local-check-v1",
+		},
+		{
+			ID: "preparation-v1", Kind: domain.KindPreparation, OperationDeadline: prep.Deadline, StepID: "analysis", MultiStep: true,
+			Clarification: domain.ClarificationBounds{MaxRounds: prep.MaxRounds, MaxQuestions: prep.MaxQuestions, Wait: prep.Wait},
+			Funding:       &prepFunding,
+		},
+		{
+			ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: gen.QueueDeadline, StepID: "codegen", MultiStep: true,
+			Funding: &genFunding, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
+			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile, JobProfileID: gen.CodegenProfile,
+		},
+	}
+}
+
+// Pools returns the reviewed execution pools of this build.
+func Pools(cfg config.Config) []domain.ResourcePool {
+	return []domain.ResourcePool{{ID: GenerationPoolID, Class: "generation", Capacity: cfg.Profiles.Generation.Capacity}}
 }
 
 func Module() fx.Option {
@@ -72,13 +108,19 @@ func Module() fx.Option {
 				return temporaladapter.Dial(cfg.Temporal.Address, cfg.Temporal.Namespace)
 			},
 			func(cfg config.Config, c client.Client) application.WorkflowRelay {
-				return temporaladapter.NewRelay(c, cfg.Temporal.TaskQueue, LocalCheckWorkflowName, RecoveryWorkflowName)
+				return temporaladapter.NewRelay(c, cfg.Temporal.TaskQueue, WorkflowNames(), RecoveryWorkflowName)
 			},
 			func(cfg config.Config, store application.Store, inv application.Inventory, clock domain.Clock, log *slog.Logger) *application.Operations {
 				return application.NewOperations(store, inv, Profiles(cfg), clock, log)
 			},
-			func(store application.Store, inv application.Inventory, mv application.ManifestValidator, clock domain.Clock, log *slog.Logger) *application.Execution {
-				return application.NewExecution(store, inv, mv, clock, log)
+			func(cfg config.Config, store application.Store, inv application.Inventory, mv application.ManifestValidator, clock domain.Clock, log *slog.Logger) *application.Execution {
+				return application.NewExecution(store, inv, mv, Profiles(cfg), clock, log)
+			},
+			func(cfg config.Config, store application.Store, clock domain.Clock, log *slog.Logger) *application.Preparations {
+				return application.NewPreparations(store, Profiles(cfg), clock, log)
+			},
+			func(cfg config.Config, store application.Store, dispatch *application.Dispatch, clock domain.Clock, log *slog.Logger) *application.Generations {
+				return application.NewGenerations(store, dispatch, Profiles(cfg), Pools(cfg), clock, log)
 			},
 			// DEVELOPMENT_ONLY sources of prices, authority and not-sent
 			// evidence; disabled fixtures deny every paid route (P06, ENV-06/07).
@@ -136,14 +178,14 @@ func Module() fx.Option {
 			func(cfg config.Config, inv application.Inventory) application.NotSentEvidence {
 				return development.NewNotSentEvidence(inv, cfg.Dispatch.Development.NotSentIssuers)
 			},
-			func(store application.Store, inv application.Inventory, prices application.PriceBook, auth application.Authority, ev application.NotSentEvidence, clock domain.Clock, log *slog.Logger) *application.Dispatch {
-				return application.NewDispatch(store, inv, prices, auth, ev, clock, log)
+			func(cfg config.Config, store application.Store, inv application.Inventory, prices application.PriceBook, auth application.Authority, ev application.NotSentEvidence, clock domain.Clock, log *slog.Logger) *application.Dispatch {
+				return application.NewDispatch(store, inv, prices, auth, ev, clock, log).WithProfiles(Profiles(cfg))
 			},
-			func(cfg config.Config, store application.Store, wf application.WorkflowRelay, ops *application.Operations, recovery *application.Recovery, clock domain.Clock, log *slog.Logger) *application.Relay {
-				return application.NewRelay(store, wf, ops, recovery, clock, log, cfg.Relay.Interval)
+			func(cfg config.Config, store application.Store, wf application.WorkflowRelay, ops *application.Operations, recovery *application.Recovery, preparations *application.Preparations, generations *application.Generations, clock domain.Clock, log *slog.Logger) *application.Relay {
+				return application.NewRelay(store, wf, ops, recovery, preparations, generations, clock, log, cfg.Relay.Interval)
 			},
-			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts) (*grpctransport.Server, error) {
-				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts)
+			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations) (*grpctransport.Server, error) {
+				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations)
 			},
 		),
 		fx.Invoke(run),
@@ -229,11 +271,16 @@ func newPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {
 
 // run orders the lifecycle so the server and relay stop before the pool and
 // the Temporal client close (DD-09 §3).
-func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, relay *application.Relay, tc client.Client, log *slog.Logger) {
+func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, relay *application.Relay, generations *application.Generations, tc client.Client, log *slog.Logger) {
 	relayCtx, cancelRelay := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	lc.Append(fx.Hook{
-		OnStart: func(context.Context) error {
+		OnStart: func(ctx context.Context) error {
+			// The reviewed execution pools of this build are configuration:
+			// written before serving, never guessed at runtime.
+			if err := generations.InstallPools(ctx); err != nil {
+				return fmt.Errorf("install execution pools: %w", err)
+			}
 			addr, err := srv.Start()
 			if err != nil {
 				return err

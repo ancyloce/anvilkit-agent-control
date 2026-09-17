@@ -127,9 +127,51 @@ type ModelProxy struct {
 	} `koanf:"identity"`
 }
 
-// Profiles carries the reviewed profile parameters of this build.
+// Profiles carries the reviewed profile parameters of this build: the
+// LocalCheck fixture, the Preparation profile (its clarification trial
+// defaults and its analysis funding) and the Generation profile (its queue,
+// active window, funding, definitions, repair bound and job profiles).
 type Profiles struct {
-	LocalCheckDeadline time.Duration `koanf:"local_check_deadline"`
+	LocalCheckDeadline time.Duration      `koanf:"local_check_deadline"`
+	Preparation        PreparationProfile `koanf:"preparation"`
+	Generation         GenerationProfile  `koanf:"generation"`
+}
+
+// PreparationProfile: the operation deadline bounds the whole preparation
+// (analysis and every wait); the clarification bounds are the trial
+// defaults of requirements.md §2 (two rounds, three questions, seven
+// days); funding is the analysis allowance the operation allocates from
+// the shared pools (currency and scale-6 amount as decimal strings).
+type PreparationProfile struct {
+	Deadline     time.Duration `koanf:"deadline"`
+	MaxRounds    uint64        `koanf:"max_rounds"`
+	MaxQuestions uint64        `koanf:"max_questions"`
+	Wait         time.Duration `koanf:"wait"`
+	Funding      MoneyValue    `koanf:"funding"`
+}
+
+// GenerationProfile: queue_deadline bounds admission waiting from intake;
+// active_window is the execution window the first permit opens once;
+// capacity is the size of the execution pool; funding is the reviewed
+// allocation; definitions are the reviewed definition activations (the
+// first is the default); max_repairs bounds the independently classified
+// repair rounds; codegen_profile and validator_profile are the reviewed
+// job profiles the steps launch.
+type GenerationProfile struct {
+	QueueDeadline    time.Duration `koanf:"queue_deadline"`
+	ActiveWindow     time.Duration `koanf:"active_window"`
+	Capacity         int32         `koanf:"capacity"`
+	Funding          MoneyValue    `koanf:"funding"`
+	Definitions      []string      `koanf:"definitions"`
+	MaxRepairs       uint64        `koanf:"max_repairs"`
+	CodegenProfile   string        `koanf:"codegen_profile"`
+	ValidatorProfile string        `koanf:"validator_profile"`
+}
+
+// MoneyValue is a reviewed amount: currency and scale-6 decimal string.
+type MoneyValue struct {
+	Currency string `koanf:"currency"`
+	Amount   string `koanf:"amount"`
 }
 
 // Dispatch bounds the single-use admission chain (DD-02 §3–§4).
@@ -202,29 +244,42 @@ type Config struct {
 }
 
 var defaults = map[string]any{
-	"grpc.listen":                   "127.0.0.1:9101",
-	"grpc.control_capacity":         32,
-	"grpc.execution_capacity":       64,
-	"grpc.shutdown_timeout":         "20s",
-	"temporal.namespace":            "anvilkit",
-	"temporal.task_queue":           "anvilkit-workflow",
-	"relay.interval":                "500ms",
-	"profiles.local_check_deadline": "15m",
-	"dispatch.authority_freshness":  "30s",
-	"dispatch.development.enabled":  false,
-	"inventory.backend":             InventoryFilesystem,
-	"inventory.s3.path_style":       true,
-	"inventory.s3.qualify_on_start": true,
-	"recovery.enumeration_page":     500,
-	"model_proxy.timeout":           "15s",
-	"model_proxy.owner":             "anvilkit-agent-model-proxy",
-	"model_proxy.identity.mode":     "development",
-	"artifacts.backend":             ArtifactsDisabled,
-	"artifacts.max_object_bytes":    64 << 20,
-	"artifacts.max_window":          "24h",
-	"artifacts.capability_ttl":      "15m",
-	"artifacts.s3.path_style":       true,
-	"artifacts.s3.qualify_on_start": true,
+	"grpc.listen":                           "127.0.0.1:9101",
+	"grpc.control_capacity":                 32,
+	"grpc.execution_capacity":               64,
+	"grpc.shutdown_timeout":                 "20s",
+	"temporal.namespace":                    "anvilkit",
+	"temporal.task_queue":                   "anvilkit-workflow",
+	"relay.interval":                        "500ms",
+	"profiles.local_check_deadline":         "15m",
+	"profiles.preparation.deadline":         "360h",
+	"profiles.preparation.max_rounds":       2,
+	"profiles.preparation.max_questions":    3,
+	"profiles.preparation.wait":             "168h",
+	"profiles.preparation.funding":          map[string]any{"currency": "USD", "amount": "500000"},
+	"profiles.generation.queue_deadline":    "24h",
+	"profiles.generation.active_window":     "2h",
+	"profiles.generation.capacity":          2,
+	"profiles.generation.funding":           map[string]any{"currency": "USD", "amount": "1000000"},
+	"profiles.generation.definitions":       []string{"generation-v1:def-1", "generation-v1:def-2"},
+	"profiles.generation.max_repairs":       1,
+	"profiles.generation.codegen_profile":   "codegen-team-dev-v1",
+	"profiles.generation.validator_profile": "validator-fixed-dev-v1",
+	"dispatch.authority_freshness":          "30s",
+	"dispatch.development.enabled":          false,
+	"inventory.backend":                     InventoryFilesystem,
+	"inventory.s3.path_style":               true,
+	"inventory.s3.qualify_on_start":         true,
+	"recovery.enumeration_page":             500,
+	"model_proxy.timeout":                   "15s",
+	"model_proxy.owner":                     "anvilkit-agent-model-proxy",
+	"model_proxy.identity.mode":             "development",
+	"artifacts.backend":                     ArtifactsDisabled,
+	"artifacts.max_object_bytes":            64 << 20,
+	"artifacts.max_window":                  "24h",
+	"artifacts.capability_ttl":              "15m",
+	"artifacts.s3.path_style":               true,
+	"artifacts.s3.qualify_on_start":         true,
 }
 
 // envOverrides is the complete set of accepted environment variables:
@@ -384,6 +439,35 @@ func (c Config) validate() error {
 	}
 	// The relay must poll more often than the shortest operation deadline
 	// can elapse, otherwise a confirmed intake could wait past its clock.
+	p := c.Profiles.Preparation
+	if p.MaxRounds < 1 || p.MaxRounds > 8 || p.MaxQuestions < 1 || p.MaxQuestions > 16 {
+		errs = append(errs, fmt.Errorf("profiles.preparation max_rounds %d / max_questions %d outside [1, 8] / [1, 16]", p.MaxRounds, p.MaxQuestions))
+	}
+	if p.Wait < time.Minute || p.Wait > 30*24*time.Hour {
+		errs = append(errs, fmt.Errorf("profiles.preparation.wait %s outside [1m, 720h]", p.Wait))
+	}
+	if p.Deadline <= time.Duration(p.MaxRounds)*p.Wait {
+		errs = append(errs, fmt.Errorf("profiles.preparation.deadline %s must exceed max_rounds x wait (%s)", p.Deadline, time.Duration(p.MaxRounds)*p.Wait))
+	}
+	if _, err := domain.ParseMoney(p.Funding.Currency, p.Funding.Amount); err != nil {
+		errs = append(errs, fmt.Errorf("profiles.preparation.funding: %w", err))
+	}
+	g := c.Profiles.Generation
+	if g.QueueDeadline < time.Minute || g.QueueDeadline > 7*24*time.Hour {
+		errs = append(errs, fmt.Errorf("profiles.generation.queue_deadline %s outside [1m, 168h]", g.QueueDeadline))
+	}
+	if g.ActiveWindow < time.Minute || g.ActiveWindow > 24*time.Hour {
+		errs = append(errs, fmt.Errorf("profiles.generation.active_window %s outside [1m, 24h]", g.ActiveWindow))
+	}
+	if g.Capacity < 1 || g.Capacity > 1024 {
+		errs = append(errs, fmt.Errorf("profiles.generation.capacity %d outside [1, 1024]", g.Capacity))
+	}
+	if _, err := domain.ParseMoney(g.Funding.Currency, g.Funding.Amount); err != nil {
+		errs = append(errs, fmt.Errorf("profiles.generation.funding: %w", err))
+	}
+	if len(g.Definitions) == 0 || g.CodegenProfile == "" || g.ValidatorProfile == "" {
+		errs = append(errs, errors.New("profiles.generation needs definitions, codegen_profile and validator_profile"))
+	}
 	if c.Relay.Interval*10 > c.Profiles.LocalCheckDeadline {
 		errs = append(errs, fmt.Errorf("relay.interval %s is too coarse for profiles.local_check_deadline %s", c.Relay.Interval, c.Profiles.LocalCheckDeadline))
 	}
