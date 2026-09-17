@@ -25,7 +25,7 @@ type Server struct {
 	listen string
 }
 
-func NewServer(listen string, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts) (*Server, error) {
+func NewServer(listen string, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations) (*Server, error) {
 	validator, err := protovalidate.New()
 	if err != nil {
 		return nil, err
@@ -37,7 +37,9 @@ func NewServer(listen string, controlCapacity, executionCapacity int, ops *appli
 	)
 	h := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(s, h)
-	controlv1.RegisterOperationServiceServer(s, &operationServer{ops: ops})
+	controlv1.RegisterOperationServiceServer(s, &operationServer{ops: ops, preparations: preparations})
+	controlv1.RegisterPreparationServiceServer(s, &preparationServer{preparations: preparations})
+	controlv1.RegisterGenerationServiceServer(s, &generationServer{generations: generations})
 	controlv1.RegisterExecutionServiceServer(s, &executionServer{exec: exec})
 	controlv1.RegisterDispatchServiceServer(s, &dispatchServer{dispatch: dispatch})
 	controlv1.RegisterEffectServiceServer(s, &effectServer{effects: effects})

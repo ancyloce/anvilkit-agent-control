@@ -80,7 +80,7 @@ func newCapacity(control, execution int) *capacity {
 // pool so operator commands, queries and recovery keep their reserved
 // capacity.
 func (c *capacity) pool(method string) chan struct{} {
-	for _, prefix := range []string{"/anvilkit.control.v1.ExecutionService/", "/anvilkit.control.v1.DispatchService/", "/anvilkit.control.v1.EffectService/", "/anvilkit.control.v1.ArtifactService/"} {
+	for _, prefix := range []string{"/anvilkit.control.v1.ExecutionService/", "/anvilkit.control.v1.DispatchService/", "/anvilkit.control.v1.EffectService/", "/anvilkit.control.v1.ArtifactService/", "/anvilkit.control.v1.GenerationService/"} {
 		if strings.HasPrefix(method, prefix) {
 			return c.execution
 		}

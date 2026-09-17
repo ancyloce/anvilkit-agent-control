@@ -176,7 +176,7 @@ func (s *executionServer) AcceptResult(ctx context.Context, req *controlv1.Accep
 }
 
 func (s *executionServer) GetAcceptedStage(ctx context.Context, req *controlv1.GetAcceptedStageRequest) (*controlv1.GetAcceptedStageResponse, error) {
-	st, err := s.exec.GetAcceptedStage(ctx, req.GetAttemptId(), req.GetTenantId())
+	st, err := s.exec.GetAcceptedStage(ctx, req.GetAttemptId(), req.GetTenantId(), req.GetOperationId())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -193,4 +193,21 @@ func (s *executionServer) CloseAttempt(ctx context.Context, req *controlv1.Close
 		return nil, toStatus(err)
 	}
 	return &controlv1.CloseAttemptResponse{Attempt: toAttempt(at), Operation: toView(op), Existing: existing}, nil
+}
+
+var operationOutcomeFromProto = map[controlv1.OperationOutcome]domain.OperationOutcome{
+	controlv1.OperationOutcome_OPERATION_OUTCOME_SUCCEEDED: domain.OperationSucceeded, controlv1.OperationOutcome_OPERATION_OUTCOME_FAILED: domain.OperationFailed,
+	controlv1.OperationOutcome_OPERATION_OUTCOME_CANCELED: domain.OperationCanceled,
+}
+
+func (s *executionServer) SettleOperation(ctx context.Context, req *controlv1.SettleOperationRequest) (*controlv1.SettleOperationResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	op, existing, err := s.exec.SettleOperation(ctx, cmd, req.GetOperationId(), operationOutcomeFromProto[req.GetOutcome()], req.GetFailureCode(), req.GetPhase())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.SettleOperationResponse{Operation: toView(op), Existing: existing}, nil
 }

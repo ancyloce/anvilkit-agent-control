@@ -13,7 +13,8 @@ import (
 
 type operationServer struct {
 	controlv1.UnimplementedOperationServiceServer
-	ops *application.Operations
+	ops          *application.Operations
+	preparations *application.Preparations
 }
 
 // streamPoll bounds how long a stream waits before re-reading events; it
@@ -103,12 +104,47 @@ func optString(s string) *string {
 
 func toView(o *domain.Operation) *controlv1.OperationView {
 	subject := &controlv1.OperationSubject{ProfileId: o.Subject.ProfileID, SubjectDigest: string(o.Subject.SubjectDigest), BriefId: optString(o.Subject.BriefID), SourceRevision: optString(o.Subject.SourceRevision)}
-	return &controlv1.OperationView{
+	v := &controlv1.OperationView{
 		OperationId: o.ID, TenantId: o.TenantID, ProjectId: o.ProjectID, ActorId: o.ActorID, Kind: kindToProto[o.Kind], Subject: subject,
 		Lifecycle: lifecycleToProto[o.Lifecycle], Phase: o.Phase, Control: controlToProto[o.Control], Cleanup: cleanupToProto[o.Cleanup], Finance: financeToProto[o.Finance],
 		Revision: o.Revision.String(), CoveredEventSeq: domain.Revision(o.CoveredEventSeq()).String(), ExecutionEpoch: domain.Revision(o.ExecutionEpoch).String(),
 		CreatedAt: timestamppb.New(o.CreatedAt), UpdatedAt: timestamppb.New(o.UpdatedAt), Deadline: timestamppb.New(o.Deadline), FailureCode: optString(o.FailureCode),
 	}
+	if o.ActiveDeadline != nil {
+		v.ActiveDeadline = timestamppb.New(*o.ActiveDeadline)
+	}
+	return v
+}
+
+// toClarification is the open question set on a waiting preparation's
+// projection.
+func toClarification(qs *domain.QuestionSet) *controlv1.Clarification {
+	c := &controlv1.Clarification{
+		QuestionSetId: qs.ID, QuestionSetRevision: domain.Revision(qs.Revision).String(), Round: domain.Revision(qs.Round).String(),
+		AskedAt: timestamppb.New(qs.AskedAt), ExpiresAt: timestamppb.New(qs.ExpiresAt),
+	}
+	for _, q := range qs.Questions {
+		c.Questions = append(c.Questions, &controlv1.Question{QuestionId: q.ID, Text: q.Text})
+	}
+	return c
+}
+
+// view projects the operation and, for a waiting preparation, its open
+// question set.
+func (s *operationServer) view(ctx context.Context, o *domain.Operation) (*controlv1.OperationView, error) {
+	v := toView(o)
+	if o.Kind == domain.KindPreparation && o.Lifecycle == domain.LifecycleWaiting && s.preparations != nil {
+		prep, err := s.preparations.Get(ctx, o.TenantID, o.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, qs := range prep.QuestionSets {
+			if qs.State == domain.QuestionSetOpen {
+				v.Clarification = toClarification(qs)
+			}
+		}
+	}
+	return v, nil
 }
 
 func toEvent(ev domain.Event) *controlv1.OperationEvent {
@@ -143,11 +179,42 @@ func (s *operationServer) CreateOperation(ctx context.Context, req *controlv1.Cr
 		return nil, toStatus(err)
 	}
 	subject := domain.Subject{ProfileID: req.GetSubject().GetProfileId(), SubjectDigest: digest, BriefID: req.GetSubject().GetBriefId(), SourceRevision: req.GetSubject().GetSourceRevision()}
-	op, existing, err := s.ops.Create(ctx, cmd, scope(req.GetScope()), kindFromProto[req.GetKind()], subject)
+	var intake *domain.PreparationIntake
+	if p := req.GetPreparation(); p != nil {
+		in, err := toIntake(p)
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		intake = &in
+	}
+	op, existing, err := s.ops.Create(ctx, cmd, scope(req.GetScope()), kindFromProto[req.GetKind()], subject, intake)
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	return &controlv1.CreateOperationResponse{Operation: toView(op), Existing: existing}, nil
+}
+
+func toIntake(p *controlv1.PreparationIntake) (domain.PreparationIntake, error) {
+	digest, err := domain.ParseDigest(p.GetPrompt().GetDigest())
+	if err != nil {
+		return domain.PreparationIntake{}, err
+	}
+	in := domain.PreparationIntake{Prompt: domain.ArtifactBinding{TransferID: p.GetPrompt().GetTransferId(), Digest: digest}}
+	for _, r := range p.GetBrandReferences() {
+		rev, err := domain.ParseRevision(r.GetRevision())
+		if err != nil {
+			return domain.PreparationIntake{}, err
+		}
+		in.BrandReferences = append(in.BrandReferences, domain.SourceReference{SourceID: r.GetSourceId(), Revision: uint64(rev)})
+	}
+	for _, r := range p.GetAssetReferences() {
+		rev, err := domain.ParseRevision(r.GetRevision())
+		if err != nil {
+			return domain.PreparationIntake{}, err
+		}
+		in.AssetReferences = append(in.AssetReferences, domain.SourceReference{SourceID: r.GetSourceId(), Revision: uint64(rev)})
+	}
+	return in, nil
 }
 
 func (s *operationServer) GetOperation(ctx context.Context, req *controlv1.GetOperationRequest) (*controlv1.GetOperationResponse, error) {
@@ -155,7 +222,11 @@ func (s *operationServer) GetOperation(ctx context.Context, req *controlv1.GetOp
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &controlv1.GetOperationResponse{Operation: toView(op)}, nil
+	v, err := s.view(ctx, op)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.GetOperationResponse{Operation: v}, nil
 }
 
 func parseAfter(s string) (uint64, error) {

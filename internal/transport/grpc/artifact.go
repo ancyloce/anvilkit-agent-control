@@ -112,3 +112,11 @@ func (s *artifactServer) GetTransfer(ctx context.Context, req *controlv1.GetTran
 	}
 	return &controlv1.GetTransferResponse{Transfer: toTransfer(t)}, nil
 }
+
+func (s *artifactServer) ReadArtifact(ctx context.Context, req *controlv1.ReadArtifactRequest) (*controlv1.ReadArtifactResponse, error) {
+	t, cap, err := s.artifacts.Read(ctx, req.GetHandle(), req.GetTransferId(), req.GetOperationId(), req.GetInstanceId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.ReadArtifactResponse{Transfer: toTransfer(t), Download: toCapability(cap)}, nil
+}
