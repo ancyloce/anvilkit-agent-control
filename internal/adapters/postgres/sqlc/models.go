@@ -27,6 +27,24 @@ type Allocation struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type Answer struct {
+	AnswerID            string
+	OperationID         string
+	TenantID            string
+	ActorID             string
+	QuestionSetID       string
+	QuestionSetRevision int64
+	TransferID          string
+	Digest              string
+	Handle              string
+	UpdateID            string
+	CommandID           string
+	RequestDigest       string
+	RelayState          string
+	AcceptedAt          pgtype.Timestamptz
+	RelayedAt           pgtype.Timestamptz
+}
+
 type ArtifactTransfer struct {
 	TransferID            string
 	TenantID              string
@@ -75,6 +93,24 @@ type Attempt struct {
 	Deadline        pgtype.Timestamptz
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+}
+
+type Brief struct {
+	BriefID            string
+	OperationID        string
+	TenantID           string
+	Revision           int64
+	TransferID         string
+	Digest             string
+	Handle             string
+	RequirementsDigest string
+	SourceRevisions    []byte
+	BrandDigests       []byte
+	AssetDigests       []byte
+	State              string
+	CommandID          string
+	RequestDigest      string
+	FrozenAt           pgtype.Timestamptz
 }
 
 type BudgetPool struct {
@@ -172,6 +208,15 @@ type EffectObservation struct {
 	ObservedAt      pgtype.Timestamptz
 }
 
+type Funding struct {
+	OperationID   string
+	CommandID     string
+	RequestDigest string
+	Currency      string
+	Amount        int64
+	FundedAt      pgtype.Timestamptz
+}
+
 type GrantPolicy struct {
 	GrantID         string
 	GrantRevision   int64
@@ -227,34 +272,46 @@ type ObligationDisposition struct {
 }
 
 type Operation struct {
-	OperationID    string
-	TenantID       string
-	ProjectID      string
-	ActorID        string
-	CommandID      string
-	Kind           string
-	ProfileID      string
-	SubjectDigest  string
-	BriefID        *string
-	SourceRevision *string
-	SemanticDigest string
-	Lifecycle      string
-	Phase          string
-	ControlState   string
-	CleanupState   string
-	FinanceState   string
-	FailureCode    *string
-	Revision       int64
-	NextEventSeq   int64
-	ExecutionEpoch int64
-	RecoveryEpoch  int64
-	Deadline       pgtype.Timestamptz
-	IntakeState    string
-	IntakeVersion  *string
-	RelayState     string
-	RelayRunID     *string
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
+	OperationID          string
+	TenantID             string
+	ProjectID            string
+	ActorID              string
+	CommandID            string
+	Kind                 string
+	ProfileID            string
+	SubjectDigest        string
+	BriefID              *string
+	SourceRevision       *string
+	SemanticDigest       string
+	Lifecycle            string
+	Phase                string
+	ControlState         string
+	CleanupState         string
+	FinanceState         string
+	FailureCode          *string
+	Revision             int64
+	NextEventSeq         int64
+	ExecutionEpoch       int64
+	RecoveryEpoch        int64
+	Deadline             pgtype.Timestamptz
+	IntakeState          string
+	IntakeVersion        *string
+	RelayState           string
+	RelayRunID           *string
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	ActiveDeadline       pgtype.Timestamptz
+	LeaseState           string
+	LeaseID              *string
+	LeaseFence           *int64
+	LeaseExpiresAt       pgtype.Timestamptz
+	LeaseOccurrence      int64
+	DefinitionActivation string
+	PromptTransferID     *string
+	PromptDigest         *string
+	BrandReferences      []byte
+	AssetReferences      []byte
+	CandidateEffectID    *string
 }
 
 type OperationCommand struct {
@@ -271,6 +328,7 @@ type OperationCommand struct {
 	OperationRevision          int64
 	AcceptedAt                 pgtype.Timestamptz
 	SettledAt                  pgtype.Timestamptz
+	RelayState                 string
 }
 
 type OperationEvent struct {
@@ -310,6 +368,20 @@ type PhysicalInstance struct {
 	IsCurrent    bool
 	RegisteredAt pgtype.Timestamptz
 	ObservedAt   pgtype.Timestamptz
+}
+
+type QuestionSet struct {
+	QuestionSetID string
+	OperationID   string
+	TenantID      string
+	Revision      int64
+	Round         int64
+	Questions     []byte
+	State         string
+	CommandID     string
+	RequestDigest string
+	AskedAt       pgtype.Timestamptz
+	ExpiresAt     pgtype.Timestamptz
 }
 
 type RecoveryFinding struct {

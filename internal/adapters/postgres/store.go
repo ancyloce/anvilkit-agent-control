@@ -113,7 +113,38 @@ func toOperation(m sqlc.Operation) *domain.Operation {
 		ExecutionEpoch: uint64(m.ExecutionEpoch), RecoveryEpoch: uint64(m.RecoveryEpoch), Deadline: fromTs(m.Deadline),
 		Intake: domain.IntakeState(m.IntakeState), IntakeVersion: deref(m.IntakeVersion), Relay: domain.RelayState(m.RelayState),
 		RelayRunID: deref(m.RelayRunID), CreatedAt: fromTs(m.CreatedAt), UpdatedAt: fromTs(m.UpdatedAt),
+		ActiveDeadline:       fromTsPtr(m.ActiveDeadline),
+		Lease:                domain.LeaseRecord{State: domain.LeaseState(m.LeaseState), LeaseID: deref(m.LeaseID), Fence: uint64(derefInt(m.LeaseFence)), ExpiresAt: fromTsPtr(m.LeaseExpiresAt), Occurrence: uint64(m.LeaseOccurrence)},
+		DefinitionActivation: m.DefinitionActivation, CandidateEffectID: deref(m.CandidateEffectID),
+		Preparation: toIntake(m),
 	}
+}
+
+func derefInt(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+// toIntake reads the preparation intake columns; a row without a prompt is
+// no preparation.
+func toIntake(m sqlc.Operation) *domain.PreparationIntake {
+	if m.PromptTransferID == nil {
+		return nil
+	}
+	in := &domain.PreparationIntake{Prompt: domain.ArtifactBinding{TransferID: *m.PromptTransferID, Digest: domain.Digest(deref(m.PromptDigest))}}
+	_ = json.Unmarshal(m.BrandReferences, &in.BrandReferences)
+	_ = json.Unmarshal(m.AssetReferences, &in.AssetReferences)
+	return in
+}
+
+func jsonOrEmptyList(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil || string(b) == "null" {
+		return []byte("[]")
+	}
+	return b
 }
 
 func (r *repo) InsertOperation(ctx context.Context, o *domain.Operation) error {
@@ -126,7 +157,37 @@ func (r *repo) InsertOperation(ctx context.Context, o *domain.Operation) error {
 		ExecutionEpoch: int64(o.ExecutionEpoch), RecoveryEpoch: int64(o.RecoveryEpoch), Deadline: ts(o.Deadline),
 		IntakeState: string(o.Intake), IntakeVersion: strPtr(o.IntakeVersion), RelayState: string(o.Relay), RelayRunID: strPtr(o.RelayRunID),
 		CreatedAt: ts(o.CreatedAt), UpdatedAt: ts(o.UpdatedAt),
+		DefinitionActivation: o.DefinitionActivation, PromptTransferID: promptTransfer(o), PromptDigest: promptDigest(o),
+		BrandReferences: jsonOrEmptyList(brandRefs(o)), AssetReferences: jsonOrEmptyList(assetRefs(o)),
 	})
+}
+
+func promptTransfer(o *domain.Operation) *string {
+	if o.Preparation == nil {
+		return nil
+	}
+	return strPtr(o.Preparation.Prompt.TransferID)
+}
+
+func promptDigest(o *domain.Operation) *string {
+	if o.Preparation == nil {
+		return nil
+	}
+	return strPtr(string(o.Preparation.Prompt.Digest))
+}
+
+func brandRefs(o *domain.Operation) []domain.SourceReference {
+	if o.Preparation == nil {
+		return nil
+	}
+	return o.Preparation.BrandReferences
+}
+
+func assetRefs(o *domain.Operation) []domain.SourceReference {
+	if o.Preparation == nil {
+		return nil
+	}
+	return o.Preparation.AssetReferences
 }
 
 func (r *repo) GetOperationByCommand(ctx context.Context, tenantID, commandID string) (*domain.Operation, error) {
@@ -159,6 +220,9 @@ func (r *repo) UpdateOperation(ctx context.Context, o *domain.Operation) error {
 		FinanceState: string(o.Finance), FailureCode: strPtr(o.FailureCode), Revision: int64(o.Revision), NextEventSeq: int64(o.NextEventSeq),
 		ExecutionEpoch: int64(o.ExecutionEpoch), RecoveryEpoch: int64(o.RecoveryEpoch), IntakeState: string(o.Intake),
 		IntakeVersion: strPtr(o.IntakeVersion), RelayState: string(o.Relay), RelayRunID: strPtr(o.RelayRunID), UpdatedAt: ts(o.UpdatedAt),
+		ActiveDeadline: tsPtr(o.ActiveDeadline), LeaseState: string(o.Lease.State), LeaseID: strPtr(o.Lease.LeaseID),
+		LeaseFence: int64Ptr(o.Lease.Fence, o.Lease.State != domain.LeaseNone), LeaseExpiresAt: tsPtr(o.Lease.ExpiresAt), LeaseOccurrence: int64(o.Lease.Occurrence),
+		DefinitionActivation: o.DefinitionActivation, BriefID: strPtr(o.Subject.BriefID), CandidateEffectID: strPtr(o.CandidateEffectID),
 	})
 }
 
@@ -221,6 +285,7 @@ func toCommand(m sqlc.OperationCommand) *domain.Command {
 		ExpectedRevision: domain.Revision(m.ExpectedRevision), RequestDigest: domain.Digest(m.RequestDigest),
 		TargetDefinitionActivation: deref(m.TargetDefinitionActivation), Outcome: domain.CommandOutcome(m.Outcome), ReasonCode: deref(m.ReasonCode),
 		OperationRevision: domain.Revision(m.OperationRevision), AcceptedAt: fromTs(m.AcceptedAt), SettledAt: fromTsPtr(m.SettledAt),
+		Relay: domain.CommandRelayState(m.RelayState),
 	}
 }
 
@@ -237,7 +302,54 @@ func (r *repo) InsertCommand(ctx context.Context, c *domain.Command) error {
 		TenantID: c.TenantID, CommandID: c.CommandID, OperationID: c.OperationID, ActorID: c.ActorID, Kind: string(c.Kind),
 		ExpectedRevision: int64(c.ExpectedRevision), RequestDigest: string(c.RequestDigest), TargetDefinitionActivation: strPtr(c.TargetDefinitionActivation),
 		Outcome: string(c.Outcome), ReasonCode: strPtr(c.ReasonCode), OperationRevision: int64(c.OperationRevision), AcceptedAt: ts(c.AcceptedAt), SettledAt: tsPtr(c.SettledAt),
+		RelayState: relayOrNone(c.Relay),
 	})
+}
+
+func relayOrNone(s domain.CommandRelayState) string {
+	if s == "" {
+		return string(domain.CommandRelayNone)
+	}
+	return string(s)
+}
+
+func (r *repo) LockCommand(ctx context.Context, tenantID, commandID string) (*domain.Command, error) {
+	m, err := r.q.LockCommand(ctx, sqlc.LockCommandParams{TenantID: tenantID, CommandID: commandID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toCommand(m), nil
+}
+
+func (r *repo) UpdateCommand(ctx context.Context, c *domain.Command) error {
+	return r.q.UpdateCommand(ctx, sqlc.UpdateCommandParams{
+		TenantID: c.TenantID, CommandID: c.CommandID, Outcome: string(c.Outcome), ReasonCode: strPtr(c.ReasonCode),
+		OperationRevision: int64(c.OperationRevision), SettledAt: tsPtr(c.SettledAt), RelayState: relayOrNone(c.Relay),
+	})
+}
+
+func (r *repo) ListCommandRelayPending(ctx context.Context, limit int) ([]*domain.Command, error) {
+	rows, err := r.q.ListCommandRelayPending(ctx, int32(limit))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]*domain.Command, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, toCommand(m))
+	}
+	return out, nil
+}
+
+func (r *repo) ListOperationCommands(ctx context.Context, operationID string) ([]*domain.Command, error) {
+	rows, err := r.q.ListOperationCommands(ctx, operationID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]*domain.Command, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, toCommand(m))
+	}
+	return out, nil
 }
 
 func (r *repo) SettlePendingCommands(ctx context.Context, operationID string, kind domain.CommandKind, outcome domain.CommandOutcome, rev domain.Revision, now time.Time) error {

@@ -189,6 +189,35 @@ func (s *S3) UploadCapability(ctx context.Context, key, mediaType string, size i
 	return application.UploadCapability{URL: req.URL, Method: req.Method, Headers: headers, ExpiresAt: expiresAt}, nil
 }
 
+// DownloadCapability issues the time-bounded authorization for one GET of
+// the exact object version under the key; the trusted reader verifies the
+// bytes against the recorded digest and size (a capability never proves
+// content). No request is made here.
+func (s *S3) DownloadCapability(ctx context.Context, key, version string, expiresAt time.Time) (application.UploadCapability, error) {
+	if err := validKey(key); err != nil {
+		return application.UploadCapability{}, err
+	}
+	if version == "" {
+		return application.UploadCapability{}, fmt.Errorf("%w: a download capability names an exact object version", domain.ErrInvalid)
+	}
+	ttl := time.Until(expiresAt)
+	if ttl <= 0 {
+		return application.UploadCapability{}, fmt.Errorf("%w: capability expiry already passed", domain.ErrInvalid)
+	}
+	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.prefix + key), VersionId: aws.String(version)}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return application.UploadCapability{}, failure("presign", key, err)
+	}
+	headers := map[string]string{}
+	for name, values := range req.SignedHeader {
+		if strings.EqualFold(name, "Host") || len(values) == 0 {
+			continue
+		}
+		headers[http.CanonicalHeaderKey(name)] = values[0]
+	}
+	return application.UploadCapability{URL: req.URL, Method: req.Method, Headers: headers, ExpiresAt: expiresAt}, nil
+}
+
 // Read fetches the exact object version and returns its bytes with the
 // size and digest computed from them. A key or version that does not
 // exist is domain.ErrNotFound; an object longer than limit is

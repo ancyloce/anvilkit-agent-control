@@ -12,7 +12,7 @@ import (
 )
 
 const getCommand = `-- name: GetCommand :one
-SELECT tenant_id, command_id, operation_id, actor_id, kind, expected_revision, request_digest, target_definition_activation, outcome, reason_code, operation_revision, accepted_at, settled_at FROM operation_commands WHERE tenant_id = $1 AND command_id = $2
+SELECT tenant_id, command_id, operation_id, actor_id, kind, expected_revision, request_digest, target_definition_activation, outcome, reason_code, operation_revision, accepted_at, settled_at, relay_state FROM operation_commands WHERE tenant_id = $1 AND command_id = $2
 `
 
 type GetCommandParams struct {
@@ -37,12 +37,13 @@ func (q *Queries) GetCommand(ctx context.Context, arg GetCommandParams) (Operati
 		&i.OperationRevision,
 		&i.AcceptedAt,
 		&i.SettledAt,
+		&i.RelayState,
 	)
 	return i, err
 }
 
 const getOperationByCommand = `-- name: GetOperationByCommand :one
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at FROM operations WHERE tenant_id = $1 AND command_id = $2
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id FROM operations WHERE tenant_id = $1 AND command_id = $2
 `
 
 type GetOperationByCommandParams struct {
@@ -82,12 +83,24 @@ func (q *Queries) GetOperationByCommand(ctx context.Context, arg GetOperationByC
 		&i.RelayRunID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ActiveDeadline,
+		&i.LeaseState,
+		&i.LeaseID,
+		&i.LeaseFence,
+		&i.LeaseExpiresAt,
+		&i.LeaseOccurrence,
+		&i.DefinitionActivation,
+		&i.PromptTransferID,
+		&i.PromptDigest,
+		&i.BrandReferences,
+		&i.AssetReferences,
+		&i.CandidateEffectID,
 	)
 	return i, err
 }
 
 const getOperationScoped = `-- name: GetOperationScoped :one
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at FROM operations WHERE operation_id = $1 AND tenant_id = $2
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id FROM operations WHERE operation_id = $1 AND tenant_id = $2
 `
 
 type GetOperationScopedParams struct {
@@ -127,6 +140,18 @@ func (q *Queries) GetOperationScoped(ctx context.Context, arg GetOperationScoped
 		&i.RelayRunID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ActiveDeadline,
+		&i.LeaseState,
+		&i.LeaseID,
+		&i.LeaseFence,
+		&i.LeaseExpiresAt,
+		&i.LeaseOccurrence,
+		&i.DefinitionActivation,
+		&i.PromptTransferID,
+		&i.PromptDigest,
+		&i.BrandReferences,
+		&i.AssetReferences,
+		&i.CandidateEffectID,
 	)
 	return i, err
 }
@@ -134,8 +159,8 @@ func (q *Queries) GetOperationScoped(ctx context.Context, arg GetOperationScoped
 const insertCommand = `-- name: InsertCommand :exec
 INSERT INTO operation_commands (
     tenant_id, command_id, operation_id, actor_id, kind, expected_revision, request_digest, target_definition_activation,
-    outcome, reason_code, operation_revision, accepted_at, settled_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    outcome, reason_code, operation_revision, accepted_at, settled_at, relay_state
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 `
 
 type InsertCommandParams struct {
@@ -152,6 +177,7 @@ type InsertCommandParams struct {
 	OperationRevision          int64
 	AcceptedAt                 pgtype.Timestamptz
 	SettledAt                  pgtype.Timestamptz
+	RelayState                 string
 }
 
 func (q *Queries) InsertCommand(ctx context.Context, arg InsertCommandParams) error {
@@ -169,6 +195,7 @@ func (q *Queries) InsertCommand(ctx context.Context, arg InsertCommandParams) er
 		arg.OperationRevision,
 		arg.AcceptedAt,
 		arg.SettledAt,
+		arg.RelayState,
 	)
 	return err
 }
@@ -177,43 +204,50 @@ const insertOperation = `-- name: InsertOperation :exec
 INSERT INTO operations (
     operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision,
     semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq,
-    execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at
+    execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at,
+    definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16, $17, $18, $19,
-    $20, $21, $22, $23, $24, $25, $26, $27, $28
+    $20, $21, $22, $23, $24, $25, $26, $27, $28,
+    $29, $30, $31, $32, $33
 )
 `
 
 type InsertOperationParams struct {
-	OperationID    string
-	TenantID       string
-	ProjectID      string
-	ActorID        string
-	CommandID      string
-	Kind           string
-	ProfileID      string
-	SubjectDigest  string
-	BriefID        *string
-	SourceRevision *string
-	SemanticDigest string
-	Lifecycle      string
-	Phase          string
-	ControlState   string
-	CleanupState   string
-	FinanceState   string
-	FailureCode    *string
-	Revision       int64
-	NextEventSeq   int64
-	ExecutionEpoch int64
-	RecoveryEpoch  int64
-	Deadline       pgtype.Timestamptz
-	IntakeState    string
-	IntakeVersion  *string
-	RelayState     string
-	RelayRunID     *string
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
+	OperationID          string
+	TenantID             string
+	ProjectID            string
+	ActorID              string
+	CommandID            string
+	Kind                 string
+	ProfileID            string
+	SubjectDigest        string
+	BriefID              *string
+	SourceRevision       *string
+	SemanticDigest       string
+	Lifecycle            string
+	Phase                string
+	ControlState         string
+	CleanupState         string
+	FinanceState         string
+	FailureCode          *string
+	Revision             int64
+	NextEventSeq         int64
+	ExecutionEpoch       int64
+	RecoveryEpoch        int64
+	Deadline             pgtype.Timestamptz
+	IntakeState          string
+	IntakeVersion        *string
+	RelayState           string
+	RelayRunID           *string
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	DefinitionActivation string
+	PromptTransferID     *string
+	PromptDigest         *string
+	BrandReferences      []byte
+	AssetReferences      []byte
 }
 
 func (q *Queries) InsertOperation(ctx context.Context, arg InsertOperationParams) error {
@@ -246,6 +280,11 @@ func (q *Queries) InsertOperation(ctx context.Context, arg InsertOperationParams
 		arg.RelayRunID,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.DefinitionActivation,
+		arg.PromptTransferID,
+		arg.PromptDigest,
+		arg.BrandReferences,
+		arg.AssetReferences,
 	)
 	return err
 }
@@ -278,8 +317,47 @@ func (q *Queries) InsertOperationEvent(ctx context.Context, arg InsertOperationE
 	return err
 }
 
+const listCommandRelayPending = `-- name: ListCommandRelayPending :many
+SELECT tenant_id, command_id, operation_id, actor_id, kind, expected_revision, request_digest, target_definition_activation, outcome, reason_code, operation_revision, accepted_at, settled_at, relay_state FROM operation_commands WHERE relay_state IN ('pending', 'sent') ORDER BY accepted_at LIMIT $1
+`
+
+func (q *Queries) ListCommandRelayPending(ctx context.Context, limit int32) ([]OperationCommand, error) {
+	rows, err := q.db.Query(ctx, listCommandRelayPending, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OperationCommand{}
+	for rows.Next() {
+		var i OperationCommand
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.CommandID,
+			&i.OperationID,
+			&i.ActorID,
+			&i.Kind,
+			&i.ExpectedRevision,
+			&i.RequestDigest,
+			&i.TargetDefinitionActivation,
+			&i.Outcome,
+			&i.ReasonCode,
+			&i.OperationRevision,
+			&i.AcceptedAt,
+			&i.SettledAt,
+			&i.RelayState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIntakePending = `-- name: ListIntakePending :many
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at FROM operations WHERE intake_state = 'pending' AND created_at < $1 ORDER BY created_at LIMIT $2
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id FROM operations WHERE intake_state = 'pending' AND created_at < $1 ORDER BY created_at LIMIT $2
 `
 
 type ListIntakePendingParams struct {
@@ -325,6 +403,57 @@ func (q *Queries) ListIntakePending(ctx context.Context, arg ListIntakePendingPa
 			&i.RelayRunID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ActiveDeadline,
+			&i.LeaseState,
+			&i.LeaseID,
+			&i.LeaseFence,
+			&i.LeaseExpiresAt,
+			&i.LeaseOccurrence,
+			&i.DefinitionActivation,
+			&i.PromptTransferID,
+			&i.PromptDigest,
+			&i.BrandReferences,
+			&i.AssetReferences,
+			&i.CandidateEffectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOperationCommands = `-- name: ListOperationCommands :many
+SELECT tenant_id, command_id, operation_id, actor_id, kind, expected_revision, request_digest, target_definition_activation, outcome, reason_code, operation_revision, accepted_at, settled_at, relay_state FROM operation_commands WHERE operation_id = $1 ORDER BY accepted_at
+`
+
+func (q *Queries) ListOperationCommands(ctx context.Context, operationID string) ([]OperationCommand, error) {
+	rows, err := q.db.Query(ctx, listOperationCommands, operationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OperationCommand{}
+	for rows.Next() {
+		var i OperationCommand
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.CommandID,
+			&i.OperationID,
+			&i.ActorID,
+			&i.Kind,
+			&i.ExpectedRevision,
+			&i.RequestDigest,
+			&i.TargetDefinitionActivation,
+			&i.Outcome,
+			&i.ReasonCode,
+			&i.OperationRevision,
+			&i.AcceptedAt,
+			&i.SettledAt,
+			&i.RelayState,
 		); err != nil {
 			return nil, err
 		}
@@ -375,7 +504,7 @@ func (q *Queries) ListOperationEvents(ctx context.Context, arg ListOperationEven
 }
 
 const listRelayPending = `-- name: ListRelayPending :many
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at FROM operations
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id FROM operations
 WHERE (relay_state = 'pending' AND intake_state = 'confirmed') OR relay_state = 'cancel_pending'
 ORDER BY created_at LIMIT $1
 `
@@ -418,6 +547,18 @@ func (q *Queries) ListRelayPending(ctx context.Context, limit int32) ([]Operatio
 			&i.RelayRunID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ActiveDeadline,
+			&i.LeaseState,
+			&i.LeaseID,
+			&i.LeaseFence,
+			&i.LeaseExpiresAt,
+			&i.LeaseOccurrence,
+			&i.DefinitionActivation,
+			&i.PromptTransferID,
+			&i.PromptDigest,
+			&i.BrandReferences,
+			&i.AssetReferences,
+			&i.CandidateEffectID,
 		); err != nil {
 			return nil, err
 		}
@@ -429,8 +570,39 @@ func (q *Queries) ListRelayPending(ctx context.Context, limit int32) ([]Operatio
 	return items, nil
 }
 
+const lockCommand = `-- name: LockCommand :one
+SELECT tenant_id, command_id, operation_id, actor_id, kind, expected_revision, request_digest, target_definition_activation, outcome, reason_code, operation_revision, accepted_at, settled_at, relay_state FROM operation_commands WHERE tenant_id = $1 AND command_id = $2 FOR UPDATE
+`
+
+type LockCommandParams struct {
+	TenantID  string
+	CommandID string
+}
+
+func (q *Queries) LockCommand(ctx context.Context, arg LockCommandParams) (OperationCommand, error) {
+	row := q.db.QueryRow(ctx, lockCommand, arg.TenantID, arg.CommandID)
+	var i OperationCommand
+	err := row.Scan(
+		&i.TenantID,
+		&i.CommandID,
+		&i.OperationID,
+		&i.ActorID,
+		&i.Kind,
+		&i.ExpectedRevision,
+		&i.RequestDigest,
+		&i.TargetDefinitionActivation,
+		&i.Outcome,
+		&i.ReasonCode,
+		&i.OperationRevision,
+		&i.AcceptedAt,
+		&i.SettledAt,
+		&i.RelayState,
+	)
+	return i, err
+}
+
 const lockOperation = `-- name: LockOperation :one
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at FROM operations WHERE operation_id = $1 FOR UPDATE
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id FROM operations WHERE operation_id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockOperation(ctx context.Context, operationID string) (Operation, error) {
@@ -465,6 +637,18 @@ func (q *Queries) LockOperation(ctx context.Context, operationID string) (Operat
 		&i.RelayRunID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ActiveDeadline,
+		&i.LeaseState,
+		&i.LeaseID,
+		&i.LeaseFence,
+		&i.LeaseExpiresAt,
+		&i.LeaseOccurrence,
+		&i.DefinitionActivation,
+		&i.PromptTransferID,
+		&i.PromptDigest,
+		&i.BrandReferences,
+		&i.AssetReferences,
+		&i.CandidateEffectID,
 	)
 	return i, err
 }
@@ -493,31 +677,70 @@ func (q *Queries) SettlePendingCommands(ctx context.Context, arg SettlePendingCo
 	return err
 }
 
+const updateCommand = `-- name: UpdateCommand :exec
+UPDATE operation_commands SET outcome = $3, reason_code = $4, operation_revision = $5, settled_at = $6, relay_state = $7
+WHERE tenant_id = $1 AND command_id = $2
+`
+
+type UpdateCommandParams struct {
+	TenantID          string
+	CommandID         string
+	Outcome           string
+	ReasonCode        *string
+	OperationRevision int64
+	SettledAt         pgtype.Timestamptz
+	RelayState        string
+}
+
+func (q *Queries) UpdateCommand(ctx context.Context, arg UpdateCommandParams) error {
+	_, err := q.db.Exec(ctx, updateCommand,
+		arg.TenantID,
+		arg.CommandID,
+		arg.Outcome,
+		arg.ReasonCode,
+		arg.OperationRevision,
+		arg.SettledAt,
+		arg.RelayState,
+	)
+	return err
+}
+
 const updateOperation = `-- name: UpdateOperation :exec
 UPDATE operations SET
     lifecycle = $2, phase = $3, control_state = $4, cleanup_state = $5, finance_state = $6, failure_code = $7,
     revision = $8, next_event_seq = $9, execution_epoch = $10, recovery_epoch = $11,
-    intake_state = $12, intake_version = $13, relay_state = $14, relay_run_id = $15, updated_at = $16
+    intake_state = $12, intake_version = $13, relay_state = $14, relay_run_id = $15, updated_at = $16,
+    active_deadline = $17, lease_state = $18, lease_id = $19, lease_fence = $20, lease_expires_at = $21, lease_occurrence = $22,
+    definition_activation = $23, brief_id = $24, candidate_effect_id = $25
 WHERE operation_id = $1
 `
 
 type UpdateOperationParams struct {
-	OperationID    string
-	Lifecycle      string
-	Phase          string
-	ControlState   string
-	CleanupState   string
-	FinanceState   string
-	FailureCode    *string
-	Revision       int64
-	NextEventSeq   int64
-	ExecutionEpoch int64
-	RecoveryEpoch  int64
-	IntakeState    string
-	IntakeVersion  *string
-	RelayState     string
-	RelayRunID     *string
-	UpdatedAt      pgtype.Timestamptz
+	OperationID          string
+	Lifecycle            string
+	Phase                string
+	ControlState         string
+	CleanupState         string
+	FinanceState         string
+	FailureCode          *string
+	Revision             int64
+	NextEventSeq         int64
+	ExecutionEpoch       int64
+	RecoveryEpoch        int64
+	IntakeState          string
+	IntakeVersion        *string
+	RelayState           string
+	RelayRunID           *string
+	UpdatedAt            pgtype.Timestamptz
+	ActiveDeadline       pgtype.Timestamptz
+	LeaseState           string
+	LeaseID              *string
+	LeaseFence           *int64
+	LeaseExpiresAt       pgtype.Timestamptz
+	LeaseOccurrence      int64
+	DefinitionActivation string
+	BriefID              *string
+	CandidateEffectID    *string
 }
 
 func (q *Queries) UpdateOperation(ctx context.Context, arg UpdateOperationParams) error {
@@ -538,6 +761,15 @@ func (q *Queries) UpdateOperation(ctx context.Context, arg UpdateOperationParams
 		arg.RelayState,
 		arg.RelayRunID,
 		arg.UpdatedAt,
+		arg.ActiveDeadline,
+		arg.LeaseState,
+		arg.LeaseID,
+		arg.LeaseFence,
+		arg.LeaseExpiresAt,
+		arg.LeaseOccurrence,
+		arg.DefinitionActivation,
+		arg.BriefID,
+		arg.CandidateEffectID,
 	)
 	return err
 }
