@@ -19,6 +19,7 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/development"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/inventory"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/jobs"
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/modelproxy"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres"
 	temporaladapter "github.com/ancyloce/anvilkit-agent-control/internal/adapters/temporal"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
@@ -102,10 +103,26 @@ func Module() fx.Option {
 				}
 				return development.NewAuthority(routes, cfg.Dispatch.AuthorityFreshness, clock).WithOperators(operators)
 			},
-			// DEVELOPMENT_ONLY controlled doubles of the original-identity
-			// query (Model Proxy P11, Pagix ENV-07) and disposition evidence.
-			func(cfg config.Config, inv application.Inventory) application.OutcomeQuery {
-				return development.NewOutcomeQuery(inv, cfg.Dispatch.Development.NotSentIssuers)
+			// The original-identity query: the Model Proxy for model dispatches
+			// when its placement is configured (P11), otherwise — and for
+			// business writes until the Pagix declaration exists (ENV-07) — the
+			// DEVELOPMENT_ONLY attestation double.
+			func(cfg config.Config, inv application.Inventory, log *slog.Logger) (application.OutcomeQuery, error) {
+				double := development.NewOutcomeQuery(inv, cfg.Dispatch.Development.NotSentIssuers)
+				mp := cfg.ModelProxy
+				if mp.Address == "" {
+					return double, nil
+				}
+				o := modelproxy.Options{BaseURL: mp.Address, Timeout: mp.Timeout, Owner: mp.Owner}
+				if mp.Identity.Mode == "mtls" {
+					m := mp.Identity.MTLS
+					o.TLS = &modelproxy.TLSFiles{CertFile: m.CertFile, KeyFile: m.KeyFile, CAFile: m.CAFile, ServerName: m.ServerName}
+				} else {
+					log.Warn("DEVELOPMENT_ONLY model proxy identity: bearer token; qualifies no production identity")
+					o.Token = mp.Token
+				}
+				log.Info("model dispatch outcomes are queried from the Model Proxy", "address", mp.Address, "owner", mp.Owner)
+				return modelproxy.New(o, double)
 			},
 			func(cfg config.Config, inv application.Inventory) application.DispositionEvidence {
 				return development.NewDispositionEvidence(inv, cfg.Dispatch.Development.NotSentIssuers)
