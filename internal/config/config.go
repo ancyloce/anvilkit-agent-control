@@ -11,6 +11,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -101,6 +102,31 @@ type Relay struct {
 	Interval time.Duration `koanf:"interval"`
 }
 
+// ModelProxy is the Model Proxy placement of the original-identity query of
+// model dispatches (DD-02 §4 "query original ID", P11): with an address,
+// recovery asks the Proxy's GET /api/v1/model-calls/{callId} about an
+// unresolved model dispatch; without one the DEVELOPMENT_ONLY attestation
+// double keeps answering. The identity Control presents: development is a
+// DEVELOPMENT_ONLY bearer token from ANVILKIT_CONTROL_MODEL_PROXY_TOKEN,
+// mtls the workload certificate files (ENV-03). Owner is the sender
+// identity the Proxy records on its dispatches; a dispatch of another owner
+// is not the Proxy's to answer.
+type ModelProxy struct {
+	Address  string        `koanf:"address"`
+	Timeout  time.Duration `koanf:"timeout"`
+	Owner    string        `koanf:"owner"`
+	Token    string        `koanf:"token"`
+	Identity struct {
+		Mode string `koanf:"mode"`
+		MTLS struct {
+			CertFile   string `koanf:"cert_file"`
+			KeyFile    string `koanf:"key_file"`
+			CAFile     string `koanf:"ca_file"`
+			ServerName string `koanf:"server_name"`
+		} `koanf:"mtls"`
+	} `koanf:"identity"`
+}
+
 // Profiles carries the reviewed profile parameters of this build.
 type Profiles struct {
 	LocalCheckDeadline time.Duration `koanf:"local_check_deadline"`
@@ -163,15 +189,16 @@ type Recovery struct {
 }
 
 type Config struct {
-	GRPC      GRPC      `koanf:"grpc"`
-	Database  Database  `koanf:"database"`
-	Inventory Inventory `koanf:"inventory"`
-	Artifacts Artifacts `koanf:"artifacts"`
-	Temporal  Temporal  `koanf:"temporal"`
-	Relay     Relay     `koanf:"relay"`
-	Profiles  Profiles  `koanf:"profiles"`
-	Dispatch  Dispatch  `koanf:"dispatch"`
-	Recovery  Recovery  `koanf:"recovery"`
+	GRPC       GRPC       `koanf:"grpc"`
+	Database   Database   `koanf:"database"`
+	Inventory  Inventory  `koanf:"inventory"`
+	Artifacts  Artifacts  `koanf:"artifacts"`
+	Temporal   Temporal   `koanf:"temporal"`
+	Relay      Relay      `koanf:"relay"`
+	Profiles   Profiles   `koanf:"profiles"`
+	Dispatch   Dispatch   `koanf:"dispatch"`
+	Recovery   Recovery   `koanf:"recovery"`
+	ModelProxy ModelProxy `koanf:"model_proxy"`
 }
 
 var defaults = map[string]any{
@@ -189,6 +216,9 @@ var defaults = map[string]any{
 	"inventory.s3.path_style":       true,
 	"inventory.s3.qualify_on_start": true,
 	"recovery.enumeration_page":     500,
+	"model_proxy.timeout":           "15s",
+	"model_proxy.owner":             "anvilkit-agent-model-proxy",
+	"model_proxy.identity.mode":     "development",
 	"artifacts.backend":             ArtifactsDisabled,
 	"artifacts.max_object_bytes":    64 << 20,
 	"artifacts.max_window":          "24h",
@@ -209,6 +239,8 @@ var envOverrides = map[string]string{
 	"ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID":     "inventory.s3.access_key_id",
 	"ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY": "inventory.s3.secret_access_key",
 	"ANVILKIT_CONTROL_TEMPORAL_ADDRESS":               "temporal.address",
+	"ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS":            "model_proxy.address",
+	"ANVILKIT_CONTROL_MODEL_PROXY_TOKEN":              "model_proxy.token",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_ENDPOINT":          "artifacts.s3.endpoint",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_BUCKET":            "artifacts.s3.bucket",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID":     "artifacts.s3.access_key_id",
@@ -216,7 +248,7 @@ var envOverrides = map[string]string{
 }
 
 // secretKeys may only arrive through the environment.
-var secretKeys = []string{"database.url", "inventory.s3.access_key_id", "inventory.s3.secret_access_key", "artifacts.s3.access_key_id", "artifacts.s3.secret_access_key"}
+var secretKeys = []string{"database.url", "inventory.s3.access_key_id", "inventory.s3.secret_access_key", "artifacts.s3.access_key_id", "artifacts.s3.secret_access_key", "model_proxy.token"}
 
 func Load() (Config, error) {
 	path := os.Getenv(EnvConfigFile)
@@ -354,6 +386,31 @@ func (c Config) validate() error {
 	// can elapse, otherwise a confirmed intake could wait past its clock.
 	if c.Relay.Interval*10 > c.Profiles.LocalCheckDeadline {
 		errs = append(errs, fmt.Errorf("relay.interval %s is too coarse for profiles.local_check_deadline %s", c.Relay.Interval, c.Profiles.LocalCheckDeadline))
+	}
+	mp := c.ModelProxy
+	if mp.Timeout < time.Second || mp.Timeout > 5*time.Minute {
+		errs = append(errs, fmt.Errorf("model_proxy.timeout %s outside [1s, 5m]", mp.Timeout))
+	}
+	if mp.Owner == "" {
+		errs = append(errs, errors.New("model_proxy.owner is required"))
+	}
+	switch mp.Identity.Mode {
+	case "development":
+		if mp.Address != "" && mp.Token == "" {
+			errs = append(errs, errors.New("ANVILKIT_CONTROL_MODEL_PROXY_TOKEN (model_proxy.token) is required with a model_proxy.address under identity mode development"))
+		}
+	case "mtls":
+		m := mp.Identity.MTLS
+		if mp.Address != "" && (m.CertFile == "" || m.KeyFile == "" || m.CAFile == "") {
+			errs = append(errs, errors.New("model_proxy.identity.mtls.cert_file, key_file and ca_file are required with a model_proxy.address under identity mode mtls"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("model_proxy.identity.mode %q is not one of development, mtls", mp.Identity.Mode))
+	}
+	if mp.Address != "" {
+		if u, err := url.Parse(mp.Address); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			errs = append(errs, errors.New("model_proxy.address must be an absolute http(s) URL without credentials"))
+		}
 	}
 	if c.Dispatch.AuthorityFreshness < time.Second || c.Dispatch.AuthorityFreshness > 30*time.Second {
 		errs = append(errs, fmt.Errorf("dispatch.authority_freshness %s outside [1s, 30s]", c.Dispatch.AuthorityFreshness))

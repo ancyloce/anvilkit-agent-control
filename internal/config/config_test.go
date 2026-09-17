@@ -133,7 +133,7 @@ func TestInventoryS3BackendRequiresPlacementAndEnvOnlyCredentials(t *testing.T) 
 	require.ErrorContains(t, err, "inventory.s3.access_key_id")
 	_, err = config.LoadFrom(write(t, s3+"    access_key_id: AKIA\n"), env[:1])
 	require.ErrorContains(t, err, "inventory.s3.access_key_id is a secret")
-	c, err := config.LoadFrom(write(t, s3), append(env[:1],
+	c, err := config.LoadFrom(write(t, s3), append(env[:1:1],
 		"ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT=http://rgw.internal:7480", "ANVILKIT_CONTROL_INVENTORY_S3_BUCKET=anvilkit-inventory",
 		"ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID=AKIA", "ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY=secret"))
 	require.NoError(t, err)
@@ -145,4 +145,20 @@ func TestInventoryS3BackendRequiresPlacementAndEnvOnlyCredentials(t *testing.T) 
 	require.ErrorContains(t, err, "inventory.backend")
 	_, err = config.LoadFrom(write(t, minimal+"recovery:\n  enumeration_page: 0\n"), env)
 	require.ErrorContains(t, err, "recovery.enumeration_page")
+}
+
+func TestModelProxyPlacementAndSecret(t *testing.T) {
+	c, err := config.LoadFrom(write(t, minimal), env)
+	require.NoError(t, err)
+	require.Empty(t, c.ModelProxy.Address, "no placement: the attestation double answers model dispatches")
+	require.Equal(t, "anvilkit-agent-model-proxy", c.ModelProxy.Owner)
+	_, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103"))
+	require.ErrorContains(t, err, "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN")
+	c, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
+	require.NoError(t, err)
+	require.Equal(t, "secret", c.ModelProxy.Token)
+	_, err = config.LoadFrom(write(t, minimal+"model_proxy:\n  token: in-file\n"), env)
+	require.ErrorContains(t, err, "model_proxy.token is a secret")
+	_, err = config.LoadFrom(write(t, minimal+"model_proxy:\n  identity:\n    mode: mtls\n"), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=https://proxy"))
+	require.ErrorContains(t, err, "model_proxy.identity.mtls.cert_file, key_file and ca_file are required")
 }
