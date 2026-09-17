@@ -3,7 +3,8 @@
 # overrides (ANVILKIT_CONTROL_LISTEN, ANVILKIT_CONTROL_DATABASE_URL,
 # ANVILKIT_CONTROL_INVENTORY_DIR, ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT,
 # ANVILKIT_CONTROL_INVENTORY_S3_BUCKET, ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID,
-# ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY, ANVILKIT_CONTROL_TEMPORAL_ADDRESS).
+# ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY, ANVILKIT_CONTROL_TEMPORAL_ADDRESS,
+# ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS, ANVILKIT_CONTROL_MODEL_PROXY_TOKEN (secret)).
 # Unknown keys fail startup. database.url and the inventory and artifact S3
 # credentials are secrets: they are refused here and come only from the
 # environment (ANVILKIT_CONTROL_ARTIFACTS_S3_{ENDPOINT,BUCKET,ACCESS_KEY_ID,SECRET_ACCESS_KEY}).
@@ -51,6 +52,19 @@ profiles:
 # recovery: bounds of the rollback-window reconciliation (P07).
 recovery:
   enumeration_page: 500
+# model_proxy: the Model Proxy placement of the original-identity query of
+# model dispatches (P11; ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS). With an
+# address, recovery asks the Proxy about an unresolved model dispatch of its
+# owner; without one the DEVELOPMENT_ONLY attestation double of
+# dispatch.development answers. The identity Control presents: development
+# is a DEVELOPMENT_ONLY bearer token supplied only through
+# ANVILKIT_CONTROL_MODEL_PROXY_TOKEN; mtls names the workload certificate
+# files (ENV-03).
+model_proxy:
+  timeout: 15s
+  owner: anvilkit-agent-model-proxy
+  identity:
+    mode: development
 dispatch:
   authority_freshness: 30s
   # development: DEVELOPMENT_ONLY prices, route authorizations and trusted
