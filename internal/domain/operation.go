@@ -86,9 +86,38 @@ type Subject struct {
 	SourceRevision string
 }
 
+// ArtifactBinding names a finalized transfer and the digest it must hold.
+type ArtifactBinding struct {
+	TransferID string `json:"transferId"`
+	Digest     Digest `json:"digest"`
+}
+
+// SourceReference names an exact revision of a Knowledge source.
+type SourceReference struct {
+	SourceID string `json:"sourceId"`
+	Revision uint64 `json:"revision,string"`
+}
+
+// PreparationIntake is the accepted input of a Preparation (API-01).
+type PreparationIntake struct {
+	Prompt          ArtifactBinding
+	BrandReferences []SourceReference
+	AssetReferences []SourceReference
+}
+
+// ClarificationBounds are the reviewed trial defaults of grouped
+// clarification (requirements.md §2): rounds, questions per round and the
+// absolute wait per round. Configuration may change future defaults; an
+// active question set keeps the expiry it was recorded with.
+type ClarificationBounds struct {
+	MaxRounds    uint64
+	MaxQuestions uint64
+	Wait         time.Duration
+}
+
 // Profile is a reviewed operation profile. Only reviewed profiles can be
 // accepted; the initial set is fixed by configuration and holds the
-// LocalCheck fixture.
+// LocalCheck fixture, the Preparation profile and the Generation profile.
 type Profile struct {
 	ID                string
 	Kind              OperationKind
@@ -96,6 +125,79 @@ type Profile struct {
 	// StepID and JobProfileID bind the single fixed step of this profile.
 	StepID       string
 	JobProfileID string
+	// MultiStep profiles (Preparation, Generation) settle their business
+	// outcome through SettleOperation; a definite attempt close does not
+	// end them (DD-01 §2).
+	MultiStep bool
+	// Clarification bounds a Preparation's grouped question rounds.
+	Clarification ClarificationBounds
+	// Funding is the reviewed amount a Generation allocates from the shared
+	// pools at bootstrap; nil funds nothing (a Preparation's analysis calls
+	// still need an allocation, so its profile funds its analysis
+	// allowance).
+	Funding *Money
+	// QueuePool names the execution capacity pool a Generation waits on;
+	// empty means no execution queue (the intake deadline is the only one).
+	QueuePool string
+	// ActiveWindow is the execution window the first permit opens once.
+	ActiveWindow time.Duration
+	// Definitions are the reviewed definition activations of the profile;
+	// the first is the default, a tracked change moves to another.
+	Definitions []string
+	// SupportsControl says the profile supports hold, resume and
+	// change_definition; the initial Preparation/LocalCheck profiles do not.
+	SupportsControl bool
+	// MaxRepairs bounds the independently classified repair rounds of a
+	// Generation; CodegenProfileID and ValidatorProfileID are the reviewed
+	// job profiles its steps launch.
+	MaxRepairs         uint64
+	CodegenProfileID   string
+	ValidatorProfileID string
+}
+
+// DefaultDefinition is the activation a fresh operation of the profile runs under.
+func (p Profile) DefaultDefinition() string {
+	if len(p.Definitions) == 0 {
+		return ""
+	}
+	return p.Definitions[0]
+}
+
+// HasDefinition reports whether the activation is one of the profile's.
+func (p Profile) HasDefinition(activation string) bool {
+	for _, d := range p.Definitions {
+		if d == activation {
+			return true
+		}
+	}
+	return false
+}
+
+// LeaseState is what the protected supervisor confirmed about the source
+// lease of a Generation (DD-01 §4): only confirmed results are recorded.
+type LeaseState string
+
+const (
+	LeaseNone     LeaseState = "none"
+	LeaseHeld     LeaseState = "held"
+	LeaseLost     LeaseState = "lost"
+	LeaseReleased LeaseState = "released"
+)
+
+// LeaseRecord is the last confirmed lease fact of an operation.
+type LeaseRecord struct {
+	State      LeaseState
+	LeaseID    string
+	Fence      uint64
+	ExpiresAt  *time.Time
+	Occurrence uint64
+}
+
+// Valid reports whether the confirmed lease covers the instant: held and
+// its known expiry not passed. An unknown renewal never moves the expiry,
+// so validity ends when the last confirmed one does.
+func (l LeaseRecord) Valid(now time.Time) bool {
+	return l.State == LeaseHeld && l.ExpiresAt != nil && now.Before(*l.ExpiresAt)
 }
 
 // Operation is the authoritative record and its public projection.
@@ -125,6 +227,29 @@ type Operation struct {
 	RelayRunID     string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// ActiveDeadline is set once by the first execution permit (DD-01 §4);
+	// nil until then. Deadline stays the original queue deadline.
+	ActiveDeadline *time.Time
+	// Lease is the last confirmed lease fact; a lost lease fences new
+	// dispatch for good.
+	Lease LeaseRecord
+	// DefinitionActivation is the reviewed definition the operation runs
+	// under; a tracked change_definition moves it.
+	DefinitionActivation string
+	// Preparation is the accepted intake of a Preparation (nil otherwise).
+	Preparation *PreparationIntake
+	// CandidateEffectID names the registered candidate's effect once a
+	// Generation reached candidate_ready.
+	CandidateEffectID string
+}
+
+// EffectiveDeadline is the absolute execution deadline: the active
+// deadline once a permit set it, otherwise the intake deadline.
+func (o *Operation) EffectiveDeadline() time.Time {
+	if o.ActiveDeadline != nil {
+		return *o.ActiveDeadline
+	}
+	return o.Deadline
 }
 
 // CoveredEventSeq is the last committed event sequence of the projection.
@@ -164,28 +289,30 @@ func NewOperation(cmd CommandIdentity, scope Scope, kind OperationKind, subject 
 		return nil, fmt.Errorf("%w: subject profile %q", ErrProfileUnqualified, subject.ProfileID)
 	}
 	return &Operation{
-		ID:             NewID("op"),
-		TenantID:       scope.TenantID,
-		ProjectID:      scope.ProjectID,
-		ActorID:        scope.ActorID,
-		CommandID:      cmd.CommandID,
-		Kind:           kind,
-		Subject:        subject,
-		SemanticDigest: cmd.RequestDigest,
-		Lifecycle:      LifecycleAccepted,
-		Phase:          "intake",
-		Control:        ControlNone,
-		Cleanup:        CleanupNotRequired,
-		Finance:        FinanceNotFunded,
-		Revision:       1,
-		NextEventSeq:   1,
-		ExecutionEpoch: 1,
-		RecoveryEpoch:  1,
-		Deadline:       now.Add(profile.OperationDeadline),
-		Intake:         IntakePending,
-		Relay:          RelayPending,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                   NewID("op"),
+		TenantID:             scope.TenantID,
+		ProjectID:            scope.ProjectID,
+		ActorID:              scope.ActorID,
+		CommandID:            cmd.CommandID,
+		Kind:                 kind,
+		Subject:              subject,
+		SemanticDigest:       cmd.RequestDigest,
+		Lifecycle:            LifecycleAccepted,
+		Phase:                "intake",
+		Control:              ControlNone,
+		Cleanup:              CleanupNotRequired,
+		Finance:              FinanceNotFunded,
+		Revision:             1,
+		NextEventSeq:         1,
+		ExecutionEpoch:       1,
+		RecoveryEpoch:        1,
+		Deadline:             now.Add(profile.OperationDeadline),
+		Intake:               IntakePending,
+		Relay:                RelayPending,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		Lease:                LeaseRecord{State: LeaseNone},
+		DefinitionActivation: profile.DefaultDefinition(),
 	}, nil
 }
 
@@ -217,7 +344,7 @@ func (o *Operation) ChangedPayload() ChangedPayload {
 // any control intent, a terminal lifecycle or unresolved reconciliation
 // fences them; issued effects and costs are kept.
 func (o *Operation) FencedForNewDispatch() bool {
-	return o.Control != ControlNone || o.Lifecycle.Terminal() || o.Lifecycle == LifecycleReconciling
+	return o.Control != ControlNone || o.Lifecycle.Terminal() || o.Lifecycle == LifecycleReconciling || o.Lease.State == LeaseLost
 }
 
 // SendersQuiescent reports whether nothing can still act for the operation:
@@ -260,7 +387,21 @@ type Command struct {
 	OperationRevision          Revision
 	AcceptedAt                 time.Time
 	SettledAt                  *time.Time
+	// Relay is the durable Update relay intent of a hold, resume or
+	// change_definition command: pending until issued, sent while its
+	// receipt is awaited, settled once the outcome is recorded.
+	Relay CommandRelayState
 }
+
+// CommandRelayState tracks the tracked Update of a control command.
+type CommandRelayState string
+
+const (
+	CommandRelayNone    CommandRelayState = "none"
+	CommandRelayPending CommandRelayState = "pending"
+	CommandRelaySent    CommandRelayState = "sent"
+	CommandRelaySettled CommandRelayState = "settled"
+)
 
 // CancelDecision is the pure outcome of a cancel request against the
 // current operation state; sendersQuiescent (SendersQuiescent) is true when

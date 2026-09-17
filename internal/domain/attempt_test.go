@@ -62,7 +62,7 @@ func TestSettleCloseKeepsCancelPendingWhileCleanupUnknown(t *testing.T) {
 	}
 	op.Control, op.Cleanup, op.Lifecycle = ControlCancelPending, CleanupPending, LifecycleRunning
 
-	SettleClose(op, at, nil, OutcomeCanceled, CleanupUnknown, "CANCELED")
+	SettleClose(op, at, nil, OutcomeCanceled, CleanupUnknown, "CANCELED", false)
 	if op.Lifecycle != LifecycleReconciling || op.Control != ControlCancelPending || op.Cleanup != CleanupUnknown {
 		t.Fatalf("unknown cleanup settled as %s/%s/%s; want reconciling/cancel_pending/unknown", op.Lifecycle, op.Control, op.Cleanup)
 	}
@@ -81,7 +81,7 @@ func TestSettleCloseKeepsCancelPendingWhileCleanupUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	op2.Control, op2.Cleanup, op2.Lifecycle = ControlCancelPending, CleanupPending, LifecycleRunning
-	SettleClose(op2, at2, nil, OutcomeCanceled, CleanupComplete, "CANCELED")
+	SettleClose(op2, at2, nil, OutcomeCanceled, CleanupComplete, "CANCELED", false)
 	if op2.Lifecycle != LifecycleCanceled || op2.Control != ControlCancelApplied {
 		t.Fatalf("confirmed cleanup settled as %s/%s; want canceled/cancel_applied", op2.Lifecycle, op2.Control)
 	}
@@ -90,13 +90,13 @@ func TestSettleCloseKeepsCancelPendingWhileCleanupUnknown(t *testing.T) {
 	op3 := openOperation(t, now)
 	at3, _ := NewAttempt(op3, testCmd, "local-check", 0, 1, testProfile.ID, now)
 	st := &Stage{Verdict: VerdictCertified}
-	SettleClose(op3, at3, st, OutcomeCompleted, CleanupUnknown, "")
+	SettleClose(op3, at3, st, OutcomeCompleted, CleanupUnknown, "", false)
 	if op3.Lifecycle != LifecycleReconciling || op3.FailureCode != "EFFECT_UNCERTAIN" || op3.Control != ControlNone {
 		t.Fatalf("certified with unknown cleanup: %s/%s/%s", op3.Lifecycle, op3.FailureCode, op3.Control)
 	}
 	op4 := openOperation(t, now)
 	at4, _ := NewAttempt(op4, testCmd, "local-check", 0, 1, testProfile.ID, now)
-	SettleClose(op4, at4, st, OutcomeCompleted, CleanupComplete, "")
+	SettleClose(op4, at4, st, OutcomeCompleted, CleanupComplete, "", false)
 	if op4.Lifecycle != LifecycleSucceeded {
 		t.Fatalf("certified with complete cleanup: %s", op4.Lifecycle)
 	}

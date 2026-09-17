@@ -56,14 +56,18 @@ func NewAttempt(op *Operation, cmd CommandIdentity, stepID string, visit uint64,
 	if op.Intake != IntakeConfirmed {
 		return nil, fmt.Errorf("%w: intake of %s is not confirmed", ErrStaleExecution, op.ID)
 	}
-	if !now.Before(op.Deadline) {
-		return nil, fmt.Errorf("%w: operation %s deadline %s passed", ErrStaleExecution, op.ID, op.Deadline.UTC().Format(time.RFC3339))
+	// The attempt inherits the absolute deadline: the active deadline the
+	// first execution permit set once, or the intake deadline; a retry
+	// never opens a later one.
+	deadline := op.EffectiveDeadline()
+	if !now.Before(deadline) {
+		return nil, fmt.Errorf("%w: operation %s deadline %s passed", ErrStaleExecution, op.ID, deadline.UTC().Format(time.RFC3339))
 	}
 	return &Attempt{
 		ID: NewID("att"), OperationID: op.ID, TenantID: op.TenantID, StepID: stepID, VisitOrdinal: visit,
 		AttemptOrdinal: ordinal, ProfileID: profileID, ExecutionEpoch: op.ExecutionEpoch,
 		CommandID: cmd.CommandID, RequestDigest: cmd.RequestDigest, State: AttemptOpen,
-		Deadline: op.Deadline, CreatedAt: now, UpdatedAt: now,
+		Deadline: deadline, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -271,7 +275,14 @@ func (a *Attempt) CanSettleCleanup(outcome AttemptOutcome, cleanup CleanupState)
 // succeeds, and anything else fails. Applied again with definite cleanup
 // evidence (CanSettleCleanup), it moves the reconciling operation to its
 // final lifecycle and clears the uncertainty code.
-func SettleClose(op *Operation, at *Attempt, stage *Stage, outcome AttemptOutcome, cleanup CleanupState, failureCode string) {
+//
+// For a multi-step profile (multiStep) a definite close settles the attempt
+// only: the operation records the cleanup and phase and keeps running
+// (or returns from reconciling to running when the evidence settles),
+// because the Workflow states the business outcome through
+// SettleOperation; an applied cancel still ends it, and an unknown
+// outcome or cleanup still keeps it reconciling.
+func SettleClose(op *Operation, at *Attempt, stage *Stage, outcome AttemptOutcome, cleanup CleanupState, failureCode string, multiStep bool) {
 	at.State = AttemptClosed
 	at.Outcome = outcome
 	at.Cleanup = cleanup
@@ -288,6 +299,10 @@ func SettleClose(op *Operation, at *Attempt, stage *Stage, outcome AttemptOutcom
 		if cancelRequested && op.Control != ControlCancelApplied {
 			op.Control = ControlCancelPending
 		}
+	case multiStep && !cancelRequested:
+		op.Lifecycle = LifecycleRunning
+		op.Phase = "attempt_closed"
+		op.FailureCode = ""
 	case cancelRequested:
 		op.Control = ControlCancelApplied
 		op.Lifecycle = LifecycleCanceled

@@ -141,6 +141,10 @@ type AdmissionContext struct {
 	// AdmissionClosed: the tenant's scope is closed by a recovery run; no
 	// new send permission is issued until it reopens.
 	AdmissionClosed bool
+	// LeaseRequired: the operation's profile executes under a source lease
+	// (a Generation), so a send needs the confirmed lease to cover now
+	// (DD-01 §4: an unknown renewal never extends known validity).
+	LeaseRequired bool
 }
 
 // Denial is a recorded refusal: the public code and the reason.
@@ -196,6 +200,9 @@ func CheckAdmission(req AdmissionRequest, c AdmissionContext, budget bool) error
 	}
 	if !c.Now.Before(at.Deadline) {
 		return deny(DenyStaleExecution, "attempt %s deadline %s passed", at.ID, at.Deadline.UTC().Format(time.RFC3339))
+	}
+	if c.LeaseRequired && !op.Lease.Valid(c.Now) {
+		return deny(DenyStaleExecution, "operation %s holds no confirmed lease covering %s (%s)", op.ID, c.Now.UTC().Format(time.RFC3339), op.Lease.State)
 	}
 	if !req.Deadline.After(c.Now) {
 		return deny(DenyStaleExecution, "call deadline %s passed", req.Deadline.UTC().Format(time.RFC3339))
