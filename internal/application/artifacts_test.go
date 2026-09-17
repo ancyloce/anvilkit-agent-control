@@ -287,7 +287,7 @@ func TestArtifacts(t *testing.T) {
 		// A bound transfer: the operation and attempt bound the deadline,
 		// and a fence or a moved epoch between the upload and the finalize
 		// rejects it.
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "xfer_op", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "xfer_op", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "xfer_op_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -434,7 +434,7 @@ func TestArtifacts(t *testing.T) {
 	})
 
 	t.Run("a handle resolves only for the current instance of its attempt; results bind only verified artifacts", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "res_op", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "res_op", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "res_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -545,12 +545,12 @@ func TestArtifacts(t *testing.T) {
 		conflicting := manifest(``)
 		_, _, err = p1.exec.AcceptResult(ctx, cmd("tenant_a", "res_acc_conflict", "a"), at.ID, owner.ID, "local-check-v1", domain.VerdictCertified, "", application.DigestOf(conflicting), conflicting, "observer", &epoch)
 		require.ErrorIs(t, err, domain.ErrIdempotencyConflict, "conflicting content never overwrites the accepted result")
-		read, err := p2.exec.GetAcceptedStage(ctx, at.ID, "tenant_a")
+		read, err := p2.exec.GetAcceptedStage(ctx, at.ID, "tenant_a", "")
 		require.NoError(t, err)
 		require.Equal(t, good, read.ResultManifest)
 		require.Len(t, read.Artifacts, 1)
 		require.Equal(t, version, read.Artifacts[0].ObjectVersion)
-		_, err = p2.exec.GetAcceptedStage(ctx, at.ID, "tenant_b")
+		_, err = p2.exec.GetAcceptedStage(ctx, at.ID, "tenant_b", "")
 		require.ErrorIs(t, err, domain.ErrNotFound, "the accepted stage is read in scope")
 		var artifactRows int
 		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT count(*) FROM stage_artifacts WHERE stage_id = $1", st.ID).Scan(&artifactRows))

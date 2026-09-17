@@ -44,13 +44,37 @@ func (s *Operations) Profile(id string) (domain.Profile, error) {
 // inventoried outside locks and confirmed in a second commit. The caller
 // only sees an accepted operation after confirmation; a reentered command
 // resumes whichever step was left pending.
-func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, kind domain.OperationKind, subject domain.Subject) (op *domain.Operation, existing bool, err error) {
+//
+// A Preparation carries its intake: the prompt must be a finalized prompt
+// artifact of the caller's tenant holding the declared digest (a transfer
+// bound to no operation, since the operation does not exist yet). A
+// Generation binds a brief: the subject's brief must be the current brief
+// of a succeeded preparation of the same tenant; a superseded brief starts
+// no generation.
+func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, kind domain.OperationKind, subject domain.Subject, intake *domain.PreparationIntake) (op *domain.Operation, existing bool, err error) {
 	if scope.TenantID != cmd.TenantID {
 		return nil, false, fmt.Errorf("%w: command tenant differs from scope", domain.ErrInvalid)
 	}
 	profile, err := s.Profile(subject.ProfileID)
 	if err != nil {
 		return nil, false, err
+	}
+	switch kind {
+	case domain.KindPreparation:
+		if intake == nil {
+			return nil, false, fmt.Errorf("%w: a preparation needs its intake", domain.ErrInvalid)
+		}
+	case domain.KindGeneration, domain.KindRefinement:
+		if intake != nil {
+			return nil, false, fmt.Errorf("%w: only a preparation carries an intake", domain.ErrInvalid)
+		}
+		if subject.BriefID == "" {
+			return nil, false, fmt.Errorf("%w: a %s binds a brief", domain.ErrInvalid, kind)
+		}
+	default:
+		if intake != nil {
+			return nil, false, fmt.Errorf("%w: only a preparation carries an intake", domain.ErrInvalid)
+		}
 	}
 	now := s.clock.Now()
 	for attempt := 0; attempt < 2; attempt++ {
@@ -77,6 +101,17 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 			if err != nil {
 				return err
 			}
+			if intake != nil {
+				if err := verifyPromptTransfer(ctx, r, scope, intake); err != nil {
+					return err
+				}
+				fresh.Preparation = intake
+			}
+			if subject.BriefID != "" {
+				if err := verifyBriefBinding(ctx, r, scope, subject.BriefID); err != nil {
+					return err
+				}
+			}
 			fresh.Revision = 0
 			ev := fresh.Transition("accepted", now, func(*domain.Operation) {})
 			if err := r.InsertOperation(ctx, fresh); err != nil {
@@ -102,6 +137,58 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 		}
 	}
 	return op, existing, nil
+}
+
+// verifyPromptTransfer checks the intake's prompt against the finalized
+// transfer it names: the caller's tenant, class prompt, the declared
+// digest, bound to no other operation.
+func verifyPromptTransfer(ctx context.Context, r Repo, scope domain.Scope, in *domain.PreparationIntake) error {
+	t, err := r.GetTransfer(ctx, in.Prompt.TransferID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return fmt.Errorf("%w: prompt transfer %s is not a transfer of this scope", domain.ErrInvalid, in.Prompt.TransferID)
+	}
+	if err != nil {
+		return err
+	}
+	if t.TenantID != scope.TenantID {
+		return fmt.Errorf("%w: prompt transfer %s is not a transfer of this scope", domain.ErrInvalid, in.Prompt.TransferID)
+	}
+	if t.State != domain.TransferFinalized || t.Class != domain.ArtifactPrompt {
+		return fmt.Errorf("%w: prompt transfer %s is not a finalized prompt artifact (%s/%s)", domain.ErrInvalid, t.ID, t.State, t.Class)
+	}
+	if t.ActualDigest != in.Prompt.Digest {
+		return fmt.Errorf("%w: prompt transfer %s holds %s, the intake names %s", domain.ErrInvalid, t.ID, t.ActualDigest, in.Prompt.Digest)
+	}
+	if t.OperationID != "" {
+		return fmt.Errorf("%w: prompt transfer %s is bound to operation %s", domain.ErrInvalid, t.ID, t.OperationID)
+	}
+	return nil
+}
+
+// verifyBriefBinding checks that the brief a generation binds is the
+// current brief of a succeeded preparation of the caller's tenant.
+func verifyBriefBinding(ctx context.Context, r Repo, scope domain.Scope, briefID string) error {
+	b, err := r.GetBrief(ctx, briefID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return fmt.Errorf("%w: brief %s is not a brief of this scope", domain.ErrInvalid, briefID)
+	}
+	if err != nil {
+		return err
+	}
+	if err := b.StartsGeneration(scope.TenantID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("%w: brief %s is not a brief of this scope", domain.ErrInvalid, briefID)
+		}
+		return err
+	}
+	prep, err := r.GetOperationScoped(ctx, b.OperationID, scope.TenantID)
+	if err != nil {
+		return err
+	}
+	if prep.Lifecycle != domain.LifecycleSucceeded {
+		return fmt.Errorf("%w: brief %s belongs to preparation %s which is %s", domain.ErrStaleExecution, briefID, prep.ID, prep.Lifecycle)
+	}
+	return nil
 }
 
 // confirmIntake writes the intake obligation to the independent inventory
@@ -240,12 +327,42 @@ func (s *Operations) SubmitCommand(ctx context.Context, cmd domain.CommandIdenti
 		c = &domain.Command{
 			TenantID: cmd.TenantID, CommandID: cmd.CommandID, OperationID: op.ID, ActorID: cmd.ActorID, Kind: kind,
 			ExpectedRevision: expected, RequestDigest: cmd.RequestDigest, TargetDefinitionActivation: targetActivation,
-			OperationRevision: op.Revision, AcceptedAt: now,
+			OperationRevision: op.Revision, AcceptedAt: now, Relay: domain.CommandRelayNone,
 		}
 		if kind != domain.CommandCancel {
-			// Initial Preparation/LocalCheck profiles support cancellation only (DD-01 §6).
-			c.Outcome, c.ReasonCode = domain.OutcomeRejected, "UNSUPPORTED_BY_PROFILE"
-			c.SettledAt = &now
+			// Hold, resume and change_definition exist for the profiles that
+			// support them (Generation); the initial Preparation/LocalCheck
+			// profiles support cancellation only (DD-01 §6). A supported
+			// command installs its fence first and is relayed as a tracked
+			// Update; it becomes applied only when the Workflow's handler
+			// answered so (RecordCommandRelay).
+			profile, err := s.Profile(op.Subject.ProfileID)
+			if err != nil {
+				return err
+			}
+			decision, err := op.DecideControl(profile, kind, expected, targetActivation, now)
+			if err != nil {
+				return err
+			}
+			c.Outcome, c.ReasonCode = decision.Outcome, decision.ReasonCode
+			if decision.Relay {
+				c.Relay = domain.CommandRelayPending
+				ev := op.Transition("cmd:"+cmd.CommandID, now, func(o *domain.Operation) {
+					if kind == domain.CommandHold {
+						o.Control, o.Phase = domain.ControlHoldPending, "hold_pending"
+					}
+				})
+				if err := r.UpdateOperation(ctx, op); err != nil {
+					return err
+				}
+				if err := r.InsertEvent(ctx, ev); err != nil {
+					return err
+				}
+				c.OperationRevision = op.Revision
+			}
+			if c.Outcome != domain.OutcomePending {
+				c.SettledAt = &now
+			}
 			return r.InsertCommand(ctx, c)
 		}
 		open, err := r.HasOpenAttempt(ctx, op.ID)

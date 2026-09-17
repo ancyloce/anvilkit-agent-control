@@ -23,12 +23,22 @@ type Dispatch struct {
 	prices    PriceBook
 	authority Authority
 	evidence  NotSentEvidence
+	profiles  map[string]domain.Profile
 	clock     domain.Clock
 	log       *slog.Logger
 }
 
 func NewDispatch(store Store, inventory Inventory, prices PriceBook, authority Authority, evidence NotSentEvidence, clock domain.Clock, log *slog.Logger) *Dispatch {
-	return &Dispatch{store: store, inventory: inventory, prices: prices, authority: authority, evidence: evidence, clock: clock, log: log}
+	return &Dispatch{store: store, inventory: inventory, prices: prices, authority: authority, evidence: evidence, profiles: map[string]domain.Profile{}, clock: clock, log: log}
+}
+
+// WithProfiles installs the reviewed operation profiles so admission knows
+// which operations execute under a source lease.
+func (s *Dispatch) WithProfiles(profiles []domain.Profile) *Dispatch {
+	for _, p := range profiles {
+		s.profiles[p.ID] = p
+	}
+	return s
 }
 
 // Allocate gives the operation its share of the current platform, tenant
@@ -372,7 +382,7 @@ func (s *Dispatch) admissionContext(ctx context.Context, r Repo, b binding, tena
 	if err != nil {
 		return domain.AdmissionContext{}, err
 	}
-	ac := domain.AdmissionContext{Operation: op, Attempt: at, Allocations: allocs, Authority: authority, AdmissionClosed: closed}
+	ac := domain.AdmissionContext{Operation: op, Attempt: at, Allocations: allocs, Authority: authority, AdmissionClosed: closed, LeaseRequired: s.profiles[op.Subject.ProfileID].QueuePool != ""}
 	if b.InstanceID != "" {
 		inst, err := r.LockInstance(ctx, b.InstanceID)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {

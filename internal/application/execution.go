@@ -17,12 +17,23 @@ type Execution struct {
 	store     Store
 	inventory Inventory
 	manifests ManifestValidator
+	profiles  map[string]domain.Profile
 	clock     domain.Clock
 	log       *slog.Logger
 }
 
-func NewExecution(store Store, inventory Inventory, manifests ManifestValidator, clock domain.Clock, log *slog.Logger) *Execution {
-	return &Execution{store: store, inventory: inventory, manifests: manifests, clock: clock, log: log}
+func NewExecution(store Store, inventory Inventory, manifests ManifestValidator, profiles []domain.Profile, clock domain.Clock, log *slog.Logger) *Execution {
+	m := make(map[string]domain.Profile, len(profiles))
+	for _, p := range profiles {
+		m[p.ID] = p
+	}
+	return &Execution{store: store, inventory: inventory, manifests: manifests, profiles: m, clock: clock, log: log}
+}
+
+// multiStep reports whether the operation's profile settles its business
+// outcome through SettleOperation (an unknown profile is single-step).
+func (s *Execution) multiStep(op *domain.Operation) bool {
+	return s.profiles[op.Subject.ProfileID].MultiStep
 }
 
 // OpenAttempt allocates a logical attempt under the current epoch; the same
@@ -51,6 +62,9 @@ func (s *Execution) OpenAttempt(ctx context.Context, cmd domain.CommandIdentity,
 		if err := admissionOpen(ctx, r, op.TenantID); err != nil {
 			return err
 		}
+		if err := s.bootstrapGate(ctx, r, op, now); err != nil {
+			return err
+		}
 		n, err := r.CountAttempts(ctx, op.ID, stepID, visit)
 		if err != nil {
 			return err
@@ -76,6 +90,48 @@ func (s *Execution) OpenAttempt(ctx context.Context, cmd domain.CommandIdentity,
 		return nil
 	})
 	return at, existing, err
+}
+
+// bootstrapGate denies an attempt of a queued profile (a Generation)
+// whose bootstrap is incomplete: no active execution permit, no funding
+// occurrence or no confirmed lease covering now (DD-01 §4: admission,
+// funding and lease before authored execution).
+func (s *Execution) bootstrapGate(ctx context.Context, r Repo, op *domain.Operation, now time.Time) error {
+	profile := s.profiles[op.Subject.ProfileID]
+	if !profile.MultiStep {
+		return nil
+	}
+	// A new attempt of a multi-step operation is a recovery of the work
+	// so far: it starts only once the original effects and costs are
+	// reconciled — an unknown dispatch (exposure unknown) or an unresolved
+	// business-write effect never permits a resend (DD-01 §5, P13-04).
+	if op.Finance == domain.FinanceExposureUnknown {
+		return fmt.Errorf("%w: operation %s carries an unknown dispatch; reconcile it before a new attempt", domain.ErrEffectUncertain, op.ID)
+	}
+	if unresolved, err := unresolvedEffects(ctx, r, op.ID); err != nil {
+		return err
+	} else if unresolved {
+		return fmt.Errorf("%w: operation %s carries an unresolved effect; reconcile it before a new attempt", domain.ErrEffectUncertain, op.ID)
+	}
+	if profile.QueuePool == "" {
+		return nil
+	}
+	if _, err := r.GetActivePermit(ctx, profile.QueuePool, "operation", op.ID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("%w: operation %s holds no execution permit", domain.ErrStaleExecution, op.ID)
+		}
+		return err
+	}
+	if _, err := r.GetFunding(ctx, op.ID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("%w: operation %s is not funded", domain.ErrBudgetExhausted, op.ID)
+		}
+		return err
+	}
+	if !op.Lease.Valid(now) {
+		return fmt.Errorf("%w: operation %s holds no confirmed lease covering %s (%s)", domain.ErrStaleExecution, op.ID, now.UTC().Format(time.RFC3339), op.Lease.State)
+	}
+	return nil
 }
 
 // admissionOpen denies new admission (attempts, launches) for a tenant
@@ -417,15 +473,22 @@ func parseResultManifest(manifest []byte) (domain.ResultManifest, error) {
 // integrity failure, never a served result. A stage without retained
 // bytes (accepted before migration 00002) is returned with a nil manifest
 // and is not byte-verified.
-func (s *Execution) GetAcceptedStage(ctx context.Context, attemptID, tenantID string) (*domain.Stage, error) {
+//
+// operationID, when given, is the authorized relationship of a cross-attempt
+// read (P13): the stage must be the accepted stage of an attempt of that
+// operation; a stage of another operation is not found.
+func (s *Execution) GetAcceptedStage(ctx context.Context, attemptID, tenantID, operationID string) (*domain.Stage, error) {
 	var st *domain.Stage
 	err := s.store.Read(ctx, func(r Repo) error {
-		if tenantID != "" {
+		if tenantID != "" || operationID != "" {
 			at, err := r.GetAttempt(ctx, attemptID)
 			if err != nil {
 				return err
 			}
-			if at.TenantID != tenantID {
+			if tenantID != "" && at.TenantID != tenantID {
+				return domain.ErrNotFound
+			}
+			if operationID != "" && at.OperationID != operationID {
 				return domain.ErrNotFound
 			}
 		}
@@ -476,7 +539,7 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 		}
 		locked.UpdatedAt = now
 		ev := lockedOp.Transition(transition, now, func(o *domain.Operation) {
-			domain.SettleClose(o, locked, stage, outcome, cleanup, failureCode)
+			domain.SettleClose(o, locked, stage, outcome, cleanup, failureCode, s.multiStep(o))
 			if o.Lifecycle.Terminal() {
 				o.Relay = domain.RelaySettled
 			}
@@ -490,13 +553,93 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 		if err := r.InsertEvent(ctx, ev); err != nil {
 			return err
 		}
-		if lockedOp.Control == domain.ControlCancelApplied {
-			if err := r.SettlePendingCommands(ctx, lockedOp.ID, domain.CommandCancel, domain.OutcomeApplied, lockedOp.Revision, now); err != nil {
-				return err
-			}
+		if err := settleTerminal(ctx, r, lockedOp, now); err != nil {
+			return err
 		}
 		at, op = locked, lockedOp
 		return nil
 	})
 	return at, op, existing, err
+}
+
+// settleTerminal records what a terminal operation settles beside its
+// projection: an applied cancel settles the pending cancel commands and
+// every terminal operation releases its execution permit (the pool's
+// capacity is freed by the evidence of the close, never by a TTL).
+func settleTerminal(ctx context.Context, r Repo, op *domain.Operation, now time.Time) error {
+	if op.Control == domain.ControlCancelApplied {
+		if err := r.SettlePendingCommands(ctx, op.ID, domain.CommandCancel, domain.OutcomeApplied, op.Revision, now); err != nil {
+			return err
+		}
+	}
+	if op.Lifecycle.Terminal() {
+		return r.ReleasePermits(ctx, "operation", op.ID, now, "operation:"+string(op.Lifecycle))
+	}
+	return nil
+}
+
+// SettleOperation records the business outcome of a multi-step operation
+// (DD-01 §2) under the same command identity: the same command returns the
+// original; a terminal operation answers its state; an operation whose
+// cleanup is unknown settles through reconciliation instead.
+func (s *Execution) SettleOperation(ctx context.Context, cmd domain.CommandIdentity, operationID string, outcome domain.OperationOutcome, failureCode, phase string) (op *domain.Operation, existing bool, err error) {
+	now := s.clock.Now()
+	err = s.store.Tx(ctx, func(r Repo) error {
+		locked, err := r.LockOperation(ctx, operationID)
+		if err != nil {
+			return err
+		}
+		if locked.TenantID != cmd.TenantID {
+			return domain.ErrNotFound
+		}
+		if !s.multiStep(locked) {
+			return fmt.Errorf("%w: profile %s settles through its attempt close", domain.ErrInvalid, locked.Subject.ProfileID)
+		}
+		if locked.Lifecycle.Terminal() {
+			op, existing = locked, true
+			return nil
+		}
+		open, err := r.HasOpenAttempt(ctx, locked.ID)
+		if err != nil {
+			return err
+		}
+		if open {
+			return fmt.Errorf("%w: operation %s still has an open attempt", domain.ErrStaleExecution, locked.ID)
+		}
+		unresolved, err := unresolvedEffects(ctx, r, locked.ID)
+		if err != nil {
+			return err
+		}
+		unresolved = unresolved || locked.Finance == domain.FinanceExposureUnknown
+		var settle error
+		ev := locked.Transition("settle:"+cmd.CommandID, now, func(o *domain.Operation) {
+			if unresolved {
+				// An unresolved obligation (an unknown dispatch or effect)
+				// keeps the operation reconciling under the stated phase:
+				// settlement continues, it never disappears behind a
+				// completed flag (DD-01 §2).
+				o.Lifecycle, o.FailureCode = domain.LifecycleReconciling, "EFFECT_UNCERTAIN"
+				if phase != "" {
+					o.Phase = phase
+				}
+				return
+			}
+			settle = o.SettleOperation(outcome, failureCode, phase)
+		})
+		if settle != nil {
+			return settle
+		}
+		if err := r.UpdateOperation(ctx, locked); err != nil {
+			return err
+		}
+		if err := r.InsertEvent(ctx, ev); err != nil {
+			return err
+		}
+		if err := settleTerminal(ctx, r, locked, now); err != nil {
+			return err
+		}
+		op = locked
+		return nil
+	})
+	return op, existing, err
 }

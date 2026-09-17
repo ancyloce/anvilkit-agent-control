@@ -497,3 +497,123 @@ func BindOutputs(ctx context.Context, r Repo, op *domain.Operation, at *domain.A
 	}
 	return bound, nil
 }
+
+// Read issues a trusted reader the scoped download capability of a
+// finalized artifact under an authorized relationship to the reading
+// operation (P13-04): the artifact is the operation's own prompt, an
+// accepted answer of it, the brief its subject binds, or an artifact bound
+// by an accepted stage of one of its attempts. A reading physical instance
+// (a Job's trusted sidecar) must be the current instance of an executing
+// attempt of that operation under the current epoch, inside the deadline
+// and with the operation not fenced. The capability names the exact
+// object version the transfer was finalized with; the caller verifies the
+// bytes against the digest and size answered. Candidates never see it.
+func (s *Artifacts) Read(ctx context.Context, handle, transferID, operationID, instanceID string) (*domain.Transfer, *UploadCapability, error) {
+	if err := s.available(); err != nil {
+		return nil, nil, err
+	}
+	var t *domain.Transfer
+	if err := s.store.Read(ctx, func(r Repo) error {
+		var err error
+		switch {
+		case transferID != "":
+			t, err = r.GetTransfer(ctx, transferID)
+		case handle != "":
+			t, err = r.GetTransferByHandle(ctx, handle)
+		default:
+			return fmt.Errorf("%w: a transfer id or a handle is required", domain.ErrInvalid)
+		}
+		if err != nil {
+			return err
+		}
+		op, err := r.GetOperationScoped(ctx, operationID, t.TenantID)
+		if err != nil {
+			return err
+		}
+		if t.State != domain.TransferFinalized {
+			return fmt.Errorf("%w: transfer %s is %s", domain.ErrStaleExecution, t.ID, t.State)
+		}
+		if instanceID != "" {
+			if err := readerAuthority(ctx, r, op, instanceID, s.clock.Now()); err != nil {
+				return err
+			}
+		}
+		return artifactRelationship(ctx, r, op, t)
+	}); err != nil {
+		return nil, nil, err
+	}
+	expires := s.clock.Now().Add(s.limits.CapabilityTTL)
+	cap, err := s.objects.DownloadCapability(ctx, t.ObjectKey, t.ObjectVersion, expires)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: download capability for transfer %s: %v", domain.ErrUnavailable, t.ID, err)
+	}
+	return t, &cap, nil
+}
+
+// readerAuthority checks that the reading instance is the current physical
+// owner of an executing attempt of the operation under the current epoch,
+// inside its deadline, with the operation not fenced.
+func readerAuthority(ctx context.Context, r Repo, op *domain.Operation, instanceID string, now time.Time) error {
+	inst, err := r.LockInstance(ctx, instanceID) // a read on the pool connection; no transaction, no lock held
+	if err != nil {
+		return err
+	}
+	at, err := r.GetAttempt(ctx, inst.AttemptID)
+	if err != nil {
+		return err
+	}
+	switch {
+	case at.OperationID != op.ID:
+		return domain.ErrNotFound
+	case !inst.Current:
+		return fmt.Errorf("%w: instance %s is not the current physical owner of attempt %s", domain.ErrStaleExecution, inst.ID, at.ID)
+	case at.State != domain.AttemptLaunchPrepared && at.State != domain.AttemptRunning:
+		return fmt.Errorf("%w: attempt %s is %s", domain.ErrStaleExecution, at.ID, at.State)
+	case at.ExecutionEpoch != op.ExecutionEpoch:
+		return fmt.Errorf("%w: attempt epoch %d, operation epoch %d", domain.ErrStaleExecution, at.ExecutionEpoch, op.ExecutionEpoch)
+	case op.FencedForNewDispatch():
+		return fmt.Errorf("%w: operation %s is fenced (%s/%s)", domain.ErrStaleExecution, op.ID, op.Lifecycle, op.Control)
+	case !now.Before(at.Deadline):
+		return fmt.Errorf("%w: attempt %s deadline passed", domain.ErrStaleExecution, at.ID)
+	}
+	return nil
+}
+
+// artifactRelationship establishes that the operation may read the
+// artifact: its prompt, an accepted answer, the brief its subject binds
+// or an artifact an accepted stage of one of its attempts binds. A
+// finalized transfer that no accepted record names is not an input.
+func artifactRelationship(ctx context.Context, r Repo, op *domain.Operation, t *domain.Transfer) error {
+	if t.TenantID != op.TenantID {
+		return domain.ErrNotFound
+	}
+	if op.Preparation != nil && op.Preparation.Prompt.TransferID == t.ID {
+		return nil
+	}
+	if op.Kind == domain.KindPreparation {
+		answers, err := r.ListAnswers(ctx, op.ID)
+		if err != nil {
+			return err
+		}
+		for _, a := range answers {
+			if a.Answer.TransferID == t.ID {
+				return nil
+			}
+		}
+	}
+	if op.Subject.BriefID != "" {
+		b, err := r.GetBrief(ctx, op.Subject.BriefID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+		if b != nil && b.Brief.TransferID == t.ID && b.TenantID == op.TenantID {
+			return nil
+		}
+	}
+	if _, err := r.GetStageArtifactByTransfer(ctx, t.ID, op.ID); err == nil {
+		return nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	return fmt.Errorf("%w: transfer %s is no input of operation %s: not its prompt, an accepted answer, its brief or an accepted stage artifact", domain.ErrStaleExecution, t.ID, op.ID)
+}

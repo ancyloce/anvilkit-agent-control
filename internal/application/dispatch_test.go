@@ -223,7 +223,7 @@ func newDispatchProcess(t *testing.T, inst *testdb.Instance, inv *hookedInventor
 	return &dispatchProcess{
 		pool:     pool,
 		ops:      application.NewOperations(store, inv, []domain.Profile{profile}, domain.SystemClock{}, testLog),
-		exec:     application.NewExecution(store, inv, manifests, domain.SystemClock{}, testLog),
+		exec:     application.NewExecution(store, inv, manifests, []domain.Profile{profile}, domain.SystemClock{}, testLog),
 		dispatch: application.NewDispatch(store, inv, prices, auth, development.NewNotSentEvidence(inv, []string{issuer}), domain.SystemClock{}, testLog),
 	}
 }
@@ -256,7 +256,7 @@ func dropPools(t *testing.T, pool *pgxpool.Pool, suffix string) {
 func funded(t *testing.T, p *dispatchProcess, id string, amount int64) (*domain.Operation, *domain.Attempt) {
 	t.Helper()
 	ctx := context.Background()
-	op, _, err := p.ops.Create(ctx, cmd("tenant_a", "cmd_"+id, "body"), scopeA, domain.KindLocalCheck, subject)
+	op, _, err := p.ops.Create(ctx, cmd("tenant_a", "cmd_"+id, "body"), scopeA, domain.KindLocalCheck, subject, nil)
 	require.NoError(t, err)
 	at, _, err := p.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_"+id+"_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 	require.NoError(t, err)

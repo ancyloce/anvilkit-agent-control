@@ -40,8 +40,49 @@ type Repo interface {
 	ListRelayPending(ctx context.Context, limit int) ([]*domain.Operation, error)
 
 	GetCommand(ctx context.Context, tenantID, commandID string) (*domain.Command, error)
+	LockCommand(ctx context.Context, tenantID, commandID string) (*domain.Command, error)
 	InsertCommand(ctx context.Context, c *domain.Command) error
+	UpdateCommand(ctx context.Context, c *domain.Command) error
 	SettlePendingCommands(ctx context.Context, operationID string, kind domain.CommandKind, outcome domain.CommandOutcome, rev domain.Revision, now time.Time) error
+	ListCommandRelayPending(ctx context.Context, limit int) ([]*domain.Command, error)
+	ListOperationCommands(ctx context.Context, operationID string) ([]*domain.Command, error)
+
+	// Preparation records (rank 6 under the operation lock): question
+	// sets, answers with their relay intent and briefs.
+	InsertQuestionSet(ctx context.Context, qs *domain.QuestionSet) error
+	GetQuestionSet(ctx context.Context, id string) (*domain.QuestionSet, error)
+	LockQuestionSet(ctx context.Context, id string) (*domain.QuestionSet, error)
+	GetQuestionSetByCommand(ctx context.Context, operationID, commandID string) (*domain.QuestionSet, error)
+	GetOpenQuestionSet(ctx context.Context, operationID string) (*domain.QuestionSet, error)
+	ListQuestionSets(ctx context.Context, operationID string) ([]*domain.QuestionSet, error)
+	UpdateQuestionSetState(ctx context.Context, id string, state domain.QuestionSetState) error
+	InsertAnswer(ctx context.Context, a *domain.Answer) error
+	GetAnswerByCommand(ctx context.Context, tenantID, commandID string) (*domain.Answer, error)
+	GetAnswer(ctx context.Context, answerID string) (*domain.Answer, error)
+	LockAnswer(ctx context.Context, answerID string) (*domain.Answer, error)
+	GetAnswerByQuestionSet(ctx context.Context, questionSetID string, revision uint64) (*domain.Answer, error)
+	ListAnswers(ctx context.Context, operationID string) ([]*domain.Answer, error)
+	ListAnswerRelayPending(ctx context.Context, limit int) ([]*domain.Answer, error)
+	UpdateAnswerRelay(ctx context.Context, answerID string, state domain.AnswerRelayState, at *time.Time) error
+	InsertBrief(ctx context.Context, b *domain.Brief) error
+	GetBrief(ctx context.Context, briefID string) (*domain.Brief, error)
+	GetBriefByCommand(ctx context.Context, operationID, commandID string) (*domain.Brief, error)
+	GetCurrentBrief(ctx context.Context, operationID string) (*domain.Brief, error)
+	CountBriefs(ctx context.Context, operationID string) (uint64, error)
+	SupersedeBriefs(ctx context.Context, operationID string) error
+
+	// Execution capacity (rank 5) and funding (rank 6) of a Generation.
+	LockResourcePool(ctx context.Context, poolID string) (*domain.ResourcePool, error)
+	UpsertResourcePool(ctx context.Context, p *domain.ResourcePool) error
+	CountActivePermits(ctx context.Context, poolID string) (int64, error)
+	GetActivePermit(ctx context.Context, poolID, ownerKind, ownerID string) (*domain.Permit, error)
+	GetPermitByOwner(ctx context.Context, ownerKind, ownerID string) (*domain.Permit, error)
+	InsertPermit(ctx context.Context, p *domain.Permit) error
+	ReleasePermits(ctx context.Context, ownerKind, ownerID string, at time.Time, evidence string) error
+	GetFunding(ctx context.Context, operationID string) (*domain.Funding, error)
+	InsertFunding(ctx context.Context, f *domain.Funding) error
+	ListStagesByOperation(ctx context.Context, operationID string) ([]*domain.Stage, error)
+	GetStageArtifactByTransfer(ctx context.Context, transferID, operationID string) (*domain.StageArtifact, error)
 
 	GetAttemptByCommand(ctx context.Context, operationID, commandID string) (*domain.Attempt, error)
 	GetAttempt(ctx context.Context, attemptID string) (*domain.Attempt, error)
@@ -205,6 +246,10 @@ type InventoryPage struct {
 type ArtifactStore interface {
 	UploadCapability(ctx context.Context, key, mediaType string, size int64, expiresAt time.Time) (UploadCapability, error)
 	Read(ctx context.Context, key, version string, limit int64) ([]byte, domain.ObjectFacts, error)
+	// DownloadCapability issues the time-bounded authorization for one read
+	// of the exact object version under the key (no request is made); the
+	// trusted reader verifies the bytes against the recorded digest and size.
+	DownloadCapability(ctx context.Context, key, version string, expiresAt time.Time) (UploadCapability, error)
 }
 
 // UploadCapability is one upload authorization: method, URL and the
@@ -220,12 +265,33 @@ type UploadCapability struct {
 // identity. Both calls are idempotent per identity; Control never chooses
 // the next business action.
 type WorkflowRelay interface {
-	Start(ctx context.Context, operationID, tenantID string) (runID string, err error)
+	// Start starts the registered workflow of the operation kind with the
+	// operation id as the Workflow ID; idempotent per identity.
+	Start(ctx context.Context, operationID, tenantID string, kind domain.OperationKind) (runID string, err error)
 	Cancel(ctx context.Context, operationID string) error
 	// StartRecovery starts the reconciliation workflow of a recovery run;
 	// idempotent by run identity.
 	StartRecovery(ctx context.Context, runID string) (temporalRunID string, err error)
+	// UpdateAnswer relays an accepted answer as the tracked Update of the
+	// operation's run under the stable update id (the answer id): Temporal
+	// deduplicates it, so a lost receipt is repaired by the same call. The
+	// outcome is what the Workflow's handler answered; ErrRelayClosed means
+	// no run can take it (closed or never started).
+	UpdateAnswer(ctx context.Context, operationID string, a *domain.Answer) (RelayOutcome, error)
+	// UpdateCommand relays a hold, resume or change_definition command as
+	// the tracked Update of the run under the command id.
+	UpdateCommand(ctx context.Context, operationID string, c *domain.Command) (RelayOutcome, error)
 }
+
+// RelayOutcome is the Workflow handler's answer to a tracked Update.
+type RelayOutcome struct {
+	Outcome    domain.CommandOutcome
+	ReasonCode string
+}
+
+// ErrRelayClosed reports that the operation's run cannot take an Update
+// (closed, terminal or not started); the relay records the rejection.
+var ErrRelayClosed = errors.New("workflow run closed")
 
 // ManifestValidator exposes the jobs contract (contracts/jobs): it
 // validates a result manifest against the schema and answers the reviewed

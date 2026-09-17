@@ -590,7 +590,7 @@ func TestRecovery(t *testing.T) {
 	opC, atC := funded(t, p1.dispatchProcess, "rec_c", 0)
 	launchC, _, err := p1.exec.PrepareLaunch(ctx, cmd("tenant_a", "rec_c_launch", "l"), atC.ID, "lc-rec-c", "kind", imageDig, time.Now().Add(time.Minute))
 	require.NoError(t, err)
-	opE, _, err := p1.ops.Create(ctx, cmd("tenant_a", "rec_e", "body"), scopeA, domain.KindLocalCheck, subject)
+	opE, _, err := p1.ops.Create(ctx, cmd("tenant_a", "rec_e", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 	require.NoError(t, err)
 	opF, _ := funded(t, p1.dispatchProcess, "rec_f", 0) // stays present
 	opG, atG := funded(t, p1.dispatchProcess, "rec_g", 50_000)
@@ -599,7 +599,7 @@ func TestRecovery(t *testing.T) {
 	require.True(t, g.Allowed)
 	_, _, err = p1.dispatch.Observe(ctx, g.Dispatch.ID, "proxy-1", 1, domain.DispatchOutcomeUnknown, nil, "", time.Now())
 	require.NoError(t, err, "G's send has an unknown outcome and stays present in the database")
-	opOther, _, err := p1.ops.Create(ctx, cmd("tenant_b", "rec_other", "body"), scopeB, domain.KindLocalCheck, subject)
+	opOther, _, err := p1.ops.Create(ctx, cmd("tenant_b", "rec_other", "body"), scopeB, domain.KindLocalCheck, subject, nil)
 	require.NoError(t, err)
 	// D's launch and B2's permitted write stay present in the database with
 	// nothing settled about their external effect; the malformed intake
@@ -652,7 +652,7 @@ func TestRecovery(t *testing.T) {
 		require.Equal(t, opA.ExecutionEpoch+1, fenced.ExecutionEpoch, "old execution identities are retired")
 		require.Equal(t, run.RecoveryEpoch, fenced.RecoveryEpoch)
 		require.Equal(t, domain.LifecycleReconciling, fenced.Lifecycle)
-		_, _, err = p2.ops.Create(ctx, cmd("tenant_a", "rec_closed", "body"), scopeA, domain.KindLocalCheck, subject)
+		_, _, err = p2.ops.Create(ctx, cmd("tenant_a", "rec_closed", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.ErrorIs(t, err, domain.ErrStaleExecution, "new intake is closed for the scope")
 		require.ErrorContains(t, err, domain.DenyRecoveryRestricted)
 		denied, err := p2.dispatch.Admit(ctx, admitCmd("rec_closed", "m"), modelRequest(fenced, atA, "rec_closed", "proxy-1", 10_000))
@@ -661,7 +661,7 @@ func TestRecovery(t *testing.T) {
 		require.Equal(t, domain.DenyRecoveryRestricted, denied.DenialCode, "no send permission while the scope is closed")
 		_, _, err = p2.exec.OpenAttempt(ctx, cmd("tenant_a", "rec_closed_open", "o"), opF.ID, "local-check", 1, "local-check-v1")
 		require.ErrorIs(t, err, domain.ErrStaleExecution)
-		other, _, err := p1.ops.Create(ctx, cmd("tenant_b", "rec_open_b", "body"), scopeB, domain.KindLocalCheck, subject)
+		other, _, err := p1.ops.Create(ctx, cmd("tenant_b", "rec_open_b", "body"), scopeB, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err, "another tenant's scope is untouched")
 		require.Equal(t, uint64(1), other.RecoveryEpoch)
 		unchanged, err := p1.ops.Get(ctx, scopeB, opOther.ID)
@@ -669,7 +669,7 @@ func TestRecovery(t *testing.T) {
 		require.Equal(t, uint64(1), unchanged.ExecutionEpoch)
 
 		wf := &fakeWorkflows{starts: map[string]int{}, cancels: map[string]int{}}
-		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, p1.recovery, domain.SystemClock{}, testLog, time.Second)
+		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, p1.recovery, application.NewPreparations(postgres.NewStore(p1.pool), []domain.Profile{profile}, domain.SystemClock{}, testLog), application.NewGenerations(postgres.NewStore(p1.pool), nil, []domain.Profile{profile}, nil, domain.SystemClock{}, testLog), domain.SystemClock{}, testLog, time.Second)
 		require.NoError(t, relay.Tick(ctx))
 		require.NoError(t, relay.Tick(ctx))
 		require.Equal(t, 1, wf.starts["recovery:"+run.ID], "the relay starts the reconciliation workflow once")
@@ -922,7 +922,7 @@ func TestRecovery(t *testing.T) {
 		var instances int
 		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT count(*) FROM physical_instances WHERE launch_key = 'lc-rec-c'").Scan(&instances))
 		require.Equal(t, 1, instances, "duplicate launch observations register one physical instance")
-		at, err := p1.exec.GetAcceptedStage(ctx, atC.ID, "")
+		at, err := p1.exec.GetAcceptedStage(ctx, atC.ID, "", "")
 		require.ErrorIs(t, err, domain.ErrNotFound, "a stopped Job proves no result")
 		_ = at
 		var state, outcome string
@@ -989,7 +989,7 @@ func TestRecovery(t *testing.T) {
 		require.Zero(t, unsettled)
 		require.Equal(t, domain.RecoveryReopened, evaluated.Phase)
 		require.NotNil(t, evaluated.ReopenedAt)
-		_, _, err = p2.ops.Create(ctx, cmd("tenant_a", "rec_reopened", "body"), scopeA, domain.KindLocalCheck, subject)
+		_, _, err = p2.ops.Create(ctx, cmd("tenant_a", "rec_reopened", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err, "admission is open again")
 		again, _, err := p2.recovery.Evaluate(ctx, run.ID)
 		require.NoError(t, err)
@@ -1034,7 +1034,7 @@ func TestRecovery(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, domain.RecoveryRestricted, evaluated.Phase)
 		require.Equal(t, uint64(1), unsettled)
-		_, _, err = p2.ops.Create(ctx, cmd("tenant_a", "rec_still_closed", "body"), scopeA, domain.KindLocalCheck, subject)
+		_, _, err = p2.ops.Create(ctx, cmd("tenant_a", "rec_still_closed", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.ErrorIs(t, err, domain.ErrStaleExecution, "an unresolved outcome keeps the scope restricted")
 		restored, err := p1.dispatch.Get(ctx, h.Dispatch.ID, "", "")
 		require.NoError(t, err)

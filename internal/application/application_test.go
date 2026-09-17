@@ -81,11 +81,19 @@ type fakeWorkflows struct {
 	cancels map[string]int
 }
 
-func (f *fakeWorkflows) Start(_ context.Context, id, _ string) (string, error) {
+func (f *fakeWorkflows) Start(_ context.Context, id, _ string, _ domain.OperationKind) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.starts[id]++
 	return "run-" + id, nil
+}
+
+func (f *fakeWorkflows) UpdateAnswer(context.Context, string, *domain.Answer) (application.RelayOutcome, error) {
+	return application.RelayOutcome{Outcome: domain.OutcomeApplied}, nil
+}
+
+func (f *fakeWorkflows) UpdateCommand(context.Context, string, *domain.Command) (application.RelayOutcome, error) {
+	return application.RelayOutcome{Outcome: domain.OutcomeApplied}, nil
 }
 
 func (f *fakeWorkflows) Cancel(_ context.Context, id string) error {
@@ -116,7 +124,7 @@ func newProcess(t *testing.T, inst *testdb.Instance, inv application.Inventory) 
 	return &process{
 		pool: pool,
 		ops:  application.NewOperations(store, inv, []domain.Profile{profile}, domain.SystemClock{}, testLog),
-		exec: application.NewExecution(store, inv, manifests, domain.SystemClock{}, testLog),
+		exec: application.NewExecution(store, inv, manifests, []domain.Profile{profile}, domain.SystemClock{}, testLog),
 	}
 }
 
@@ -152,7 +160,7 @@ func TestControl(t *testing.T) {
 			wg.Add(1)
 			go func(p *process) {
 				defer wg.Done()
-				op, existing, err := p.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject)
+				op, existing, err := p.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject, nil)
 				results <- res{op, existing, err}
 			}(p)
 		}
@@ -177,12 +185,12 @@ func TestControl(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(op.Revision), lastRev, "projection revision equals the last committed event revision")
 		require.Equal(t, int64(op.CoveredEventSeq()), lastSeq)
-		_, _, err = p1.ops.Create(ctx, cmd("tenant_a", "cmd_dup", "different body"), scopeA, domain.KindLocalCheck, subject)
+		_, _, err = p1.ops.Create(ctx, cmd("tenant_a", "cmd_dup", "different body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.ErrorIs(t, err, domain.ErrIdempotencyConflict, "changed digest conflicts")
 	})
 
 	t.Run("cross-tenant reads and commands are not found", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_scope", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_scope", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		_, err = p2.ops.Get(ctx, scopeB, op.ID)
 		require.ErrorIs(t, err, domain.ErrNotFound)
@@ -195,7 +203,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("unqualified profile is rejected before any record exists", func(t *testing.T) {
-		_, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_badprofile", "body"), scopeA, domain.KindGeneration, domain.Subject{ProfileID: "codegen-v1", SubjectDigest: subject.SubjectDigest})
+		_, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_badprofile", "body"), scopeA, domain.KindGeneration, domain.Subject{ProfileID: "codegen-v1", SubjectDigest: subject.SubjectDigest}, nil)
 		require.ErrorIs(t, err, domain.ErrProfileUnqualified)
 		var n int
 		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT count(*) FROM operations WHERE command_id = 'cmd_badprofile'").Scan(&n))
@@ -205,7 +213,7 @@ func TestControl(t *testing.T) {
 	t.Run("lost intake acknowledgement survives a database restart under the original identity", func(t *testing.T) {
 		inv.failing.Store(true)
 		c := cmd("tenant_a", "cmd_lost_intake", "body")
-		_, _, err := p1.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject)
+		_, _, err := p1.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject, nil)
 		require.ErrorIs(t, err, domain.ErrEffectUncertain, "no acknowledgement while the inventory write is uncertain")
 		var opID, intake string
 		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT operation_id, intake_state FROM operations WHERE command_id = 'cmd_lost_intake'").Scan(&opID, &intake))
@@ -215,7 +223,7 @@ func TestControl(t *testing.T) {
 		p1.pool.Reset()
 		p2.pool.Reset()
 		inv.failing.Store(false)
-		op, existing, err := p2.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject)
+		op, existing, err := p2.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, opID, op.ID, "the original identity is confirmed, no replacement is created")
@@ -228,7 +236,7 @@ func TestControl(t *testing.T) {
 	t.Run("intake inventory written but acknowledgement lost: the other process confirms the original", func(t *testing.T) {
 		inv.ackLost.Store(true)
 		c := cmd("tenant_a", "cmd_lost_ack", "body")
-		_, _, err := p1.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject)
+		_, _, err := p1.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject, nil)
 		require.ErrorIs(t, err, domain.ErrEffectUncertain)
 		var opID, intake string
 		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT operation_id, intake_state FROM operations WHERE command_id = 'cmd_lost_ack'").Scan(&opID, &intake))
@@ -237,7 +245,7 @@ func TestControl(t *testing.T) {
 		require.NoError(t, err, "the obligation was durably published before the acknowledgement was lost")
 
 		inv.ackLost.Store(false)
-		op, existing, err := p2.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject)
+		op, existing, err := p2.ops.Create(ctx, c, scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, opID, op.ID)
@@ -251,7 +259,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("launch inventory written but acknowledgement lost: the same command confirms the original launch", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_lost_launch", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_lost_launch", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_lost_launch_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -280,7 +288,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("no launch is recorded after the absolute deadline", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_deadline", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_deadline", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_deadline_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -299,7 +307,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("cancel stays pending while cleanup is unknown", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_unknown", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_unknown", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_unknown_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -365,7 +373,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("a Pod registered while the closed attempt reconciles is evidence and never reopens the attempt", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_late_pod", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_late_pod", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_late_pod_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -421,7 +429,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("a completed attempt with unknown cleanup succeeds once the cleanup evidence arrives", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_settle", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_settle", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_settle_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -453,7 +461,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("accepted results keep their original bytes and are verified on read", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_bytes", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_bytes", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_bytes_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -468,7 +476,7 @@ func TestControl(t *testing.T) {
 		st, _, err := p2.exec.AcceptResult(ctx, cmd("tenant_a", "cmd_bytes_acc", "accept"), at.ID, inst.ID, "local-check-v1", domain.VerdictCertified, "", digest, manifest, "observer-test", nil)
 		require.NoError(t, err)
 
-		got, err := p1.exec.GetAcceptedStage(ctx, at.ID, "")
+		got, err := p1.exec.GetAcceptedStage(ctx, at.ID, "", "")
 		require.NoError(t, err)
 		require.Equal(t, manifest, got.ResultManifest, "the retrieved bytes are the submitted bytes")
 		require.Equal(t, digest, application.DigestOf(got.ResultManifest), "and they verify against result_digest")
@@ -481,7 +489,7 @@ func TestControl(t *testing.T) {
 		// failure, never a served result.
 		_, err = p1.pool.Exec(ctx, "UPDATE stage_manifests SET result_manifest_bytes = $2 WHERE stage_id = $1", st.ID, []byte(normalized))
 		require.NoError(t, err)
-		_, err = p2.exec.GetAcceptedStage(ctx, at.ID, "")
+		_, err = p2.exec.GetAcceptedStage(ctx, at.ID, "", "")
 		require.ErrorIs(t, err, domain.ErrIntegrity)
 		_, err = p1.pool.Exec(ctx, "UPDATE stage_manifests SET result_manifest_bytes = $2 WHERE stage_id = $1", st.ID, manifest)
 		require.NoError(t, err)
@@ -491,7 +499,7 @@ func TestControl(t *testing.T) {
 		// the normalized copy.
 		_, err = p1.pool.Exec(ctx, "UPDATE stage_manifests SET result_manifest_bytes = NULL WHERE stage_id = $1", st.ID)
 		require.NoError(t, err)
-		legacy, err := p1.exec.GetAcceptedStage(ctx, at.ID, "")
+		legacy, err := p1.exec.GetAcceptedStage(ctx, at.ID, "", "")
 		require.NoError(t, err)
 		require.Nil(t, legacy.ResultManifest)
 		require.Equal(t, digest, legacy.ResultDigest)
@@ -499,8 +507,8 @@ func TestControl(t *testing.T) {
 
 	t.Run("relay starts each confirmed operation exactly once and cancel is relayed", func(t *testing.T) {
 		wf := &fakeWorkflows{starts: map[string]int{}, cancels: map[string]int{}}
-		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, nil, domain.SystemClock{}, testLog, time.Second)
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_relay", "body"), scopeA, domain.KindLocalCheck, subject)
+		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, nil, application.NewPreparations(postgres.NewStore(p1.pool), []domain.Profile{profile}, domain.SystemClock{}, testLog), application.NewGenerations(postgres.NewStore(p1.pool), nil, []domain.Profile{profile}, nil, domain.SystemClock{}, testLog), domain.SystemClock{}, testLog, time.Second)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_relay", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		require.NoError(t, relay.Tick(ctx))
 		require.NoError(t, relay.Tick(ctx))
@@ -531,7 +539,7 @@ func TestControl(t *testing.T) {
 		// The started run can open its attempt before the relay's mark lands
 		// (the mark follows the start): the mark records the relay state and
 		// bumps the revision, but never moves the phase back to scheduled.
-		raced, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_relay_raced", "body"), scopeA, domain.KindLocalCheck, subject)
+		raced, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_relay_raced", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		_, _, err = p2.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_relay_raced_att", "open"), raced.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -544,7 +552,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("execution chain accepts exactly one result and settles the operation", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_exec", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_exec", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, existing, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_exec_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
@@ -684,7 +692,7 @@ func TestControl(t *testing.T) {
 	})
 
 	t.Run("cancel persists under concurrent execution load and settles on close", func(t *testing.T) {
-		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_load", "body"), scopeA, domain.KindLocalCheck, subject)
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_load", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		at, _, err := p1.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_load_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 		require.NoError(t, err)
