@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	buf.build/go/protovalidate v1.4.0
-	github.com/ancyloce/anvilkit-agent-contracts/go v0.1.2
+	github.com/ancyloce/anvilkit-agent-contracts/go v0.1.3-0.20260917133639-1e7cb5d5c537
 	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.5
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.5
