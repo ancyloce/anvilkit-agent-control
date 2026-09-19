@@ -351,7 +351,7 @@ func (o *Operation) FencedForNewDispatch() bool {
 // no open attempt and no unresolved cleanup. Only then may a cancel be
 // applied at once; an uncertain cleanup keeps it pending.
 func (o *Operation) SendersQuiescent(openAttempt bool) bool {
-	return !openAttempt && o.Lifecycle != LifecycleReconciling && o.Cleanup != CleanupUnknown
+	return !openAttempt && o.Lifecycle != LifecycleReconciling && o.Cleanup != CleanupUnknown && o.Finance != FinanceExposureUnknown
 }
 
 type CommandKind string

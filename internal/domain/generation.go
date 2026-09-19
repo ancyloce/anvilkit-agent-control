@@ -222,6 +222,11 @@ func (o *Operation) DecideControl(profile Profile, kind CommandKind, expected Re
 // removes the pending fence, a rejected resume keeps the hold. Deadlines,
 // budgets and effects are untouched.
 func (o *Operation) ApplyControl(kind CommandKind, outcome CommandOutcome, target string) {
+	// Receipts can arrive after a newer command. Cancellation and terminal
+	// state dominate every late receipt, including a definition change.
+	if o.Lifecycle.Terminal() || o.Control == ControlCancelPending || o.Control == ControlCancelApplied {
+		return
+	}
 	switch kind {
 	case CommandHold:
 		if outcome == OutcomeApplied {
@@ -260,7 +265,7 @@ func (o *Operation) SettleOperation(outcome OperationOutcome, failureCode, phase
 	if o.Lifecycle.Terminal() {
 		return nil
 	}
-	if o.Cleanup == CleanupUnknown || o.Lifecycle == LifecycleReconciling {
+	if o.Cleanup == CleanupUnknown {
 		return fmt.Errorf("%w: operation %s has unknown cleanup; it settles through reconciliation", ErrStaleExecution, o.ID)
 	}
 	cancelRequested := o.Control == ControlCancelPending || o.Control == ControlCancelApplied || outcome == OperationCanceled
@@ -281,4 +286,14 @@ func (o *Operation) SettleOperation(outcome OperationOutcome, failureCode, phase
 	}
 	o.Relay = RelaySettled
 	return nil
+}
+
+// SettlementIntent freezes the requested business outcome across reconciliation.
+type SettlementIntent struct {
+	OperationID   string
+	CommandID     string
+	RequestDigest Digest
+	Outcome       OperationOutcome
+	FailureCode   string
+	Phase         string
 }

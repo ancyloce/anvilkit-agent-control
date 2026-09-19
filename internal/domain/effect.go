@@ -153,10 +153,10 @@ func CheckEffect(req EffectRequest, c EffectContext) error {
 	if op.FencedForNewDispatch() {
 		return deny(DenyStaleExecution, "operation %s is fenced (%s/%s)", op.ID, op.Lifecycle, op.Control)
 	}
-	if !c.Now.Before(op.Deadline) {
-		return deny(DenyStaleExecution, "operation %s deadline %s passed", op.ID, op.Deadline.UTC().Format(time.RFC3339))
+	deadlineBound := op.EffectiveDeadline()
+	if !c.Now.Before(deadlineBound) {
+		return deny(DenyStaleExecution, "operation %s deadline %s passed", op.ID, deadlineBound.UTC().Format(time.RFC3339))
 	}
-	deadlineBound := op.Deadline
 	if req.AttemptID != "" {
 		at := c.Attempt
 		if at == nil || at.OperationID != op.ID {
@@ -168,7 +168,12 @@ func CheckEffect(req EffectRequest, c EffectContext) error {
 		if at.State == AttemptClosed || at.State == AttemptResultAccepted {
 			return deny(DenyStaleExecution, "attempt %s is %s", at.ID, at.State)
 		}
-		deadlineBound = at.Deadline
+		if at.Deadline.Before(deadlineBound) {
+			deadlineBound = at.Deadline
+		}
+	}
+	if req.LeaseID != "" && !req.LeaseExpiresAt.IsZero() && req.LeaseExpiresAt.Before(deadlineBound) {
+		deadlineBound = req.LeaseExpiresAt
 	}
 	if !req.Deadline.After(c.Now) {
 		return deny(DenyStaleExecution, "effect deadline %s passed", req.Deadline.UTC().Format(time.RFC3339))
