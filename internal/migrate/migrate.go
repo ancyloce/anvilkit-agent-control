@@ -26,7 +26,7 @@ const Domain = "control"
 
 // Latest is the migration version an empty database reaches from
 // 00001_init.sql plus the forward migrations of this build.
-const Latest int64 = 8
+const Latest int64 = 9
 
 // Source is the embedded migration directory (00001_init.sql and the
 // forward migrations), the same files the Job applies; tests install a
