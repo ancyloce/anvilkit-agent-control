@@ -207,16 +207,18 @@ type OperatorAuthorization struct {
 // million units, the interval is RFC 3339. A model price binds the trusted
 // provider and model of its route; a tool price binds neither.
 type PriceFixture struct {
-	Revision       string            `koanf:"revision"`
-	Kind           string            `koanf:"kind"`
-	Route          string            `koanf:"route"`
-	Provider       string            `koanf:"provider"`
-	Model          string            `koanf:"model"`
-	Currency       string            `koanf:"currency"`
-	EffectiveFrom  time.Time         `koanf:"effective_from"`
-	EffectiveUntil time.Time         `koanf:"effective_until"`
-	PerMillion     map[string]string `koanf:"per_million"`
-	MaxExposure    string            `koanf:"max_exposure"`
+	Revision                string            `koanf:"revision"`
+	Kind                    string            `koanf:"kind"`
+	Route                   string            `koanf:"route"`
+	Provider                string            `koanf:"provider"`
+	Model                   string            `koanf:"model"`
+	Currency                string            `koanf:"currency"`
+	EffectiveFrom           time.Time         `koanf:"effective_from"`
+	EffectiveUntil          time.Time         `koanf:"effective_until"`
+	PerMillion              map[string]string `koanf:"per_million"`
+	MaxExposure             string            `koanf:"max_exposure"`
+	InputIncludesCached     bool              `koanf:"input_includes_cached"`
+	OutputIncludesReasoning bool              `koanf:"output_includes_reasoning"`
 }
 
 type RouteAuthorization struct {
@@ -530,6 +532,7 @@ func (d DispatchDevelopment) DomainPrices() ([]domain.Price, error) {
 			return nil, fmt.Errorf("dispatch.development.prices[%d].max_exposure: %w", i, err)
 		}
 		p := domain.Price{Revision: f.Revision, Kind: domain.DispatchKind(f.Kind), Route: f.Route, Provider: f.Provider, Model: f.Model, Currency: f.Currency, EffectiveFrom: f.EffectiveFrom.UTC(), EffectiveUntil: f.EffectiveUntil.UTC(), PerMillion: map[domain.UsageCategory]int64{}, MaxExposure: bound.Amount}
+		p.InputIncludesCached, p.OutputIncludesReasoning = f.InputIncludesCached, f.OutputIncludesReasoning
 		for category, value := range f.PerMillion {
 			m, err := domain.ParseMoney(f.Currency, value)
 			if err != nil {
