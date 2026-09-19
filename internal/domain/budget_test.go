@@ -126,6 +126,31 @@ func TestPoolsAndAllocationsEnforceSharedLimits(t *testing.T) {
 	}
 }
 
+func TestPriceMetersInclusiveNativeUsageWithoutCountingSubsetsTwice(t *testing.T) {
+	p := fixture
+	p.InputIncludesCached, p.OutputIncludesReasoning = true, true
+	p.PerMillion = map[UsageCategory]int64{UsageInput: 150000, UsageOutput: 600000, UsageReasoning: 600000, UsageCachedInput: 3000}
+	u := Usage{Input: 120000, Output: 34000, Reasoning: 4000, CachedInput: 20000}
+	cost, err := p.Cost(u)
+	if err != nil || cost.Amount != 35460 {
+		t.Fatalf("inclusive usage cost: %+v %v", cost, err)
+	}
+	if u.Input != 120000 || u.Output != 34000 {
+		t.Fatal("metering changed the native observation")
+	}
+	for _, invalid := range []Usage{{Input: 1, CachedInput: 2}, {Output: 1, Reasoning: 2}} {
+		if _, err := p.Cost(invalid); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid inclusive usage accepted: %+v %v", invalid, err)
+		}
+	}
+	// Existing price revisions continue to meter independent categories.
+	p.InputIncludesCached, p.OutputIncludesReasoning = false, false
+	cost, err = p.Cost(u)
+	if err != nil || cost.Amount != 40860 {
+		t.Fatalf("independent usage changed: %+v %v", cost, err)
+	}
+}
+
 func TestGrantPolicyFencesRevocationExpiryMethodAndCap(t *testing.T) {
 	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
 	exp := now.Add(time.Hour)

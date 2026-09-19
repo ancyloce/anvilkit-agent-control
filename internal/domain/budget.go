@@ -153,6 +153,10 @@ type Price struct {
 	EffectiveFrom  time.Time
 	EffectiveUntil time.Time
 	PerMillion     map[UsageCategory]int64
+	// Inclusion rules belong to this immutable price revision. Native
+	// observations remain unchanged; only Go metering separates subsets.
+	InputIncludesCached     bool
+	OutputIncludesReasoning bool
 	// MaxExposure bounds the exposure one call may reserve on this route;
 	// a request above it is an unbounded possible exposure and is denied.
 	MaxExposure int64
@@ -206,6 +210,18 @@ func (p Price) EffectiveAt(t time.Time) bool {
 // / 1e6), summed, in integer arithmetic with an overflow check (a cost
 // that does not fit the ledger is an error, never a truncated amount).
 func (p Price) Cost(u Usage) (Money, error) {
+	if p.InputIncludesCached {
+		if u.CachedInput > u.Input {
+			return Money{}, fmt.Errorf("%w: cached usage exceeds inclusive input", ErrInvalid)
+		}
+		u.Input -= u.CachedInput
+	}
+	if p.OutputIncludesReasoning {
+		if u.Reasoning > u.Output {
+			return Money{}, fmt.Errorf("%w: reasoning usage exceeds inclusive output", ErrInvalid)
+		}
+		u.Output -= u.Reasoning
+	}
 	total := new(big.Int)
 	m := big.NewInt(million)
 	for _, c := range UsageCategories {
