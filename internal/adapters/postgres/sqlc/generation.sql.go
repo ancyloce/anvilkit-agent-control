@@ -83,6 +83,24 @@ func (q *Queries) GetFunding(ctx context.Context, operationID string) (Funding, 
 	return i, err
 }
 
+const getOperationSettlement = `-- name: GetOperationSettlement :one
+SELECT operation_id, command_id, request_digest, outcome, failure_code, phase FROM operation_settlements WHERE operation_id = $1
+`
+
+func (q *Queries) GetOperationSettlement(ctx context.Context, operationID string) (OperationSettlement, error) {
+	row := q.db.QueryRow(ctx, getOperationSettlement, operationID)
+	var i OperationSettlement
+	err := row.Scan(
+		&i.OperationID,
+		&i.CommandID,
+		&i.RequestDigest,
+		&i.Outcome,
+		&i.FailureCode,
+		&i.Phase,
+	)
+	return i, err
+}
+
 const getPermitByOwner = `-- name: GetPermitByOwner :one
 SELECT permit_id, pool_id, owner_kind, owner_id, fence_epoch, state, granted_at, released_at, release_evidence FROM permits WHERE owner_kind = $1 AND owner_id = $2 ORDER BY granted_at DESC LIMIT 1
 `
@@ -155,6 +173,32 @@ func (q *Queries) InsertFunding(ctx context.Context, arg InsertFundingParams) er
 		arg.Currency,
 		arg.Amount,
 		arg.FundedAt,
+	)
+	return err
+}
+
+const insertOperationSettlement = `-- name: InsertOperationSettlement :exec
+INSERT INTO operation_settlements (operation_id, command_id, request_digest, outcome, failure_code, phase)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertOperationSettlementParams struct {
+	OperationID   string
+	CommandID     string
+	RequestDigest string
+	Outcome       string
+	FailureCode   string
+	Phase         string
+}
+
+func (q *Queries) InsertOperationSettlement(ctx context.Context, arg InsertOperationSettlementParams) error {
+	_, err := q.db.Exec(ctx, insertOperationSettlement,
+		arg.OperationID,
+		arg.CommandID,
+		arg.RequestDigest,
+		arg.Outcome,
+		arg.FailureCode,
+		arg.Phase,
 	)
 	return err
 }

@@ -269,6 +269,23 @@ func (q *Queries) HasOpenAttempt(ctx context.Context, operationID string) (bool,
 	return exists, err
 }
 
+const hasUnknownAttempt = `-- name: HasUnknownAttempt :one
+SELECT EXISTS (SELECT 1 FROM attempts WHERE operation_id = $1 AND attempt_id <> $2
+    AND (cleanup_state = 'unknown' OR outcome = 'unknown'))
+`
+
+type HasUnknownAttemptParams struct {
+	OperationID string
+	AttemptID   string
+}
+
+func (q *Queries) HasUnknownAttempt(ctx context.Context, arg HasUnknownAttemptParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnknownAttempt, arg.OperationID, arg.AttemptID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertAttempt = `-- name: InsertAttempt :exec
 INSERT INTO attempts (
     attempt_id, operation_id, tenant_id, step_id, visit_ordinal, attempt_ordinal, profile_id, execution_epoch,

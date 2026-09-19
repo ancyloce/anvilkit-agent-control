@@ -95,3 +95,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: GetGrantPolicy :one
 SELECT * FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2;
+
+-- name: HasUnsettledDispatch :one
+SELECT EXISTS (SELECT 1 FROM dispatches WHERE operation_id = $1 AND state IN ('prepared', 'authorized', 'unknown'));

@@ -341,6 +341,15 @@ type OperationEvent struct {
 	OccurredAt   pgtype.Timestamptz
 }
 
+type OperationSettlement struct {
+	OperationID   string
+	CommandID     string
+	RequestDigest string
+	Outcome       string
+	FailureCode   string
+	Phase         string
+}
+
 type Permit struct {
 	PermitID        string
 	PoolID          string

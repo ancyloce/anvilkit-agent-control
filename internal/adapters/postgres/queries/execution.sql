@@ -10,6 +10,10 @@ SELECT count(*) FROM attempts WHERE operation_id = $1 AND step_id = $2 AND visit
 -- name: HasOpenAttempt :one
 SELECT EXISTS (SELECT 1 FROM attempts WHERE operation_id = $1 AND state <> 'closed');
 
+-- name: HasUnknownAttempt :one
+SELECT EXISTS (SELECT 1 FROM attempts WHERE operation_id = $1 AND attempt_id <> $2
+    AND (cleanup_state = 'unknown' OR outcome = 'unknown'));
+
 -- name: InsertAttempt :exec
 INSERT INTO attempts (
     attempt_id, operation_id, tenant_id, step_id, visit_ordinal, attempt_ordinal, profile_id, execution_epoch,

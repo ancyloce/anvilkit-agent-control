@@ -298,3 +298,15 @@ func (r *repo) GetStageArtifactByTransfer(ctx context.Context, transferID, opera
 	}
 	return &domain.StageArtifact{StageID: m.StageID, TransferID: m.TransferID, Handle: m.Handle, Class: domain.ArtifactClass(m.Class), Digest: domain.Digest(m.Digest), SizeBytes: m.SizeBytes, ObjectVersion: m.ObjectVersion}, nil
 }
+
+func (r *repo) GetOperationSettlement(ctx context.Context, operationID string) (*domain.SettlementIntent, error) {
+	m, err := r.q.GetOperationSettlement(ctx, operationID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &domain.SettlementIntent{OperationID: m.OperationID, CommandID: m.CommandID, RequestDigest: domain.Digest(m.RequestDigest), Outcome: domain.OperationOutcome(m.Outcome), FailureCode: m.FailureCode, Phase: m.Phase}, nil
+}
+
+func (r *repo) InsertOperationSettlement(ctx context.Context, s *domain.SettlementIntent) error {
+	return mapErr(r.q.InsertOperationSettlement(ctx, sqlc.InsertOperationSettlementParams{OperationID: s.OperationID, CommandID: s.CommandID, RequestDigest: string(s.RequestDigest), Outcome: string(s.Outcome), FailureCode: s.FailureCode, Phase: s.Phase}))
+}

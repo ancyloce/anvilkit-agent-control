@@ -291,6 +291,17 @@ func (q *Queries) HasUnknownDispatch(ctx context.Context, operationID string) (b
 	return exists, err
 }
 
+const hasUnsettledDispatch = `-- name: HasUnsettledDispatch :one
+SELECT EXISTS (SELECT 1 FROM dispatches WHERE operation_id = $1 AND state IN ('prepared', 'authorized', 'unknown'))
+`
+
+func (q *Queries) HasUnsettledDispatch(ctx context.Context, operationID string) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnsettledDispatch, operationID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertAllocation = `-- name: InsertAllocation :exec
 INSERT INTO allocations (allocation_id, pool_id, operation_id, currency, amount, reserved, consumed, revision, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)

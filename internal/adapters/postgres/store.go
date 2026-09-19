@@ -399,7 +399,11 @@ func (r *repo) CountAttempts(ctx context.Context, operationID, stepID string, vi
 
 func (r *repo) HasOpenAttempt(ctx context.Context, operationID string) (bool, error) {
 	ok, err := r.q.HasOpenAttempt(ctx, operationID)
-	return ok, mapErr(err)
+	return ok, err
+}
+
+func (r *repo) HasUnknownAttempt(ctx context.Context, operationID, exceptAttemptID string) (bool, error) {
+	return r.q.HasUnknownAttempt(ctx, sqlc.HasUnknownAttemptParams{OperationID: operationID, AttemptID: exceptAttemptID})
 }
 
 func (r *repo) InsertAttempt(ctx context.Context, a *domain.Attempt) error {
@@ -494,7 +498,7 @@ func (r *repo) LockInstance(ctx context.Context, instanceID string) (*domain.Ins
 
 func (r *repo) HasCurrentInstance(ctx context.Context, attemptID string) (bool, error) {
 	ok, err := r.q.HasCurrentInstance(ctx, attemptID)
-	return ok, mapErr(err)
+	return ok, err
 }
 
 func (r *repo) InsertInstance(ctx context.Context, i *domain.Instance) error {
@@ -682,12 +686,12 @@ func (r *repo) UpdateDispatch(ctx context.Context, d *domain.Dispatch) error {
 
 func (r *repo) HasOverspend(ctx context.Context, operationID string) (bool, error) {
 	ok, err := r.q.HasOverspend(ctx, operationID)
-	return ok, mapErr(err)
+	return ok, err
 }
 
 func (r *repo) HasUnknownDispatch(ctx context.Context, operationID string) (bool, error) {
 	ok, err := r.q.HasUnknownDispatch(ctx, operationID)
-	return ok, mapErr(err)
+	return ok, err
 }
 
 func (r *repo) GetUsageObservation(ctx context.Context, dispatchID, source string, sequence uint64) (*domain.UsageObservation, error) {
@@ -722,7 +726,7 @@ func (r *repo) InsertUsageObservation(ctx context.Context, o *domain.UsageObserv
 
 func (r *repo) HasReportedUsage(ctx context.Context, dispatchID string) (bool, error) {
 	ok, err := r.q.HasReportedUsage(ctx, dispatchID)
-	return ok, mapErr(err)
+	return ok, err
 }
 
 func (r *repo) MaxUsage(ctx context.Context, dispatchID string) (domain.Usage, error) {
@@ -763,4 +767,9 @@ func (r *repo) GetGrantPolicy(ctx context.Context, grantID string, revision uint
 		g.CostCap = &domain.Money{Currency: *m.CostCapCurrency, Amount: *m.CostCapAmount}
 	}
 	return g, nil
+}
+
+func (r *repo) HasUnsettledDispatch(ctx context.Context, operationID string) (bool, error) {
+	ok, err := r.q.HasUnsettledDispatch(ctx, operationID)
+	return ok, err
 }

@@ -37,3 +37,10 @@ SELECT * FROM stage_manifests WHERE operation_id = $1 ORDER BY accepted_at;
 -- name: GetStageArtifactByTransfer :one
 SELECT sa.* FROM stage_artifacts sa JOIN stage_manifests sm ON sm.stage_id = sa.stage_id
 WHERE sa.transfer_id = $1 AND sm.operation_id = $2 LIMIT 1;
+
+-- name: GetOperationSettlement :one
+SELECT * FROM operation_settlements WHERE operation_id = $1;
+
+-- name: InsertOperationSettlement :exec
+INSERT INTO operation_settlements (operation_id, command_id, request_digest, outcome, failure_code, phase)
+VALUES ($1, $2, $3, $4, $5, $6);
