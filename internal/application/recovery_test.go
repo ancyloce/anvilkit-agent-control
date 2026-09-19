@@ -57,9 +57,10 @@ func effectRequest(op *domain.Operation, at *domain.Attempt, owner string, occur
 	if at != nil {
 		attemptID = at.ID
 	}
+	deadline := time.Now().Add(time.Minute)
 	return domain.EffectRequest{
 		OperationID: op.ID, AttemptID: attemptID, Owner: owner, Kind: domain.EffectBusinessWrite, Occurrence: occurrence, CanonicalSubject: "component/c1/page/p1",
-		ExpectedRevision: "7", ExecutionEpoch: op.ExecutionEpoch, LeaseID: "lease-1", LeaseFence: 3, LeaseExpiresAt: time.Now().Add(time.Minute), Deadline: time.Now().Add(time.Minute),
+		ExpectedRevision: "7", ExecutionEpoch: op.ExecutionEpoch, LeaseID: "lease-1", LeaseFence: 3, LeaseExpiresAt: deadline, Deadline: deadline,
 	}
 }
 
@@ -242,6 +243,7 @@ func TestEffects(t *testing.T) {
 		op, at := funded(t, p1.dispatchProcess, "eff_lease", 0)
 		req := effectRequest(op, at, "activity-worker-1", 1)
 		req.LeaseExpiresAt = time.Now().Add(1500 * time.Millisecond)
+		req.Deadline = req.LeaseExpiresAt
 		c := effectCmd("lease", "body")
 		inv.ackLost.Store(true)
 		_, err := p1.effects.Prepare(ctx, c, req)
@@ -268,6 +270,7 @@ func TestEffects(t *testing.T) {
 		op, at := funded(t, p1.dispatchProcess, "eff_contend", 0)
 		req := effectRequest(op, at, "activity-worker-1", 1)
 		req.LeaseExpiresAt = time.Now().Add(1500 * time.Millisecond)
+		req.Deadline = req.LeaseExpiresAt
 		c := effectCmd("contend", "body")
 		inv.ackLost.Store(true)
 		_, err := p1.effects.Prepare(ctx, c, req)

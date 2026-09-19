@@ -521,6 +521,17 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 		if err != nil {
 			return err
 		}
+		unresolved, err := unresolvedEffects(ctx, r, lockedOp.ID)
+		if err != nil {
+			return err
+		}
+		unresolved = unresolved || lockedOp.Finance == domain.FinanceExposureUnknown
+		// The operation lock serializes attempt mutations. Definite evidence for
+		// this identity cannot settle another attempt's persisted uncertainty.
+		unknownAttempt, err := r.HasUnknownAttempt(ctx, lockedOp.ID, locked.ID)
+		if err != nil {
+			return err
+		}
 		transition := "attempt:" + locked.ID + ":closed"
 		if locked.State == domain.AttemptClosed {
 			switch {
@@ -528,9 +539,11 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 				return fmt.Errorf("%w: attempt %s closed as %s", domain.ErrIdempotencyConflict, locked.ID, locked.Outcome)
 			case locked.CanSettleCleanup(outcome, cleanup):
 				transition = "attempt:" + locked.ID + ":cleanup-settled"
+			case lockedOp.Lifecycle == domain.LifecycleReconciling && !unresolved && !unknownAttempt && cleanup != domain.CleanupUnknown && outcome != domain.OutcomeUnknown:
+				transition = "attempt:" + locked.ID + ":obligations-settled"
 			default:
 				at, op, existing = locked, lockedOp, true
-				return nil
+				return settleTerminal(ctx, r, lockedOp, now)
 			}
 		}
 		stage, err := r.GetStageByAttempt(ctx, locked.ID)
@@ -540,6 +553,15 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 		locked.UpdatedAt = now
 		ev := lockedOp.Transition(transition, now, func(o *domain.Operation) {
 			domain.SettleClose(o, locked, stage, outcome, cleanup, failureCode, s.multiStep(o))
+			if unknownAttempt {
+				o.Cleanup = domain.CleanupUnknown
+			}
+			if unresolved || unknownAttempt {
+				o.Lifecycle = domain.LifecycleReconciling
+				if o.Control == domain.ControlCancelApplied {
+					o.Control = domain.ControlCancelPending
+				}
+			}
 			if o.Lifecycle.Terminal() {
 				o.Relay = domain.RelaySettled
 			}
@@ -550,10 +572,10 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 		if err := r.UpdateOperation(ctx, lockedOp); err != nil {
 			return err
 		}
-		if err := r.InsertEvent(ctx, ev); err != nil {
+		if err := settleTerminal(ctx, r, lockedOp, now); err != nil {
 			return err
 		}
-		if err := settleTerminal(ctx, r, lockedOp, now); err != nil {
+		if err := r.InsertEvent(ctx, ev); err != nil {
 			return err
 		}
 		at, op = locked, lockedOp
@@ -567,13 +589,29 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 // every terminal operation releases its execution permit (the pool's
 // capacity is freed by the evidence of the close, never by a TTL).
 func settleTerminal(ctx context.Context, r Repo, op *domain.Operation, now time.Time) error {
-	if op.Control == domain.ControlCancelApplied {
-		if err := r.SettlePendingCommands(ctx, op.ID, domain.CommandCancel, domain.OutcomeApplied, op.Revision, now); err != nil {
+	if op.Lifecycle.Terminal() {
+		open, err := r.HasOpenAttempt(ctx, op.ID)
+		if err != nil {
+			return err
+		}
+		unresolved, err := unresolvedEffects(ctx, r, op.ID)
+		if err != nil {
+			return err
+		}
+		unknownAttempt, err := r.HasUnknownAttempt(ctx, op.ID, "")
+		if err != nil {
+			return err
+		}
+		if open || unresolved || unknownAttempt || op.Cleanup == domain.CleanupUnknown || op.Finance == domain.FinanceExposureUnknown {
+			return nil
+		}
+		// Permit locks (rank 5) precede command and event writes (ranks 6/7).
+		if err := r.ReleasePermits(ctx, "operation", op.ID, now, "operation:"+string(op.Lifecycle)); err != nil {
 			return err
 		}
 	}
-	if op.Lifecycle.Terminal() {
-		return r.ReleasePermits(ctx, "operation", op.ID, now, "operation:"+string(op.Lifecycle))
+	if op.Control == domain.ControlCancelApplied {
+		return r.SettlePendingCommands(ctx, op.ID, domain.CommandCancel, domain.OutcomeApplied, op.Revision, now)
 	}
 	return nil
 }
@@ -597,7 +635,7 @@ func (s *Execution) SettleOperation(ctx context.Context, cmd domain.CommandIdent
 		}
 		if locked.Lifecycle.Terminal() {
 			op, existing = locked, true
-			return nil
+			return settleTerminal(ctx, r, locked, now)
 		}
 		open, err := r.HasOpenAttempt(ctx, locked.ID)
 		if err != nil {
@@ -610,10 +648,41 @@ func (s *Execution) SettleOperation(ctx context.Context, cmd domain.CommandIdent
 		if err != nil {
 			return err
 		}
-		unresolved = unresolved || locked.Finance == domain.FinanceExposureUnknown
-		var settle error
-		ev := locked.Transition("settle:"+cmd.CommandID, now, func(o *domain.Operation) {
+		unknownAttempt, err := r.HasUnknownAttempt(ctx, locked.ID, "")
+		if err != nil {
+			return err
+		}
+		unresolved = unresolved || unknownAttempt || locked.Finance == domain.FinanceExposureUnknown || locked.Cleanup == domain.CleanupUnknown
+		intent := &domain.SettlementIntent{OperationID: operationID, CommandID: cmd.CommandID, RequestDigest: cmd.RequestDigest, Outcome: outcome, FailureCode: failureCode, Phase: phase}
+		insertIntent := false
+		stored, err := r.GetOperationSettlement(ctx, operationID)
+		switch {
+		case err == nil:
+			if *stored != *intent {
+				return fmt.Errorf("%w: settlement of %s differs", domain.ErrIdempotencyConflict, operationID)
+			}
 			if unresolved {
+				op, existing = locked, true
+				return nil
+			}
+		case errors.Is(err, domain.ErrNotFound):
+			if outcome != domain.OperationSucceeded && outcome != domain.OperationFailed && outcome != domain.OperationCanceled {
+				return domain.ErrInvalid
+			}
+			insertIntent = true
+		default:
+			return err
+		}
+		transition := "settle:" + cmd.CommandID + ":terminal"
+		if unresolved {
+			transition = "settle:" + cmd.CommandID + ":pending"
+		}
+		var settle error
+		ev := locked.Transition(transition, now, func(o *domain.Operation) {
+			if unresolved {
+				if unknownAttempt {
+					o.Cleanup = domain.CleanupUnknown
+				}
 				// An unresolved obligation (an unknown dispatch or effect)
 				// keeps the operation reconciling under the stated phase:
 				// settlement continues, it never disappears behind a
@@ -632,10 +701,15 @@ func (s *Execution) SettleOperation(ctx context.Context, cmd domain.CommandIdent
 		if err := r.UpdateOperation(ctx, locked); err != nil {
 			return err
 		}
-		if err := r.InsertEvent(ctx, ev); err != nil {
+		if err := settleTerminal(ctx, r, locked, now); err != nil {
 			return err
 		}
-		if err := settleTerminal(ctx, r, locked, now); err != nil {
+		if insertIntent {
+			if err := r.InsertOperationSettlement(ctx, intent); err != nil {
+				return err
+			}
+		}
+		if err := r.InsertEvent(ctx, ev); err != nil {
 			return err
 		}
 		op = locked

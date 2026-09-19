@@ -322,5 +322,9 @@ func (s *Effects) QueryOriginal(ctx context.Context, tenantID, effectID string) 
 // effects: a consumed permit whose outcome is unknown means a writer may
 // still be acting.
 func unresolvedEffects(ctx context.Context, r Repo, operationID string) (bool, error) {
-	return r.HasUnresolvedEffect(ctx, operationID)
+	unresolved, err := r.HasUnresolvedEffect(ctx, operationID)
+	if err != nil || unresolved {
+		return unresolved, err
+	}
+	return r.HasUnsettledDispatch(ctx, operationID)
 }

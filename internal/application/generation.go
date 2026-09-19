@@ -321,7 +321,6 @@ func (s *Generations) RecordFunding(ctx context.Context, cmd domain.CommandIdent
 // applied change moves the activation. Settled once.
 func (s *Generations) RecordCommandRelay(ctx context.Context, tenantID, commandID string, outcome domain.CommandOutcome, reason string) (*domain.Command, error) {
 	var c *domain.Command
-	now := s.clock.Now()
 	err := s.store.Tx(ctx, func(r Repo) error {
 		peek, err := r.GetCommand(ctx, tenantID, commandID)
 		if err != nil {
@@ -341,6 +340,10 @@ func (s *Generations) RecordCommandRelay(ctx context.Context, tenantID, commandI
 		}
 		if outcome == domain.OutcomePending {
 			return fmt.Errorf("%w: a relay outcome must settle the command", domain.ErrInvalid)
+		}
+		now := s.clock.Now()
+		if op.Lifecycle.Terminal() || op.Control == domain.ControlCancelPending || op.Control == domain.ControlCancelApplied {
+			outcome, reason = domain.OutcomeRejected, "SUPERSEDED_BY_OPERATION_FENCE"
 		}
 		locked.Outcome, locked.ReasonCode, locked.SettledAt, locked.Relay = outcome, reason, &now, domain.CommandRelaySettled
 		ev := op.Transition("cmd:"+commandID+":"+string(outcome), now, func(o *domain.Operation) {

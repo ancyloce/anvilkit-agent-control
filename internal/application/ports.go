@@ -29,6 +29,8 @@ type Store interface {
 // Control's rank order: operation (2) before attempt/instance (3) before
 // command/result (6) before events (7).
 type Repo interface {
+	GetOperationSettlement(ctx context.Context, operationID string) (*domain.SettlementIntent, error)
+	InsertOperationSettlement(ctx context.Context, intent *domain.SettlementIntent) error
 	InsertOperation(ctx context.Context, op *domain.Operation) error
 	GetOperationByCommand(ctx context.Context, tenantID, commandID string) (*domain.Operation, error)
 	GetOperationScoped(ctx context.Context, operationID, tenantID string) (*domain.Operation, error)
@@ -89,6 +91,9 @@ type Repo interface {
 	LockAttempt(ctx context.Context, attemptID string) (*domain.Attempt, error)
 	CountAttempts(ctx context.Context, operationID, stepID string, visit uint64) (uint64, error)
 	HasOpenAttempt(ctx context.Context, operationID string) (bool, error)
+	// HasUnknownAttempt reads persisted uncertainty, excluding only the attempt
+	// whose original identity is supplying cleanup evidence. Empty excludes none.
+	HasUnknownAttempt(ctx context.Context, operationID, exceptAttemptID string) (bool, error)
 	InsertAttempt(ctx context.Context, at *domain.Attempt) error
 	UpdateAttempt(ctx context.Context, at *domain.Attempt) error
 
@@ -135,6 +140,7 @@ type Repo interface {
 	UpdateDispatch(ctx context.Context, d *domain.Dispatch) error
 	HasOverspend(ctx context.Context, operationID string) (bool, error)
 	HasUnknownDispatch(ctx context.Context, operationID string) (bool, error)
+	HasUnsettledDispatch(ctx context.Context, operationID string) (bool, error)
 	GetUsageObservation(ctx context.Context, dispatchID, source string, sequence uint64) (*domain.UsageObservation, error)
 	InsertUsageObservation(ctx context.Context, o *domain.UsageObservation) error
 	// MaxUsage is the running maximum of the explicitly reported counters;

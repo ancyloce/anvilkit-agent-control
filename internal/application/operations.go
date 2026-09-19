@@ -392,6 +392,9 @@ func (s *Operations) SubmitCommand(ctx context.Context, cmd domain.CommandIdenti
 			if err := r.UpdateOperation(ctx, op); err != nil {
 				return err
 			}
+			if err := settleTerminal(ctx, r, op, now); err != nil {
+				return err
+			}
 			if err := r.InsertEvent(ctx, ev); err != nil {
 				return err
 			}
