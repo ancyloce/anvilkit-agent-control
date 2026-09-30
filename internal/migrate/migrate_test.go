@@ -95,6 +95,36 @@ func TestControlSchema(t *testing.T) {
 	require.Equal(t, migrate.Latest, version)
 
 	forwardMigrateExistingStage(ctx, t, db)
+	grantPolicyBarrier(ctx, t, db)
+	// 00011: tool dispatches bind their argument digest and effect class.
+	var n int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'dispatches' AND column_name IN ('argument_digest', 'side_effecting')`).Scan(&n))
+	require.Equal(t, 2, n)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname = 'dispatches_argument_digest_check'`).Scan(&n))
+	require.Equal(t, 1, n)
+}
+
+// grantPolicyBarrier: 00010 keeps one registration per (tenant, command),
+// a fence names its revocation command and time, and a converged barrier
+// has no counted sender left.
+func grantPolicyBarrier(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+	const digest = "sha256:0dc7fa9db7237a2b5c96f70f59bb00f73bb86a0ca5554e91c312f9ada26e18b3"
+	insert := func(grant, command string) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO grant_policies (grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, policy_epoch, receipt_id, revocation_state, register_command_id, register_request_digest)
+			VALUES ($1, 1, 'tenant_a', $2, 'srv', '{m}', nextval('grant_policy_epoch_seq'), 'rcpt-' || $1, 'none', $3, $2)`, grant, digest, command)
+		return err
+	}
+	require.NoError(t, insert("g1", "reg-1"))
+	require.Error(t, insert("g2", "reg-1"), "one registration per (tenant, command)")
+	_, err := db.ExecContext(ctx, "UPDATE grant_policies SET revocation_state = 'fenced' WHERE grant_id = 'g1'")
+	require.Error(t, err, "a fence names its revocation command and time")
+	_, err = db.ExecContext(ctx, "UPDATE grant_policies SET revocation_state = 'fenced', fenced_at = now(), revocation_command_id = 'rev-1', revocation_request_digest = $1, in_flight_calls = 1 WHERE grant_id = 'g1'", digest)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, "UPDATE grant_policies SET revocation_state = 'converged', converged_at = now() WHERE grant_id = 'g1'")
+	require.Error(t, err, "converged only without counted senders")
+	_, err = db.ExecContext(ctx, "DELETE FROM grant_policies")
+	require.NoError(t, err)
 }
 
 // forwardMigrateExistingStage installs version 1, accepts a stage the way
