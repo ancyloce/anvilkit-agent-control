@@ -65,6 +65,13 @@ func effectContext(ctx context.Context, r Repo, operationID, attemptID, tenantID
 		return domain.EffectContext{}, err
 	}
 	c.AdmissionClosed = closed
+	if op.Kind == domain.KindRelease {
+		rel, err := r.GetRelease(ctx, op.ID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return domain.EffectContext{}, err
+		}
+		c.Release = rel
+	}
 	c.Now = clock.Now()
 	return c, nil
 }

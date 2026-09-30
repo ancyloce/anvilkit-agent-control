@@ -124,6 +124,11 @@ type Repo interface {
 	InsertPreview(ctx context.Context, p *domain.Preview) error
 	UpdatePreview(ctx context.Context, p *domain.Preview, expected uint64) (bool, error)
 	GetCertifiedSourceArtifact(ctx context.Context, operationID string) (*domain.StageArtifact, error)
+	// Releases (P21): the committed projection of a release operation.
+	GetRelease(ctx context.Context, operationID string) (*domain.Release, error)
+	LockRelease(ctx context.Context, operationID string) (*domain.Release, error)
+	InsertRelease(ctx context.Context, p *domain.Release) error
+	UpdateRelease(ctx context.Context, p *domain.Release, expected uint64) (bool, error)
 	LockTransfer(ctx context.Context, transferID string) (*domain.Transfer, error)
 	InsertTransfer(ctx context.Context, t *domain.Transfer) error
 	UpdateTransfer(ctx context.Context, t *domain.Transfer) error

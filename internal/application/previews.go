@@ -105,40 +105,50 @@ func (s *Previews) Source(ctx context.Context, tenantID, operationID string) (Op
 		if err != nil {
 			return err
 		}
-		out.Lineage = op.Subject.SubjectDigest
-		switch op.Kind {
-		case domain.KindPreviewBuild:
-			t, err := r.GetTransferByHandle(ctx, op.Subject.SourceHandle)
-			if err != nil {
-				return err
-			}
-			out.Source = domain.StageArtifact{TransferID: t.ID, Handle: t.Handle, Class: t.Class, Digest: t.ActualDigest, SizeBytes: t.ActualSize, ObjectVersion: t.ObjectVersion}
-			out.Revision = op.Subject.SourceRevision
-			if p, err := r.GetPreview(ctx, operationID); err == nil && p.SourceRevision != "" {
-				out.Revision = p.SourceRevision
-			} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
-				return err
-			}
-		case domain.KindGeneration, domain.KindRefinement:
-			a, err := r.GetCertifiedSourceArtifact(ctx, operationID)
-			if err != nil {
-				return err
-			}
-			out.Source = *a
-			if op.CandidateEffectID != "" {
-				// The candidate registration's receipt is the revision the
-				// source authority registered (the Workflow observes it so).
-				for _, src := range []string{"workflow", "workflow-query"} {
-					if o, err := r.GetEffectObservation(ctx, op.CandidateEffectID, src, 1); err == nil {
-						out.Revision = o.ReceiptDigest
-						break
-					}
-				}
-			}
-		default:
-			return fmt.Errorf("%w: operation %s has no source", domain.ErrNotFound, operationID)
-		}
-		return nil
+		out, _, err = resolveSource(ctx, r, op)
+		return err
 	})
 	return out, err
+}
+
+// resolveSource answers an operation's source and whether the revision is
+// one the source authority named for these bytes (saved): a preview
+// build's edited source with the revision its save created (else its
+// base, not saved), or a generation's latest certified source with the
+// revision its candidate registration answered.
+func resolveSource(ctx context.Context, r Repo, op *domain.Operation) (out OperationSource, saved bool, err error) {
+	out.Lineage = op.Subject.SubjectDigest
+	switch op.Kind {
+	case domain.KindPreviewBuild:
+		t, err := r.GetTransferByHandle(ctx, op.Subject.SourceHandle)
+		if err != nil {
+			return out, false, err
+		}
+		out.Source = domain.StageArtifact{TransferID: t.ID, Handle: t.Handle, Class: t.Class, Digest: t.ActualDigest, SizeBytes: t.ActualSize, ObjectVersion: t.ObjectVersion}
+		out.Revision = op.Subject.SourceRevision
+		if p, err := r.GetPreview(ctx, op.ID); err == nil && p.SourceRevision != "" {
+			out.Revision, saved = p.SourceRevision, true
+		} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return out, false, err
+		}
+	case domain.KindGeneration, domain.KindRefinement:
+		a, err := r.GetCertifiedSourceArtifact(ctx, op.ID)
+		if err != nil {
+			return out, false, err
+		}
+		out.Source = *a
+		if op.CandidateEffectID != "" {
+			// The candidate registration's receipt is the revision the
+			// source authority registered (the Workflow observes it so).
+			for _, src := range []string{"workflow", "workflow-query"} {
+				if o, err := r.GetEffectObservation(ctx, op.CandidateEffectID, src, 1); err == nil {
+					out.Revision, saved = o.ReceiptDigest, true
+					break
+				}
+			}
+		}
+	default:
+		return out, false, fmt.Errorf("%w: operation %s has no source", domain.ErrNotFound, op.ID)
+	}
+	return out, saved, nil
 }

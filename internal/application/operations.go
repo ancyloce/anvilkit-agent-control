@@ -78,6 +78,13 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 		if subject.SourceRevision == "" || subject.SourceHandle == "" {
 			return nil, false, fmt.Errorf("%w: a preview build names the edited source and the revision it was based on", domain.ErrInvalid)
 		}
+	case domain.KindRelease:
+		if intake != nil || subject.BriefID != "" || subject.SourceHandle != "" {
+			return nil, false, fmt.Errorf("%w: a release names its source operation; Control binds the source artifact itself", domain.ErrInvalid)
+		}
+		if subject.SourceOperationID == "" || subject.SourceRevision == "" || subject.PackageVersion == "" {
+			return nil, false, fmt.Errorf("%w: a release names its source operation, the exact revision and the package version", domain.ErrInvalid)
+		}
 	default:
 		if intake != nil {
 			return nil, false, fmt.Errorf("%w: only a preparation carries an intake", domain.ErrInvalid)
@@ -85,6 +92,9 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 		if subject.SourceHandle != "" {
 			return nil, false, fmt.Errorf("%w: only a preview build names a source artifact", domain.ErrInvalid)
 		}
+	}
+	if kind != domain.KindRelease && (subject.SourceOperationID != "" || subject.PackageVersion != "") {
+		return nil, false, fmt.Errorf("%w: only a release names a source operation and a package version", domain.ErrInvalid)
 	}
 	now := s.clock.Now()
 	for attempt := 0; attempt < 2; attempt++ {
@@ -126,6 +136,13 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 				if err := verifySourceArtifact(ctx, r, scope, subject); err != nil {
 					return err
 				}
+			}
+			if kind == domain.KindRelease {
+				handle, err := releaseSource(ctx, r, scope, subject)
+				if err != nil {
+					return err
+				}
+				fresh.Subject.SourceHandle = handle
 			}
 			fresh.Revision = 0
 			ev := fresh.Transition("accepted", now, func(*domain.Operation) {})
@@ -198,6 +215,38 @@ func verifySourceArtifact(ctx context.Context, r Repo, scope domain.Scope, subje
 		return fmt.Errorf("%w: source artifact %s is bound to operation %s", domain.ErrInvalid, subject.SourceHandle, t.OperationID)
 	}
 	return nil
+}
+
+// releaseSource resolves the exact source a release names (P21): the
+// source operation of the caller's tenant must be of the same lineage and
+// must hold a revision the source authority named for its bytes (a
+// preview's saved revision, a registered candidate's revision) equal to
+// the requested one. The answer is the source artifact's handle, which the
+// release binds; a revision that was only a base of an edit is refused.
+func releaseSource(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) (string, error) {
+	src, err := r.GetOperationScoped(ctx, subject.SourceOperationID, scope.TenantID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return "", fmt.Errorf("%w: source operation %s is not an operation of this scope", domain.ErrInvalid, subject.SourceOperationID)
+	}
+	if err != nil {
+		return "", err
+	}
+	out, saved, err := resolveSource(ctx, r, src)
+	if errors.Is(err, domain.ErrNotFound) {
+		return "", fmt.Errorf("%w: source operation %s holds no released source", domain.ErrInvalid, src.ID)
+	}
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case out.Lineage != subject.SubjectDigest:
+		return "", fmt.Errorf("%w: source operation %s edits lineage %s, the release names %s", domain.ErrInvalid, src.ID, out.Lineage, subject.SubjectDigest)
+	case !saved || out.Revision == "":
+		return "", fmt.Errorf("%w: source operation %s holds no saved or registered revision", domain.ErrInvalid, src.ID)
+	case out.Revision != subject.SourceRevision:
+		return "", fmt.Errorf("%w: source operation %s holds revision %s, the release names %s", domain.ErrInvalid, src.ID, out.Revision, subject.SourceRevision)
+	}
+	return out.Source.Handle, nil
 }
 
 // verifyBriefBinding checks that the brief a generation binds is the
