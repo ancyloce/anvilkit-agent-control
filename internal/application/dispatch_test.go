@@ -31,6 +31,7 @@ const (
 	modelProvider = "fixture"
 	modelName     = "fixture-model"
 	toolRoute     = "srv/read"
+	freeToolRoute = "srv/note"
 	issuer        = "dev-supervisor"
 )
 
@@ -47,6 +48,7 @@ func fixturePrices(t *testing.T, revision string, factor int64) application.Pric
 	book, err := development.NewPriceBook([]domain.Price{
 		{Revision: revision, Kind: domain.DispatchModel, Route: modelRoute, Provider: modelProvider, Model: modelName, Currency: "USD", EffectiveFrom: from, EffectiveUntil: until, PerMillion: perMillion, MaxExposure: 1_000_000},
 		{Revision: "fx-tool-1", Kind: domain.DispatchTool, Route: toolRoute, Currency: "USD", EffectiveFrom: from, EffectiveUntil: until, PerMillion: perMillion, MaxExposure: 1_000_000},
+		{Revision: "fx-tool-free-1", Kind: domain.DispatchTool, Route: freeToolRoute, Currency: "USD", EffectiveFrom: from, EffectiveUntil: until, PerMillion: map[domain.UsageCategory]int64{domain.UsageInput: 0, domain.UsageOutput: 0, domain.UsageReasoning: 0, domain.UsageCachedInput: 0}, MaxExposure: 1_000},
 	})
 	require.NoError(t, err)
 	return book
@@ -656,12 +658,12 @@ func TestDispatch(t *testing.T) {
 		require.Equal(t, domain.DenyForbidden, a.DenialCode, "evidence that expired before the consuming transaction denies")
 
 		op, at = funded(t, p1, "grantrace", 100_000)
-		_, err = p1.pool.Exec(ctx, "INSERT INTO grant_policies (grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, policy_epoch, receipt_id, revocation_state) VALUES ('grant-race', 1, 'tenant_a', $1, 'srv', ARRAY['read'], 'USD', 100000, 1, 'rcpt-race', 'none')", string(subject.SubjectDigest))
+		_, err = p1.pool.Exec(ctx, "INSERT INTO grant_policies (grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, policy_epoch, receipt_id, revocation_state, register_command_id, register_request_digest) VALUES ('grant-race', 1, 'tenant_a', $1, 'srv', ARRAY['read'], 'USD', 100000, 1, 'rcpt-race', 'none', 'reg-grant-race', $1)", string(subject.SubjectDigest))
 		require.NoError(t, err)
 		tool := domain.AdmissionRequest{Kind: domain.DispatchTool, CallID: "call-grantrace", Owner: "mcp-a", OperationID: op.ID, AttemptID: at.ID, ExecutionEpoch: op.ExecutionEpoch,
 			RouteID: toolRoute, GrantID: "grant-race", GrantRevision: 1, ServerID: "srv", Method: "read", MaxExposure: usd(500), Deadline: time.Now().Add(time.Minute)}
 		inv.setHook(func(string) {
-			_, err := p2.pool.Exec(ctx, "UPDATE grant_policies SET revocation_state = 'fenced', fenced_at = now() WHERE grant_id = 'grant-race'")
+			_, err := p2.pool.Exec(ctx, "UPDATE grant_policies SET revocation_state = 'fenced', fenced_at = now(), revocation_command_id = 'rev-race' WHERE grant_id = 'grant-race'")
 			require.NoError(t, err)
 		})
 		a, err = p1.dispatch.Admit(ctx, admitCmd("call-grantrace", "body"), tool)
@@ -736,7 +738,7 @@ func TestDispatch(t *testing.T) {
 		a, err = p1.dispatch.Admit(ctx, admitCmd("call-tool", "body"), tool)
 		require.NoError(t, err)
 		require.Equal(t, domain.DenyForbidden, a.DenialCode, "no registered grant revision")
-		_, err = p1.pool.Exec(ctx, "INSERT INTO grant_policies (grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, policy_epoch, receipt_id, revocation_state) VALUES ('grant-1', 1, 'tenant_a', $1, 'srv', ARRAY['read'], 'USD', 100000, 1, 'rcpt-1', 'none')", string(subject.SubjectDigest))
+		_, err = p1.pool.Exec(ctx, "INSERT INTO grant_policies (grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, policy_epoch, receipt_id, revocation_state, register_command_id, register_request_digest) VALUES ('grant-1', 1, 'tenant_a', $1, 'srv', ARRAY['read'], 'USD', 100000, 1, 'rcpt-1', 'none', 'reg-grant-1', $1)", string(subject.SubjectDigest))
 		require.NoError(t, err)
 		write := tool
 		write.CallID, write.Method, write.RouteID = "call-tool-write", "write", "srv/write"

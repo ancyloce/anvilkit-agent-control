@@ -152,8 +152,16 @@ type Repo interface {
 	ChargedCost(ctx context.Context, dispatchID string) (charged int64, actualEntryID string, err error)
 	InsertCostEntry(ctx context.Context, e *domain.CostEntry) error
 
-	// Grant policy projection (read; MCP owns the grant, P18 registers it).
+	// Grant policy projection and barrier (rank 1; MCP owns the grant).
+	// Tool admission share-locks the policy before the allocations; the
+	// revocation barrier locks it for update.
 	GetGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error)
+	ShareLockGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error)
+	LockGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error)
+	GetGrantPolicyByRegisterCommand(ctx context.Context, tenantID, commandID string) (*domain.GrantPolicy, error)
+	InsertGrantPolicy(ctx context.Context, g *domain.GrantPolicy) (*domain.GrantPolicy, error)
+	UpdateGrantRevocation(ctx context.Context, g *domain.GrantPolicy) error
+	CountGrantSenders(ctx context.Context, grantID string, revision uint64) (inFlight, unknown uint64, err error)
 
 	// Effects (rank 6): business-write obligations, their observations and
 	// the evidence-bound dispositions of any obligation class.

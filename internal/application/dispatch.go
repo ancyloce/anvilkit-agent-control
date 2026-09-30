@@ -355,11 +355,21 @@ func (s *Dispatch) frozenPrice(d *domain.Dispatch) *domain.Price {
 }
 
 // admissionContext loads the current state under Control's lock ranks:
-// allocations (1), operation (2), attempt and instance (3). The dispatch
-// itself (4) is locked by the caller when it exists; the price is chosen by
-// the caller (current at step 2, frozen at step 4). Now is read after the
-// locks are held.
+// for a tool call the grant policy share-locked first (rank 1, so a
+// revocation fence waits for this decision and every later one reads it),
+// then allocations (1), operation (2), attempt and instance (3). The
+// dispatch itself (4) is locked by the caller when it exists; the price is
+// chosen by the caller (current at step 2, frozen at step 4). Now is read
+// after the locks are held.
 func (s *Dispatch) admissionContext(ctx context.Context, r Repo, b binding, tenantID string, authority domain.Decision) (domain.AdmissionContext, error) {
+	var grant *domain.GrantPolicy
+	if b.Kind == domain.DispatchTool {
+		g, err := r.ShareLockGrantPolicy(ctx, b.GrantID, b.GrantRevision)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return domain.AdmissionContext{}, err
+		}
+		grant = g
+	}
 	allocs, err := r.LockAllocations(ctx, b.OperationID)
 	if err != nil {
 		return domain.AdmissionContext{}, err
@@ -390,13 +400,7 @@ func (s *Dispatch) admissionContext(ctx context.Context, r Repo, b binding, tena
 		}
 		ac.Instance = inst
 	}
-	if b.Kind == domain.DispatchTool {
-		g, err := r.GetGrantPolicy(ctx, b.GrantID, b.GrantRevision)
-		if err != nil && !errors.Is(err, domain.ErrNotFound) {
-			return domain.AdmissionContext{}, err
-		}
-		ac.Grant = g
-	}
+	ac.Grant = grant
 	if b.SupersedesCallID != "" {
 		orig, err := r.GetDispatchByCall(ctx, tenantID, b.Owner, b.SupersedesCallID)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {

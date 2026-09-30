@@ -133,6 +133,9 @@ type DispatchRecord struct {
 	ExecutionEpoch uint64 `json:"executionEpoch"`
 	Deadline       string `json:"deadline"`
 	AdmittedAt     string `json:"admittedAt"`
+	// Tool dispatches: the exact argument digest and the effect class.
+	ArgumentDigest string `json:"argumentDigest,omitempty"`
+	SideEffecting  bool   `json:"sideEffecting,omitempty"`
 }
 
 func dispatchObligation(d *domain.Dispatch) (key string, body []byte) {
@@ -145,6 +148,7 @@ func dispatchObligation(d *domain.Dispatch) (key string, body []byte) {
 		InstanceID: d.InstanceID, RouteID: d.RouteID, GrantID: d.GrantID, GrantRevision: d.GrantRevision, RequestDigest: string(d.RequestDigest),
 		Currency: d.Reserved.Currency, Exposure: d.Reserved.AmountString(), MeterRevision: d.MeterRevision, ExecutionEpoch: d.ExecutionEpoch,
 		Deadline: d.Deadline.UTC().Format(time.RFC3339Nano), AdmittedAt: d.AdmittedAt.UTC().Format(time.RFC3339Nano),
+		ArgumentDigest: string(d.ArgumentDigest), SideEffecting: d.SideEffecting,
 	})
 	return ObligationKey(class, d.ID), body
 }
