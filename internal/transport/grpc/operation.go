@@ -103,7 +103,7 @@ func optString(s string) *string {
 }
 
 func toView(o *domain.Operation) *controlv1.OperationView {
-	subject := &controlv1.OperationSubject{ProfileId: o.Subject.ProfileID, SubjectDigest: string(o.Subject.SubjectDigest), BriefId: optString(o.Subject.BriefID), SourceRevision: optString(o.Subject.SourceRevision)}
+	subject := &controlv1.OperationSubject{ProfileId: o.Subject.ProfileID, SubjectDigest: string(o.Subject.SubjectDigest), BriefId: optString(o.Subject.BriefID), SourceRevision: optString(o.Subject.SourceRevision), SourceHandle: optString(o.Subject.SourceHandle), SourceOperationId: optString(o.Subject.SourceOperationID), PackageVersion: optString(o.Subject.PackageVersion)}
 	v := &controlv1.OperationView{
 		OperationId: o.ID, TenantId: o.TenantID, ProjectId: o.ProjectID, ActorId: o.ActorID, Kind: kindToProto[o.Kind], Subject: subject,
 		Lifecycle: lifecycleToProto[o.Lifecycle], Phase: o.Phase, Control: controlToProto[o.Control], Cleanup: cleanupToProto[o.Cleanup], Finance: financeToProto[o.Finance],
@@ -178,7 +178,7 @@ func (s *operationServer) CreateOperation(ctx context.Context, req *controlv1.Cr
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	subject := domain.Subject{ProfileID: req.GetSubject().GetProfileId(), SubjectDigest: digest, BriefID: req.GetSubject().GetBriefId(), SourceRevision: req.GetSubject().GetSourceRevision()}
+	subject := domain.Subject{ProfileID: req.GetSubject().GetProfileId(), SubjectDigest: digest, BriefID: req.GetSubject().GetBriefId(), SourceRevision: req.GetSubject().GetSourceRevision(), SourceHandle: req.GetSubject().GetSourceHandle(), SourceOperationID: req.GetSubject().GetSourceOperationId(), PackageVersion: req.GetSubject().GetPackageVersion()}
 	var intake *domain.PreparationIntake
 	if p := req.GetPreparation(); p != nil {
 		in, err := toIntake(p)
