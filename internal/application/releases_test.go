@@ -131,11 +131,12 @@ func TestReleases(t *testing.T) {
 	require.Equal(t, uint64(2), again.Revision)
 
 	epoch := uint64(1)
+	effectDeadline := time.Now().Add(time.Hour)
 	prepare := func(kind domain.EffectKind, target, command string) application.Permit {
 		t.Helper()
 		p, err := effects.Prepare(ctx, cmd("tenant_a", command, command), domain.EffectRequest{
 			OperationID: op.ID, Owner: "workflow", Kind: kind, Occurrence: map[string]uint64{"npm": 1, "browser": 2, "activation": 1}[target],
-			CanonicalSubject: domain.ReleaseEffectSubject(subject.SubjectDigest, target), ExecutionEpoch: epoch, Deadline: time.Now().Add(time.Hour),
+			CanonicalSubject: domain.ReleaseEffectSubject(subject.SubjectDigest, target), ExecutionEpoch: epoch, Deadline: effectDeadline,
 		})
 		require.NoError(t, err)
 		return p
