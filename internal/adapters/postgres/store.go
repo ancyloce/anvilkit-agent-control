@@ -106,7 +106,7 @@ func toOperation(m sqlc.Operation) *domain.Operation {
 	return &domain.Operation{
 		ID: m.OperationID, TenantID: m.TenantID, ProjectID: m.ProjectID, ActorID: m.ActorID, CommandID: m.CommandID,
 		Kind:           domain.OperationKind(m.Kind),
-		Subject:        domain.Subject{ProfileID: m.ProfileID, SubjectDigest: domain.Digest(m.SubjectDigest), BriefID: deref(m.BriefID), SourceRevision: deref(m.SourceRevision)},
+		Subject:        domain.Subject{ProfileID: m.ProfileID, SubjectDigest: domain.Digest(m.SubjectDigest), BriefID: deref(m.BriefID), SourceRevision: deref(m.SourceRevision), SourceHandle: deref(m.SourceHandle)},
 		SemanticDigest: domain.Digest(m.SemanticDigest), Lifecycle: domain.Lifecycle(m.Lifecycle), Phase: m.Phase,
 		Control: domain.ControlState(m.ControlState), Cleanup: domain.CleanupState(m.CleanupState), Finance: domain.FinanceState(m.FinanceState),
 		FailureCode: deref(m.FailureCode), Revision: domain.Revision(m.Revision), NextEventSeq: uint64(m.NextEventSeq),
@@ -151,7 +151,7 @@ func (r *repo) InsertOperation(ctx context.Context, o *domain.Operation) error {
 	return r.q.InsertOperation(ctx, sqlc.InsertOperationParams{
 		OperationID: o.ID, TenantID: o.TenantID, ProjectID: o.ProjectID, ActorID: o.ActorID, CommandID: o.CommandID,
 		Kind: string(o.Kind), ProfileID: o.Subject.ProfileID, SubjectDigest: string(o.Subject.SubjectDigest),
-		BriefID: strPtr(o.Subject.BriefID), SourceRevision: strPtr(o.Subject.SourceRevision), SemanticDigest: string(o.SemanticDigest),
+		BriefID: strPtr(o.Subject.BriefID), SourceRevision: strPtr(o.Subject.SourceRevision), SourceHandle: strPtr(o.Subject.SourceHandle), SemanticDigest: string(o.SemanticDigest),
 		Lifecycle: string(o.Lifecycle), Phase: o.Phase, ControlState: string(o.Control), CleanupState: string(o.Cleanup),
 		FinanceState: string(o.Finance), FailureCode: strPtr(o.FailureCode), Revision: int64(o.Revision), NextEventSeq: int64(o.NextEventSeq),
 		ExecutionEpoch: int64(o.ExecutionEpoch), RecoveryEpoch: int64(o.RecoveryEpoch), Deadline: ts(o.Deadline),

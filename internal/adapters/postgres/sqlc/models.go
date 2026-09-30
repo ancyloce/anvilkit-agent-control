@@ -321,6 +321,7 @@ type Operation struct {
 	BrandReferences      []byte
 	AssetReferences      []byte
 	CandidateEffectID    *string
+	SourceHandle         *string
 }
 
 type OperationCommand struct {
@@ -386,6 +387,24 @@ type PhysicalInstance struct {
 	IsCurrent    bool
 	RegisteredAt pgtype.Timestamptz
 	ObservedAt   pgtype.Timestamptz
+}
+
+type Preview struct {
+	OperationID     string
+	TenantID        string
+	SubjectDigest   string
+	BaseRevision    string
+	State           string
+	SourceRevision  *string
+	CurrentRevision *string
+	SourceDigest    string
+	Module          []byte
+	Styles          []byte
+	BuildProfileID  string
+	HostProfileID   string
+	FailureCode     *string
+	Revision        int64
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type QuestionSet struct {

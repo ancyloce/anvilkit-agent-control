@@ -298,7 +298,7 @@ func (q *Queries) IsAdmissionClosed(ctx context.Context, scopeKey string) (bool,
 }
 
 const listActiveOperations = `-- name: ListActiveOperations :many
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id FROM operations
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle FROM operations
 WHERE lifecycle IN ('accepted', 'running', 'waiting', 'reconciling', 'suspended') AND ($1::text = '*' OR tenant_id = $1)
 ORDER BY operation_id
 `
@@ -353,6 +353,7 @@ func (q *Queries) ListActiveOperations(ctx context.Context, dollar_1 string) ([]
 			&i.BrandReferences,
 			&i.AssetReferences,
 			&i.CandidateEffectID,
+			&i.SourceHandle,
 		); err != nil {
 			return nil, err
 		}
