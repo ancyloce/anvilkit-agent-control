@@ -322,6 +322,8 @@ type Operation struct {
 	AssetReferences      []byte
 	CandidateEffectID    *string
 	SourceHandle         *string
+	SourceOperationID    *string
+	PackageVersion       *string
 }
 
 type OperationCommand struct {
@@ -463,6 +465,27 @@ type RecoveryRun struct {
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
 	ReopenedAt    pgtype.Timestamptz
+}
+
+type Release struct {
+	OperationID      string
+	TenantID         string
+	Lineage          string
+	SourceRevision   string
+	State            string
+	Subject          []byte
+	SubjectDigest    *string
+	ReleaseID        *string
+	ReviewEffectID   *string
+	Approval         []byte
+	ApprovalDeadline pgtype.Timestamptz
+	Npm              []byte
+	Browser          []byte
+	Activation       []byte
+	CatalogRevision  *string
+	FailureCode      *string
+	Revision         int64
+	UpdatedAt        pgtype.Timestamptz
 }
 
 type ResourcePool struct {

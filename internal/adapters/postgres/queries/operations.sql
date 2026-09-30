@@ -3,12 +3,13 @@ INSERT INTO operations (
     operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision,
     semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq,
     execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at,
-    definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, source_handle
+    definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, source_handle,
+    source_operation_id, package_version
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16, $17, $18, $19,
     $20, $21, $22, $23, $24, $25, $26, $27, $28,
-    $29, $30, $31, $32, $33, $34
+    $29, $30, $31, $32, $33, $34, $35, $36
 );
 
 -- name: GetOperationByCommand :one

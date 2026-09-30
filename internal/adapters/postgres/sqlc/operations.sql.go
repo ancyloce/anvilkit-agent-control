@@ -43,7 +43,7 @@ func (q *Queries) GetCommand(ctx context.Context, arg GetCommandParams) (Operati
 }
 
 const getOperationByCommand = `-- name: GetOperationByCommand :one
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle FROM operations WHERE tenant_id = $1 AND command_id = $2
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle, source_operation_id, package_version FROM operations WHERE tenant_id = $1 AND command_id = $2
 `
 
 type GetOperationByCommandParams struct {
@@ -96,12 +96,14 @@ func (q *Queries) GetOperationByCommand(ctx context.Context, arg GetOperationByC
 		&i.AssetReferences,
 		&i.CandidateEffectID,
 		&i.SourceHandle,
+		&i.SourceOperationID,
+		&i.PackageVersion,
 	)
 	return i, err
 }
 
 const getOperationScoped = `-- name: GetOperationScoped :one
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle FROM operations WHERE operation_id = $1 AND tenant_id = $2
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle, source_operation_id, package_version FROM operations WHERE operation_id = $1 AND tenant_id = $2
 `
 
 type GetOperationScopedParams struct {
@@ -154,6 +156,8 @@ func (q *Queries) GetOperationScoped(ctx context.Context, arg GetOperationScoped
 		&i.AssetReferences,
 		&i.CandidateEffectID,
 		&i.SourceHandle,
+		&i.SourceOperationID,
+		&i.PackageVersion,
 	)
 	return i, err
 }
@@ -207,12 +211,13 @@ INSERT INTO operations (
     operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision,
     semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq,
     execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at,
-    definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, source_handle
+    definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, source_handle,
+    source_operation_id, package_version
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16, $17, $18, $19,
     $20, $21, $22, $23, $24, $25, $26, $27, $28,
-    $29, $30, $31, $32, $33, $34
+    $29, $30, $31, $32, $33, $34, $35, $36
 )
 `
 
@@ -251,6 +256,8 @@ type InsertOperationParams struct {
 	BrandReferences      []byte
 	AssetReferences      []byte
 	SourceHandle         *string
+	SourceOperationID    *string
+	PackageVersion       *string
 }
 
 func (q *Queries) InsertOperation(ctx context.Context, arg InsertOperationParams) error {
@@ -289,6 +296,8 @@ func (q *Queries) InsertOperation(ctx context.Context, arg InsertOperationParams
 		arg.BrandReferences,
 		arg.AssetReferences,
 		arg.SourceHandle,
+		arg.SourceOperationID,
+		arg.PackageVersion,
 	)
 	return err
 }
@@ -361,7 +370,7 @@ func (q *Queries) ListCommandRelayPending(ctx context.Context, limit int32) ([]O
 }
 
 const listIntakePending = `-- name: ListIntakePending :many
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle FROM operations WHERE intake_state = 'pending' AND created_at < $1 ORDER BY created_at LIMIT $2
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle, source_operation_id, package_version FROM operations WHERE intake_state = 'pending' AND created_at < $1 ORDER BY created_at LIMIT $2
 `
 
 type ListIntakePendingParams struct {
@@ -420,6 +429,8 @@ func (q *Queries) ListIntakePending(ctx context.Context, arg ListIntakePendingPa
 			&i.AssetReferences,
 			&i.CandidateEffectID,
 			&i.SourceHandle,
+			&i.SourceOperationID,
+			&i.PackageVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -509,7 +520,7 @@ func (q *Queries) ListOperationEvents(ctx context.Context, arg ListOperationEven
 }
 
 const listRelayPending = `-- name: ListRelayPending :many
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle FROM operations
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle, source_operation_id, package_version FROM operations
 WHERE (relay_state = 'pending' AND intake_state = 'confirmed') OR relay_state = 'cancel_pending'
 ORDER BY created_at LIMIT $1
 `
@@ -565,6 +576,8 @@ func (q *Queries) ListRelayPending(ctx context.Context, limit int32) ([]Operatio
 			&i.AssetReferences,
 			&i.CandidateEffectID,
 			&i.SourceHandle,
+			&i.SourceOperationID,
+			&i.PackageVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -608,7 +621,7 @@ func (q *Queries) LockCommand(ctx context.Context, arg LockCommandParams) (Opera
 }
 
 const lockOperation = `-- name: LockOperation :one
-SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle FROM operations WHERE operation_id = $1 FOR UPDATE
+SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle, source_operation_id, package_version FROM operations WHERE operation_id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockOperation(ctx context.Context, operationID string) (Operation, error) {
@@ -656,6 +669,8 @@ func (q *Queries) LockOperation(ctx context.Context, operationID string) (Operat
 		&i.AssetReferences,
 		&i.CandidateEffectID,
 		&i.SourceHandle,
+		&i.SourceOperationID,
+		&i.PackageVersion,
 	)
 	return i, err
 }
