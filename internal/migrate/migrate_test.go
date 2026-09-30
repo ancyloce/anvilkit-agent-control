@@ -102,6 +102,17 @@ func TestControlSchema(t *testing.T) {
 	require.Equal(t, 2, n)
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname = 'dispatches_argument_digest_check'`).Scan(&n))
 	require.Equal(t, 1, n)
+	// 00012: preview builds keep their committed projection with its checks.
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname IN ('previews_saved_check', 'previews_conflict_check', 'previews_built_check', 'previews_failed_check')`).Scan(&n))
+	require.Equal(t, 4, n)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'operations' AND column_name = 'source_handle'`).Scan(&n))
+	require.Equal(t, 1, n)
+	// 00013: releases keep their committed projection with its checks and
+	// a release operation names its source operation and package version.
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname IN ('releases_subject_check', 'releases_review_check', 'releases_activated_check', 'releases_failed_check')`).Scan(&n))
+	require.Equal(t, 4, n)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'operations' AND column_name IN ('source_operation_id', 'package_version')`).Scan(&n))
+	require.Equal(t, 2, n)
 }
 
 // grantPolicyBarrier: 00010 keeps one registration per (tenant, command),
