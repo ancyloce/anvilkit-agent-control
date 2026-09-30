@@ -36,6 +36,8 @@ const (
 	LocalCheckWorkflowName  = "LocalCheckWorkflow"
 	PreparationWorkflowName = "PreparationWorkflow"
 	GenerationWorkflowName  = "GenerationWorkflow"
+	PreviewWorkflowName     = "PreviewBuildWorkflow"
+	ReleaseWorkflowName     = "ReleaseWorkflow"
 	RecoveryWorkflowName    = "RecoveryWorkflow"
 )
 
@@ -47,12 +49,13 @@ const GenerationPoolID = "generation"
 func WorkflowNames() map[domain.OperationKind]string {
 	return map[domain.OperationKind]string{
 		domain.KindLocalCheck: LocalCheckWorkflowName, domain.KindPreparation: PreparationWorkflowName, domain.KindGeneration: GenerationWorkflowName,
+		domain.KindPreviewBuild: PreviewWorkflowName, domain.KindRelease: ReleaseWorkflowName,
 	}
 }
 
 // Profiles returns the reviewed operation profiles of this build: the
 // LocalCheck fixture, the Preparation profile and the Generation profile
-// (P13); other kinds are rejected with PROFILE_UNQUALIFIED until their
+// (P13), the preview build (P20) and the release (P21); other kinds are rejected with PROFILE_UNQUALIFIED until their
 // units deliver reviewed profiles. The money values were validated by the
 // configuration.
 func Profiles(cfg config.Config) []domain.Profile {
@@ -73,6 +76,20 @@ func Profiles(cfg config.Config) []domain.Profile {
 			ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: gen.QueueDeadline, StepID: "codegen", MultiStep: true,
 			Funding: &genFunding, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
 			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile, JobProfileID: gen.CodegenProfile,
+		},
+		{
+			// P20: save the edited source conditionally, then build exactly
+			// the saved revision in the isolated build Job (compute only).
+			ID: "preview-build-v1", Kind: domain.KindPreviewBuild, OperationDeadline: cfg.Profiles.PreviewBuild.Deadline, StepID: "preview-build",
+			MultiStep: true,
+		},
+		{
+			// P21: certify the exact saved source, register the exact
+			// subject for review, wait for the maintainer's decision, publish
+			// both targets and activate (no funding: compute and guarded
+			// business writes only).
+			ID: "release-v1", Kind: domain.KindRelease, OperationDeadline: cfg.Profiles.Release.Deadline, StepID: "certify",
+			MultiStep: true,
 		},
 	}
 }
@@ -187,8 +204,14 @@ func Module() fx.Option {
 			func(store application.Store, clock domain.Clock, log *slog.Logger) *application.GrantPolicies {
 				return application.NewGrantPolicies(store, clock, log)
 			},
-			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies) (*grpctransport.Server, error) {
-				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants)
+			func(store application.Store, clock domain.Clock) *application.Previews {
+				return application.NewPreviews(store, clock)
+			},
+			func(store application.Store, clock domain.Clock) *application.Releases {
+				return application.NewReleases(store, clock)
+			},
+			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases) (*grpctransport.Server, error) {
+				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases)
 			},
 		),
 		fx.Invoke(run),
