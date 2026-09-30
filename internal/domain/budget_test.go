@@ -154,7 +154,7 @@ func TestPriceMetersInclusiveNativeUsageWithoutCountingSubsetsTwice(t *testing.T
 func TestGrantPolicyFencesRevocationExpiryMethodAndCap(t *testing.T) {
 	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
 	exp := now.Add(time.Hour)
-	g := &GrantPolicy{GrantID: "g", GrantRevision: 2, TenantID: "tenant_a", ServerID: "srv", Methods: []string{"read"}, CostCap: &Money{Currency: "USD", Amount: 100}, ExpiresAt: &exp, RevocationState: "none"}
+	g := &GrantPolicy{GrantID: "g", GrantRevision: 2, TenantID: "tenant_a", ServerID: "srv", Methods: []string{"read"}, CostCap: &Money{Currency: "USD", Amount: 100}, ExpiresAt: &exp, RevocationState: "none", Registered: true}
 	ok := Money{Currency: "USD", Amount: 50}
 	if err := g.Permits("tenant_a", "srv", "read", ok, now); err != nil {
 		t.Fatal(err)
@@ -165,6 +165,11 @@ func TestGrantPolicyFencesRevocationExpiryMethodAndCap(t *testing.T) {
 		"other method": func() error { return g.Permits("tenant_a", "srv", "write", ok, now) },
 		"expired":      func() error { return g.Permits("tenant_a", "srv", "read", ok, exp) },
 		"above cap":    func() error { return g.Permits("tenant_a", "srv", "read", Money{Currency: "USD", Amount: 101}, now) },
+		"tombstone": func() error {
+			tomb := *g
+			tomb.Registered = false
+			return tomb.Permits("tenant_a", "srv", "read", ok, now)
+		},
 		"fenced": func() error {
 			fenced := *g
 			fenced.RevocationState = "fenced"

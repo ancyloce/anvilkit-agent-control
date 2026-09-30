@@ -164,6 +164,17 @@ type Price struct {
 
 const million = 1_000_000
 
+// Free reports a price revision whose every usage category costs nothing (a
+// free tool route: its calls still need admission and inventory).
+func (p Price) Free() bool {
+	for _, c := range UsageCategories {
+		if p.PerMillion[c] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (p Price) Validate() error {
 	if p.Revision == "" || p.Route == "" {
 		return fmt.Errorf("%w: price needs a revision and a route", ErrInvalid)
@@ -423,6 +434,19 @@ type GrantPolicy struct {
 	PolicyEpoch     uint64
 	ReceiptID       string
 	RevocationState string // none | fenced | converging | converged
+	// P18: the registration and revocation commands (idempotency), the
+	// fence and convergence times, the counts of the last barrier read, and
+	// whether the revision was ever registered (a revocation of an
+	// unregistered revision leaves a tombstone no later registration passes).
+	Registered              bool
+	RegisterCommandID       string
+	RegisterRequestDigest   Digest
+	RevocationCommandID     string
+	RevocationRequestDigest Digest
+	InFlightCalls           uint64
+	UnknownCalls            uint64
+	FencedAt                *time.Time
+	ConvergedAt             *time.Time
 }
 
 // Permits reports whether the exact grant revision still authorizes the
@@ -431,6 +455,9 @@ type GrantPolicy struct {
 func (g *GrantPolicy) Permits(tenantID, serverID, method string, exposure Money, now time.Time) error {
 	if g.TenantID != tenantID {
 		return fmt.Errorf("%w: grant %s is not the caller's", ErrForbidden, g.GrantID)
+	}
+	if !g.Registered {
+		return fmt.Errorf("%w: grant %s revision %d was revoked before registration", ErrForbidden, g.GrantID, g.GrantRevision)
 	}
 	if g.RevocationState != "none" {
 		return fmt.Errorf("%w: grant %s revision %d is %s", ErrForbidden, g.GrantID, g.GrantRevision, g.RevocationState)

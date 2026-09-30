@@ -86,6 +86,10 @@ type Dispatch struct {
 	Deadline         time.Time
 	AdmittedAt       time.Time
 	ObservedAt       *time.Time
+	// ArgumentDigest and SideEffecting bind a tool dispatch to its exact
+	// arguments and effect class (empty/false for a model dispatch).
+	ArgumentDigest Digest
+	SideEffecting  bool
 }
 
 // Terminal reports whether no permission can ever be issued for the call.
@@ -123,6 +127,8 @@ type AdmissionRequest struct {
 	Deadline         time.Time
 	SupersedesCallID string
 	EvidenceRef      string
+	ArgumentDigest   Digest // tool: the exact argument bytes
+	SideEffecting    bool   // tool: the method's reviewed effect class
 }
 
 // AdmissionContext is the current authoritative state the checks run
@@ -172,7 +178,9 @@ func CheckAdmission(req AdmissionRequest, c AdmissionContext, budget bool) error
 	if op == nil || at == nil || at.OperationID != op.ID {
 		return fmt.Errorf("%w: attempt %s of operation %s", ErrNotFound, req.AttemptID, req.OperationID)
 	}
-	if req.MaxExposure.Amount <= 0 {
+	if req.MaxExposure.Amount < 0 || (req.MaxExposure.Amount == 0 && !(req.Kind == DispatchTool && c.Price != nil && c.Price.Free())) {
+		// Only a free tool route (a free write or read still needs its
+		// tool-dispatch obligation and single-use permission) admits zero.
 		return deny(DenyInvalidArgument, "max exposure must be positive")
 	}
 	if c.AdmissionClosed {
@@ -289,7 +297,7 @@ func NewDispatch(req AdmissionRequest, c AdmissionContext) *Dispatch {
 		CallID: req.CallID, Owner: req.Owner, RequestDigest: req.RequestDigest, RouteID: req.RouteID, GrantID: req.GrantID, GrantRevision: req.GrantRevision,
 		ExecutionEpoch: c.Operation.ExecutionEpoch, State: DispatchPrepared, Reserved: req.MaxExposure, MeterRevision: c.Price.Revision,
 		SupersedesCallID: req.SupersedesCallID, EvidenceRef: req.EvidenceRef, Inventory: InventoryPending,
-		Deadline: req.Deadline.UTC().Truncate(time.Microsecond), AdmittedAt: c.Now,
+		Deadline: req.Deadline.UTC().Truncate(time.Microsecond), AdmittedAt: c.Now, ArgumentDigest: req.ArgumentDigest, SideEffecting: req.SideEffecting,
 	}
 }
 
@@ -308,7 +316,7 @@ func DeniedDispatch(req AdmissionRequest, c AdmissionContext, d *Denial) *Dispat
 		CallID: req.CallID, Owner: req.Owner, RequestDigest: req.RequestDigest, RouteID: req.RouteID, GrantID: req.GrantID, GrantRevision: req.GrantRevision,
 		ExecutionEpoch: req.ExecutionEpoch, State: DispatchDenied, DenialCode: d.Code, Reserved: Money{Currency: req.MaxExposure.Currency},
 		MeterRevision: meter, SupersedesCallID: req.SupersedesCallID, EvidenceRef: req.EvidenceRef, Inventory: InventoryPending,
-		Deadline: req.Deadline.UTC().Truncate(time.Microsecond), AdmittedAt: c.Now,
+		Deadline: req.Deadline.UTC().Truncate(time.Microsecond), AdmittedAt: c.Now, ArgumentDigest: req.ArgumentDigest, SideEffecting: req.SideEffecting,
 	}
 }
 
@@ -342,6 +350,10 @@ func (d *Dispatch) Binds(tenantID string, req AdmissionRequest, frozen *Price) e
 		return conflict("execution epoch", d.ExecutionEpoch, req.ExecutionEpoch)
 	case d.RouteID != req.RouteID:
 		return conflict("route", d.RouteID, req.RouteID)
+	case d.ArgumentDigest != req.ArgumentDigest:
+		return conflict("arguments", d.ArgumentDigest, req.ArgumentDigest)
+	case d.SideEffecting != req.SideEffecting:
+		return conflict("side effect", d.SideEffecting, req.SideEffecting)
 	case d.GrantID != req.GrantID || d.GrantRevision != req.GrantRevision:
 		return conflict("grant", fmt.Sprintf("%s@%d", d.GrantID, d.GrantRevision), fmt.Sprintf("%s@%d", req.GrantID, req.GrantRevision))
 	case d.Reserved.Currency != req.MaxExposure.Currency:
