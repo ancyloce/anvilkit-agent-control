@@ -165,6 +165,8 @@ type Dispatch struct {
 	AdmittedAt       pgtype.Timestamptz
 	ObservedAt       pgtype.Timestamptz
 	DenialCode       *string
+	ArgumentDigest   string
+	SideEffecting    bool
 }
 
 type EffectIntent struct {
@@ -218,21 +220,28 @@ type Funding struct {
 }
 
 type GrantPolicy struct {
-	GrantID         string
-	GrantRevision   int64
-	TenantID        string
-	PolicyDigest    string
-	ServerID        string
-	Methods         []string
-	CostCapCurrency *string
-	CostCapAmount   *int64
-	ExpiresAt       pgtype.Timestamptz
-	PolicyEpoch     int64
-	ReceiptID       string
-	RevocationState string
-	FencedAt        pgtype.Timestamptz
-	ConvergedAt     pgtype.Timestamptz
-	RegisteredAt    pgtype.Timestamptz
+	GrantID                 string
+	GrantRevision           int64
+	TenantID                string
+	PolicyDigest            string
+	ServerID                string
+	Methods                 []string
+	CostCapCurrency         *string
+	CostCapAmount           *int64
+	ExpiresAt               pgtype.Timestamptz
+	PolicyEpoch             int64
+	ReceiptID               string
+	RevocationState         string
+	FencedAt                pgtype.Timestamptz
+	ConvergedAt             pgtype.Timestamptz
+	RegisteredAt            pgtype.Timestamptz
+	RegisterCommandID       string
+	RegisterRequestDigest   string
+	RevocationCommandID     *string
+	RevocationRequestDigest *string
+	InFlightCalls           int64
+	UnknownCalls            int64
+	Registered              bool
 }
 
 type Launch struct {

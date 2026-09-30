@@ -622,6 +622,7 @@ func toDispatch(m sqlc.Dispatch) *domain.Dispatch {
 		Reserved: domain.Money{Currency: m.ReservedCurrency, Amount: m.ReservedAmount}, MeterRevision: m.MeterRevision, SupersedesCallID: deref(m.SupersedesCallID),
 		EvidenceRef: deref(m.EvidenceRef), Inventory: domain.InventoryState(m.InventoryState), InventoryVersion: deref(m.InventoryVersion),
 		Deadline: fromTs(m.Deadline), AdmittedAt: fromTs(m.AdmittedAt), ObservedAt: fromTsPtr(m.ObservedAt),
+		ArgumentDigest: domain.Digest(m.ArgumentDigest), SideEffecting: m.SideEffecting,
 	}
 	if m.GrantRevision != nil {
 		d.GrantRevision = uint64(*m.GrantRevision)
@@ -674,6 +675,7 @@ func (r *repo) InsertDispatch(ctx context.Context, d *domain.Dispatch) error {
 		DenialCode: strPtr(d.DenialCode), ReservedCurrency: d.Reserved.Currency, ReservedAmount: d.Reserved.Amount, MeterRevision: d.MeterRevision,
 		SupersedesCallID: strPtr(d.SupersedesCallID), EvidenceRef: strPtr(d.EvidenceRef), InventoryState: string(d.Inventory), InventoryVersion: strPtr(d.InventoryVersion),
 		Deadline: ts(d.Deadline), AdmittedAt: ts(d.AdmittedAt), ObservedAt: tsPtr(d.ObservedAt),
+		ArgumentDigest: string(d.ArgumentDigest), SideEffecting: d.SideEffecting,
 	})
 }
 
@@ -754,19 +756,90 @@ func (r *repo) InsertCostEntry(ctx context.Context, e *domain.CostEntry) error {
 
 // ---- grant policy projection ----
 
+func grantPolicyOf(m sqlc.GrantPolicy) *domain.GrantPolicy {
+	g := &domain.GrantPolicy{
+		GrantID: m.GrantID, GrantRevision: uint64(m.GrantRevision), TenantID: m.TenantID, PolicyDigest: domain.Digest(m.PolicyDigest), ServerID: m.ServerID,
+		Methods: m.Methods, ExpiresAt: fromTsPtr(m.ExpiresAt), PolicyEpoch: uint64(m.PolicyEpoch), ReceiptID: m.ReceiptID, RevocationState: m.RevocationState,
+		Registered: m.Registered, RegisterCommandID: m.RegisterCommandID, RegisterRequestDigest: domain.Digest(m.RegisterRequestDigest),
+		InFlightCalls: uint64(m.InFlightCalls), UnknownCalls: uint64(m.UnknownCalls), FencedAt: fromTsPtr(m.FencedAt), ConvergedAt: fromTsPtr(m.ConvergedAt),
+	}
+	if m.RevocationCommandID != nil {
+		g.RevocationCommandID = *m.RevocationCommandID
+	}
+	if m.RevocationRequestDigest != nil {
+		g.RevocationRequestDigest = domain.Digest(*m.RevocationRequestDigest)
+	}
+	if m.CostCapCurrency != nil && m.CostCapAmount != nil {
+		g.CostCap = &domain.Money{Currency: *m.CostCapCurrency, Amount: *m.CostCapAmount}
+	}
+	return g
+}
+
 func (r *repo) GetGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error) {
 	m, err := r.q.GetGrantPolicy(ctx, sqlc.GetGrantPolicyParams{GrantID: grantID, GrantRevision: int64(revision)})
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	g := &domain.GrantPolicy{
-		GrantID: m.GrantID, GrantRevision: uint64(m.GrantRevision), TenantID: m.TenantID, PolicyDigest: domain.Digest(m.PolicyDigest), ServerID: m.ServerID,
-		Methods: m.Methods, ExpiresAt: fromTsPtr(m.ExpiresAt), PolicyEpoch: uint64(m.PolicyEpoch), ReceiptID: m.ReceiptID, RevocationState: m.RevocationState,
+	return grantPolicyOf(m), nil
+}
+
+func (r *repo) ShareLockGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error) {
+	m, err := r.q.ShareLockGrantPolicy(ctx, sqlc.ShareLockGrantPolicyParams{GrantID: grantID, GrantRevision: int64(revision)})
+	if err != nil {
+		return nil, mapErr(err)
 	}
-	if m.CostCapCurrency != nil && m.CostCapAmount != nil {
-		g.CostCap = &domain.Money{Currency: *m.CostCapCurrency, Amount: *m.CostCapAmount}
+	return grantPolicyOf(m), nil
+}
+
+func (r *repo) LockGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error) {
+	m, err := r.q.LockGrantPolicy(ctx, sqlc.LockGrantPolicyParams{GrantID: grantID, GrantRevision: int64(revision)})
+	if err != nil {
+		return nil, mapErr(err)
 	}
-	return g, nil
+	return grantPolicyOf(m), nil
+}
+
+func (r *repo) GetGrantPolicyByRegisterCommand(ctx context.Context, tenantID, commandID string) (*domain.GrantPolicy, error) {
+	m, err := r.q.GetGrantPolicyByRegisterCommand(ctx, sqlc.GetGrantPolicyByRegisterCommandParams{TenantID: tenantID, RegisterCommandID: commandID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return grantPolicyOf(m), nil
+}
+
+func (r *repo) InsertGrantPolicy(ctx context.Context, g *domain.GrantPolicy) (*domain.GrantPolicy, error) {
+	p := sqlc.InsertGrantPolicyParams{
+		GrantID: g.GrantID, GrantRevision: int64(g.GrantRevision), TenantID: g.TenantID, PolicyDigest: string(g.PolicyDigest), ServerID: g.ServerID,
+		Methods: g.Methods, ExpiresAt: tsPtr(g.ExpiresAt), ReceiptID: g.ReceiptID, RevocationState: g.RevocationState, FencedAt: tsPtr(g.FencedAt),
+		ConvergedAt: tsPtr(g.ConvergedAt), RegisterCommandID: g.RegisterCommandID, RegisterRequestDigest: string(g.RegisterRequestDigest),
+		RevocationCommandID: strPtr(g.RevocationCommandID), RevocationRequestDigest: strPtr(string(g.RevocationRequestDigest)), Registered: g.Registered,
+	}
+	if g.CostCap != nil {
+		cur, amount := g.CostCap.Currency, g.CostCap.Amount
+		p.CostCapCurrency, p.CostCapAmount = &cur, &amount
+	}
+	m, err := r.q.InsertGrantPolicy(ctx, p)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return grantPolicyOf(m), nil
+}
+
+func (r *repo) UpdateGrantRevocation(ctx context.Context, g *domain.GrantPolicy) error {
+	return mapErr(r.q.UpdateGrantRevocation(ctx, sqlc.UpdateGrantRevocationParams{
+		GrantID: g.GrantID, GrantRevision: int64(g.GrantRevision), RevocationState: g.RevocationState, FencedAt: tsPtr(g.FencedAt),
+		ConvergedAt: tsPtr(g.ConvergedAt), RevocationCommandID: strPtr(g.RevocationCommandID), RevocationRequestDigest: strPtr(string(g.RevocationRequestDigest)),
+		InFlightCalls: int64(g.InFlightCalls), UnknownCalls: int64(g.UnknownCalls),
+	}))
+}
+
+func (r *repo) CountGrantSenders(ctx context.Context, grantID string, revision uint64) (uint64, uint64, error) {
+	rev := int64(revision)
+	row, err := r.q.CountGrantSenders(ctx, sqlc.CountGrantSendersParams{GrantID: &grantID, GrantRevision: &rev})
+	if err != nil {
+		return 0, 0, mapErr(err)
+	}
+	return uint64(row.InFlight), uint64(row.Unknown), nil
 }
 
 func (r *repo) HasUnsettledDispatch(ctx context.Context, operationID string) (bool, error) {

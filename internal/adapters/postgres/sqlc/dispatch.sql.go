@@ -28,8 +28,30 @@ func (q *Queries) ChargedCost(ctx context.Context, dispatchID *string) (ChargedC
 	return i, err
 }
 
+const countGrantSenders = `-- name: CountGrantSenders :one
+SELECT count(*) FILTER (WHERE state = 'authorized')::bigint AS in_flight, count(*) FILTER (WHERE state = 'unknown')::bigint AS unknown
+FROM dispatches WHERE grant_id = $1 AND grant_revision = $2
+`
+
+type CountGrantSendersParams struct {
+	GrantID       *string
+	GrantRevision *int64
+}
+
+type CountGrantSendersRow struct {
+	InFlight int64
+	Unknown  int64
+}
+
+func (q *Queries) CountGrantSenders(ctx context.Context, arg CountGrantSendersParams) (CountGrantSendersRow, error) {
+	row := q.db.QueryRow(ctx, countGrantSenders, arg.GrantID, arg.GrantRevision)
+	var i CountGrantSendersRow
+	err := row.Scan(&i.InFlight, &i.Unknown)
+	return i, err
+}
+
 const findDispatchesByOwnerCall = `-- name: FindDispatchesByOwnerCall :many
-SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code FROM dispatches WHERE owner = $1 AND call_id = $2 ORDER BY admitted_at LIMIT 2
+SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code, argument_digest, side_effecting FROM dispatches WHERE owner = $1 AND call_id = $2 ORDER BY admitted_at LIMIT 2
 `
 
 type FindDispatchesByOwnerCallParams struct {
@@ -73,6 +95,8 @@ func (q *Queries) FindDispatchesByOwnerCall(ctx context.Context, arg FindDispatc
 			&i.AdmittedAt,
 			&i.ObservedAt,
 			&i.DenialCode,
+			&i.ArgumentDigest,
+			&i.SideEffecting,
 		); err != nil {
 			return nil, err
 		}
@@ -111,7 +135,7 @@ func (q *Queries) GetAllocationByPool(ctx context.Context, arg GetAllocationByPo
 }
 
 const getDispatch = `-- name: GetDispatch :one
-SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code FROM dispatches WHERE dispatch_id = $1
+SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code, argument_digest, side_effecting FROM dispatches WHERE dispatch_id = $1
 `
 
 func (q *Queries) GetDispatch(ctx context.Context, dispatchID string) (Dispatch, error) {
@@ -144,12 +168,14 @@ func (q *Queries) GetDispatch(ctx context.Context, dispatchID string) (Dispatch,
 		&i.AdmittedAt,
 		&i.ObservedAt,
 		&i.DenialCode,
+		&i.ArgumentDigest,
+		&i.SideEffecting,
 	)
 	return i, err
 }
 
 const getDispatchByCall = `-- name: GetDispatchByCall :one
-SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code FROM dispatches WHERE tenant_id = $1 AND owner = $2 AND call_id = $3
+SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code, argument_digest, side_effecting FROM dispatches WHERE tenant_id = $1 AND owner = $2 AND call_id = $3
 `
 
 type GetDispatchByCallParams struct {
@@ -188,12 +214,14 @@ func (q *Queries) GetDispatchByCall(ctx context.Context, arg GetDispatchByCallPa
 		&i.AdmittedAt,
 		&i.ObservedAt,
 		&i.DenialCode,
+		&i.ArgumentDigest,
+		&i.SideEffecting,
 	)
 	return i, err
 }
 
 const getGrantPolicy = `-- name: GetGrantPolicy :one
-SELECT grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2
+SELECT grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at, register_command_id, register_request_digest, revocation_command_id, revocation_request_digest, in_flight_calls, unknown_calls, registered FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2
 `
 
 type GetGrantPolicyParams struct {
@@ -220,6 +248,52 @@ func (q *Queries) GetGrantPolicy(ctx context.Context, arg GetGrantPolicyParams) 
 		&i.FencedAt,
 		&i.ConvergedAt,
 		&i.RegisteredAt,
+		&i.RegisterCommandID,
+		&i.RegisterRequestDigest,
+		&i.RevocationCommandID,
+		&i.RevocationRequestDigest,
+		&i.InFlightCalls,
+		&i.UnknownCalls,
+		&i.Registered,
+	)
+	return i, err
+}
+
+const getGrantPolicyByRegisterCommand = `-- name: GetGrantPolicyByRegisterCommand :one
+SELECT grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at, register_command_id, register_request_digest, revocation_command_id, revocation_request_digest, in_flight_calls, unknown_calls, registered FROM grant_policies WHERE tenant_id = $1 AND register_command_id = $2
+`
+
+type GetGrantPolicyByRegisterCommandParams struct {
+	TenantID          string
+	RegisterCommandID string
+}
+
+func (q *Queries) GetGrantPolicyByRegisterCommand(ctx context.Context, arg GetGrantPolicyByRegisterCommandParams) (GrantPolicy, error) {
+	row := q.db.QueryRow(ctx, getGrantPolicyByRegisterCommand, arg.TenantID, arg.RegisterCommandID)
+	var i GrantPolicy
+	err := row.Scan(
+		&i.GrantID,
+		&i.GrantRevision,
+		&i.TenantID,
+		&i.PolicyDigest,
+		&i.ServerID,
+		&i.Methods,
+		&i.CostCapCurrency,
+		&i.CostCapAmount,
+		&i.ExpiresAt,
+		&i.PolicyEpoch,
+		&i.ReceiptID,
+		&i.RevocationState,
+		&i.FencedAt,
+		&i.ConvergedAt,
+		&i.RegisteredAt,
+		&i.RegisterCommandID,
+		&i.RegisterRequestDigest,
+		&i.RevocationCommandID,
+		&i.RevocationRequestDigest,
+		&i.InFlightCalls,
+		&i.UnknownCalls,
+		&i.Registered,
 	)
 	return i, err
 }
@@ -370,11 +444,13 @@ const insertDispatch = `-- name: InsertDispatch :exec
 INSERT INTO dispatches (
     dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id,
     grant_id, grant_revision, execution_epoch, state, outcome, denial_code, reserved_currency, reserved_amount, meter_revision,
-    supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at
+    supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at,
+    argument_digest, side_effecting
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16, $17, $18, $19,
-    $20, $21, $22, $23, $24, $25, $26
+    $20, $21, $22, $23, $24, $25, $26,
+    $27, $28
 )
 `
 
@@ -405,6 +481,8 @@ type InsertDispatchParams struct {
 	Deadline         pgtype.Timestamptz
 	AdmittedAt       pgtype.Timestamptz
 	ObservedAt       pgtype.Timestamptz
+	ArgumentDigest   string
+	SideEffecting    bool
 }
 
 func (q *Queries) InsertDispatch(ctx context.Context, arg InsertDispatchParams) error {
@@ -435,8 +513,88 @@ func (q *Queries) InsertDispatch(ctx context.Context, arg InsertDispatchParams) 
 		arg.Deadline,
 		arg.AdmittedAt,
 		arg.ObservedAt,
+		arg.ArgumentDigest,
+		arg.SideEffecting,
 	)
 	return err
+}
+
+const insertGrantPolicy = `-- name: InsertGrantPolicy :one
+INSERT INTO grant_policies (grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount,
+    expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, register_command_id, register_request_digest,
+    revocation_command_id, revocation_request_digest, registered)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, nextval('grant_policy_epoch_seq'), $10, $11, $12, $13, $14, $15, $16, $17, $18)
+RETURNING grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at, register_command_id, register_request_digest, revocation_command_id, revocation_request_digest, in_flight_calls, unknown_calls, registered
+`
+
+type InsertGrantPolicyParams struct {
+	GrantID                 string
+	GrantRevision           int64
+	TenantID                string
+	PolicyDigest            string
+	ServerID                string
+	Methods                 []string
+	CostCapCurrency         *string
+	CostCapAmount           *int64
+	ExpiresAt               pgtype.Timestamptz
+	ReceiptID               string
+	RevocationState         string
+	FencedAt                pgtype.Timestamptz
+	ConvergedAt             pgtype.Timestamptz
+	RegisterCommandID       string
+	RegisterRequestDigest   string
+	RevocationCommandID     *string
+	RevocationRequestDigest *string
+	Registered              bool
+}
+
+func (q *Queries) InsertGrantPolicy(ctx context.Context, arg InsertGrantPolicyParams) (GrantPolicy, error) {
+	row := q.db.QueryRow(ctx, insertGrantPolicy,
+		arg.GrantID,
+		arg.GrantRevision,
+		arg.TenantID,
+		arg.PolicyDigest,
+		arg.ServerID,
+		arg.Methods,
+		arg.CostCapCurrency,
+		arg.CostCapAmount,
+		arg.ExpiresAt,
+		arg.ReceiptID,
+		arg.RevocationState,
+		arg.FencedAt,
+		arg.ConvergedAt,
+		arg.RegisterCommandID,
+		arg.RegisterRequestDigest,
+		arg.RevocationCommandID,
+		arg.RevocationRequestDigest,
+		arg.Registered,
+	)
+	var i GrantPolicy
+	err := row.Scan(
+		&i.GrantID,
+		&i.GrantRevision,
+		&i.TenantID,
+		&i.PolicyDigest,
+		&i.ServerID,
+		&i.Methods,
+		&i.CostCapCurrency,
+		&i.CostCapAmount,
+		&i.ExpiresAt,
+		&i.PolicyEpoch,
+		&i.ReceiptID,
+		&i.RevocationState,
+		&i.FencedAt,
+		&i.ConvergedAt,
+		&i.RegisteredAt,
+		&i.RegisterCommandID,
+		&i.RegisterRequestDigest,
+		&i.RevocationCommandID,
+		&i.RevocationRequestDigest,
+		&i.InFlightCalls,
+		&i.UnknownCalls,
+		&i.Registered,
+	)
+	return i, err
 }
 
 const insertUsageObservation = `-- name: InsertUsageObservation :exec
@@ -570,7 +728,7 @@ func (q *Queries) LockAllocations(ctx context.Context, operationID string) ([]Al
 }
 
 const lockDispatch = `-- name: LockDispatch :one
-SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code FROM dispatches WHERE dispatch_id = $1 FOR UPDATE
+SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code, argument_digest, side_effecting FROM dispatches WHERE dispatch_id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockDispatch(ctx context.Context, dispatchID string) (Dispatch, error) {
@@ -603,6 +761,47 @@ func (q *Queries) LockDispatch(ctx context.Context, dispatchID string) (Dispatch
 		&i.AdmittedAt,
 		&i.ObservedAt,
 		&i.DenialCode,
+		&i.ArgumentDigest,
+		&i.SideEffecting,
+	)
+	return i, err
+}
+
+const lockGrantPolicy = `-- name: LockGrantPolicy :one
+SELECT grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at, register_command_id, register_request_digest, revocation_command_id, revocation_request_digest, in_flight_calls, unknown_calls, registered FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2 FOR UPDATE
+`
+
+type LockGrantPolicyParams struct {
+	GrantID       string
+	GrantRevision int64
+}
+
+func (q *Queries) LockGrantPolicy(ctx context.Context, arg LockGrantPolicyParams) (GrantPolicy, error) {
+	row := q.db.QueryRow(ctx, lockGrantPolicy, arg.GrantID, arg.GrantRevision)
+	var i GrantPolicy
+	err := row.Scan(
+		&i.GrantID,
+		&i.GrantRevision,
+		&i.TenantID,
+		&i.PolicyDigest,
+		&i.ServerID,
+		&i.Methods,
+		&i.CostCapCurrency,
+		&i.CostCapAmount,
+		&i.ExpiresAt,
+		&i.PolicyEpoch,
+		&i.ReceiptID,
+		&i.RevocationState,
+		&i.FencedAt,
+		&i.ConvergedAt,
+		&i.RegisteredAt,
+		&i.RegisterCommandID,
+		&i.RegisterRequestDigest,
+		&i.RevocationCommandID,
+		&i.RevocationRequestDigest,
+		&i.InFlightCalls,
+		&i.UnknownCalls,
+		&i.Registered,
 	)
 	return i, err
 }
@@ -656,6 +855,50 @@ func (q *Queries) MaxUsage(ctx context.Context, dispatchID string) (MaxUsageRow,
 	return i, err
 }
 
+const shareLockGrantPolicy = `-- name: ShareLockGrantPolicy :one
+
+SELECT grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at, register_command_id, register_request_digest, revocation_command_id, revocation_request_digest, in_flight_calls, unknown_calls, registered FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2 FOR SHARE
+`
+
+type ShareLockGrantPolicyParams struct {
+	GrantID       string
+	GrantRevision int64
+}
+
+// P18: the grant policy registration and revocation barrier. Tool admission
+// share-locks the policy row (rank 1, before the allocations) while it
+// decides and consumes a permission; BeginRevocation's update waits for it
+// and every later admission reads the fence.
+func (q *Queries) ShareLockGrantPolicy(ctx context.Context, arg ShareLockGrantPolicyParams) (GrantPolicy, error) {
+	row := q.db.QueryRow(ctx, shareLockGrantPolicy, arg.GrantID, arg.GrantRevision)
+	var i GrantPolicy
+	err := row.Scan(
+		&i.GrantID,
+		&i.GrantRevision,
+		&i.TenantID,
+		&i.PolicyDigest,
+		&i.ServerID,
+		&i.Methods,
+		&i.CostCapCurrency,
+		&i.CostCapAmount,
+		&i.ExpiresAt,
+		&i.PolicyEpoch,
+		&i.ReceiptID,
+		&i.RevocationState,
+		&i.FencedAt,
+		&i.ConvergedAt,
+		&i.RegisteredAt,
+		&i.RegisterCommandID,
+		&i.RegisterRequestDigest,
+		&i.RevocationCommandID,
+		&i.RevocationRequestDigest,
+		&i.InFlightCalls,
+		&i.UnknownCalls,
+		&i.Registered,
+	)
+	return i, err
+}
+
 const updateAllocation = `-- name: UpdateAllocation :exec
 UPDATE allocations SET reserved = $2, consumed = $3, revision = $4 WHERE allocation_id = $1
 `
@@ -703,6 +946,39 @@ func (q *Queries) UpdateDispatch(ctx context.Context, arg UpdateDispatchParams) 
 		arg.InventoryState,
 		arg.InventoryVersion,
 		arg.ObservedAt,
+	)
+	return err
+}
+
+const updateGrantRevocation = `-- name: UpdateGrantRevocation :exec
+UPDATE grant_policies SET revocation_state = $3, fenced_at = $4, converged_at = $5, revocation_command_id = $6,
+    revocation_request_digest = $7, in_flight_calls = $8, unknown_calls = $9
+WHERE grant_id = $1 AND grant_revision = $2
+`
+
+type UpdateGrantRevocationParams struct {
+	GrantID                 string
+	GrantRevision           int64
+	RevocationState         string
+	FencedAt                pgtype.Timestamptz
+	ConvergedAt             pgtype.Timestamptz
+	RevocationCommandID     *string
+	RevocationRequestDigest *string
+	InFlightCalls           int64
+	UnknownCalls            int64
+}
+
+func (q *Queries) UpdateGrantRevocation(ctx context.Context, arg UpdateGrantRevocationParams) error {
+	_, err := q.db.Exec(ctx, updateGrantRevocation,
+		arg.GrantID,
+		arg.GrantRevision,
+		arg.RevocationState,
+		arg.FencedAt,
+		arg.ConvergedAt,
+		arg.RevocationCommandID,
+		arg.RevocationRequestDigest,
+		arg.InFlightCalls,
+		arg.UnknownCalls,
 	)
 	return err
 }

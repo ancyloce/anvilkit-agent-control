@@ -47,11 +47,13 @@ SELECT * FROM dispatches WHERE dispatch_id = $1 FOR UPDATE;
 INSERT INTO dispatches (
     dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id,
     grant_id, grant_revision, execution_epoch, state, outcome, denial_code, reserved_currency, reserved_amount, meter_revision,
-    supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at
+    supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at,
+    argument_digest, side_effecting
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16, $17, $18, $19,
-    $20, $21, $22, $23, $24, $25, $26
+    $20, $21, $22, $23, $24, $25, $26,
+    $27, $28
 );
 
 -- name: UpdateDispatch :exec
@@ -98,3 +100,33 @@ SELECT * FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2;
 
 -- name: HasUnsettledDispatch :one
 SELECT EXISTS (SELECT 1 FROM dispatches WHERE operation_id = $1 AND state IN ('prepared', 'authorized', 'unknown'));
+
+-- P18: the grant policy registration and revocation barrier. Tool admission
+-- share-locks the policy row (rank 1, before the allocations) while it
+-- decides and consumes a permission; BeginRevocation's update waits for it
+-- and every later admission reads the fence.
+
+-- name: ShareLockGrantPolicy :one
+SELECT * FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2 FOR SHARE;
+
+-- name: LockGrantPolicy :one
+SELECT * FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2 FOR UPDATE;
+
+-- name: GetGrantPolicyByRegisterCommand :one
+SELECT * FROM grant_policies WHERE tenant_id = $1 AND register_command_id = $2;
+
+-- name: InsertGrantPolicy :one
+INSERT INTO grant_policies (grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount,
+    expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, register_command_id, register_request_digest,
+    revocation_command_id, revocation_request_digest, registered)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, nextval('grant_policy_epoch_seq'), $10, $11, $12, $13, $14, $15, $16, $17, $18)
+RETURNING *;
+
+-- name: UpdateGrantRevocation :exec
+UPDATE grant_policies SET revocation_state = $3, fenced_at = $4, converged_at = $5, revocation_command_id = $6,
+    revocation_request_digest = $7, in_flight_calls = $8, unknown_calls = $9
+WHERE grant_id = $1 AND grant_revision = $2;
+
+-- name: CountGrantSenders :one
+SELECT count(*) FILTER (WHERE state = 'authorized')::bigint AS in_flight, count(*) FILTER (WHERE state = 'unknown')::bigint AS unknown
+FROM dispatches WHERE grant_id = $1 AND grant_revision = $2;
