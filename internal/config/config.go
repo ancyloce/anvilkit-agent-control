@@ -135,6 +135,23 @@ type Profiles struct {
 	LocalCheckDeadline time.Duration      `koanf:"local_check_deadline"`
 	Preparation        PreparationProfile `koanf:"preparation"`
 	Generation         GenerationProfile  `koanf:"generation"`
+	PreviewBuild       PreviewProfile     `koanf:"preview_build"`
+	Release            ReleaseProfile     `koanf:"release"`
+}
+
+// ReleaseProfile: the release operation deadline (P21): certification of
+// the exact source, the maintainer's approval wait, both publications and
+// the activation. It bounds the long approval wait absolutely; nothing
+// extends it. Destinations and job profiles are the Workflow's.
+type ReleaseProfile struct {
+	Deadline time.Duration `koanf:"deadline"`
+}
+
+// PreviewProfile: the preview_build operation deadline (conditional save
+// and the isolated build of the saved revision; P20, compute only, no
+// funding and no model call). The build's job profile is the Workflow's.
+type PreviewProfile struct {
+	Deadline time.Duration `koanf:"deadline"`
 }
 
 // PreparationProfile: the operation deadline bounds the whole preparation
@@ -267,6 +284,8 @@ var defaults = map[string]any{
 	"profiles.generation.max_repairs":       1,
 	"profiles.generation.codegen_profile":   "codegen-team-dev-v1",
 	"profiles.generation.validator_profile": "validator-fixed-dev-v1",
+	"profiles.preview_build.deadline":       "30m",
+	"profiles.release.deadline":             "720h",
 	"dispatch.authority_freshness":          "30s",
 	"dispatch.development.enabled":          false,
 	"inventory.backend":                     InventoryFilesystem,
@@ -435,6 +454,12 @@ func (c Config) validate() error {
 	}
 	if c.Relay.Interval < 100*time.Millisecond || c.Relay.Interval > time.Minute {
 		errs = append(errs, fmt.Errorf("relay.interval %s outside [100ms, 1m]", c.Relay.Interval))
+	}
+	if pb := c.Profiles.PreviewBuild; pb.Deadline < time.Minute || pb.Deadline > 24*time.Hour {
+		errs = append(errs, fmt.Errorf("profiles.preview_build.deadline %s outside [1m, 24h]", pb.Deadline))
+	}
+	if rp := c.Profiles.Release; rp.Deadline < time.Hour || rp.Deadline > 2160*time.Hour {
+		errs = append(errs, fmt.Errorf("profiles.release.deadline %s outside [1h, 2160h]", rp.Deadline))
 	}
 	if c.Profiles.LocalCheckDeadline < time.Minute || c.Profiles.LocalCheckDeadline > 24*time.Hour {
 		errs = append(errs, fmt.Errorf("profiles.local_check_deadline %s outside [1m, 24h]", c.Profiles.LocalCheckDeadline))
