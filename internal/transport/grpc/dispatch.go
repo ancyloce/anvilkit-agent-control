@@ -112,6 +112,7 @@ func (s *dispatchServer) AdmitTool(ctx context.Context, req *controlv1.AdmitTool
 		InstanceID: instanceID, ExecutionEpoch: epoch, RouteID: req.GetServerId() + "/" + req.GetMethod(), GrantID: req.GetGrantId(), GrantRevision: uint64(grantRevision),
 		ServerID: req.GetServerId(), Method: req.GetMethod(), MaxExposure: exposure, Deadline: req.GetDeadline().AsTime(),
 		SupersedesCallID: req.GetSupersedesCallId(), EvidenceRef: req.GetEvidenceRef(),
+		ArgumentDigest: domain.Digest(req.GetArgumentDigest()), SideEffecting: req.GetSideEffecting(),
 	})
 	if err != nil {
 		return nil, toStatus(err)

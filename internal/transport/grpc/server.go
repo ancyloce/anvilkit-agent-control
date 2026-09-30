@@ -25,7 +25,7 @@ type Server struct {
 	listen string
 }
 
-func NewServer(listen string, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations) (*Server, error) {
+func NewServer(listen string, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies) (*Server, error) {
 	validator, err := protovalidate.New()
 	if err != nil {
 		return nil, err
@@ -45,6 +45,7 @@ func NewServer(listen string, controlCapacity, executionCapacity int, ops *appli
 	controlv1.RegisterEffectServiceServer(s, &effectServer{effects: effects})
 	controlv1.RegisterRecoveryServiceServer(s, &recoveryServer{recovery: recovery})
 	controlv1.RegisterArtifactServiceServer(s, &artifactServer{artifacts: artifacts})
+	controlv1.RegisterGrantPolicyServiceServer(s, &grantPolicyServer{grants: grants})
 	return &Server{grpc: s, health: h, listen: listen}, nil
 }
 

@@ -34,7 +34,7 @@ func TestCandidateRegistrationExecutionBinding(t *testing.T) {
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log)
 	execution := application.NewExecution(store, inv, jobs.Contract{}, profiles, domain.SystemClock{}, log)
 	effects := application.NewEffects(store, inv, development.NewOutcomeQuery(inv, nil), domain.SystemClock{}, log)
-	srv, err := transport.NewServer("127.0.0.1:0", 4, 4, ops, execution, nil, effects, nil, nil, nil, nil)
+	srv, err := transport.NewServer("127.0.0.1:0", 4, 4, ops, execution, nil, effects, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	addr, err := srv.Start()
 	require.NoError(t, err)
