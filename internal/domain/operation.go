@@ -84,6 +84,15 @@ type Subject struct {
 	SubjectDigest  Digest
 	BriefID        string
 	SourceRevision string
+	// SourceHandle names the finalized source artifact of a preview_build
+	// (the edited source; its digest is SubjectDigest) or, bound by
+	// Control, the released source of a release.
+	SourceHandle string
+	// SourceOperationID and PackageVersion bind a release (P21): the
+	// operation whose saved or registered source it releases and the
+	// exact package version released.
+	SourceOperationID string
+	PackageVersion    string
 }
 
 // ArtifactBinding names a finalized transfer and the digest it must hold.
