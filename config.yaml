@@ -49,6 +49,16 @@ relay:
   interval: 500ms
 profiles:
   local_check_deadline: 15m
+  # preview_build (P20): the deadline of one conditional save plus the
+  # isolated build of the saved revision (the Workflow names the build's
+  # reviewed job profile).
+  preview_build:
+    deadline: 30m
+  # release (P21): the deadline of one release: certification of the
+  # exact source, the maintainer's approval wait, both publications and the
+  # activation. The approval wait never extends it.
+  release:
+    deadline: 720h
 # recovery: bounds of the rollback-window reconciliation (P07).
 recovery:
   enumeration_page: 500
