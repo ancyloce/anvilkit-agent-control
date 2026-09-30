@@ -184,8 +184,11 @@ func Module() fx.Option {
 			func(cfg config.Config, store application.Store, wf application.WorkflowRelay, ops *application.Operations, recovery *application.Recovery, preparations *application.Preparations, generations *application.Generations, clock domain.Clock, log *slog.Logger) *application.Relay {
 				return application.NewRelay(store, wf, ops, recovery, preparations, generations, clock, log, cfg.Relay.Interval)
 			},
-			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations) (*grpctransport.Server, error) {
-				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations)
+			func(store application.Store, clock domain.Clock, log *slog.Logger) *application.GrantPolicies {
+				return application.NewGrantPolicies(store, clock, log)
+			},
+			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies) (*grpctransport.Server, error) {
+				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants)
 			},
 		),
 		fx.Invoke(run),
