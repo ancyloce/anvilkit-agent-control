@@ -71,9 +71,19 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 		if subject.BriefID == "" {
 			return nil, false, fmt.Errorf("%w: a %s binds a brief", domain.ErrInvalid, kind)
 		}
+	case domain.KindPreviewBuild:
+		if intake != nil || subject.BriefID != "" {
+			return nil, false, fmt.Errorf("%w: a preview build binds its source, not an intake or a brief", domain.ErrInvalid)
+		}
+		if subject.SourceRevision == "" || subject.SourceHandle == "" {
+			return nil, false, fmt.Errorf("%w: a preview build names the edited source and the revision it was based on", domain.ErrInvalid)
+		}
 	default:
 		if intake != nil {
 			return nil, false, fmt.Errorf("%w: only a preparation carries an intake", domain.ErrInvalid)
+		}
+		if subject.SourceHandle != "" {
+			return nil, false, fmt.Errorf("%w: only a preview build names a source artifact", domain.ErrInvalid)
 		}
 	}
 	now := s.clock.Now()
@@ -109,6 +119,11 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 			}
 			if subject.BriefID != "" {
 				if err := verifyBriefBinding(ctx, r, scope, subject.BriefID); err != nil {
+					return err
+				}
+			}
+			if subject.SourceHandle != "" {
+				if err := verifySourceArtifact(ctx, r, scope, subject); err != nil {
 					return err
 				}
 			}
@@ -161,6 +176,26 @@ func verifyPromptTransfer(ctx context.Context, r Repo, scope domain.Scope, in *d
 	}
 	if t.OperationID != "" {
 		return fmt.Errorf("%w: prompt transfer %s is bound to operation %s", domain.ErrInvalid, t.ID, t.OperationID)
+	}
+	return nil
+}
+
+// verifySourceArtifact checks the edited source a preview build names: a
+// finalized source artifact of the caller's tenant, bound to no other
+// operation (the subject digest names the lineage it edits).
+func verifySourceArtifact(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) error {
+	t, err := r.GetTransferByHandle(ctx, subject.SourceHandle)
+	if errors.Is(err, domain.ErrNotFound) || (err == nil && t.TenantID != scope.TenantID) {
+		return fmt.Errorf("%w: source artifact %s is not an artifact of this scope", domain.ErrInvalid, subject.SourceHandle)
+	}
+	if err != nil {
+		return err
+	}
+	if t.State != domain.TransferFinalized || t.Class != domain.ArtifactSource {
+		return fmt.Errorf("%w: source artifact %s is not a finalized source artifact (%s/%s)", domain.ErrInvalid, subject.SourceHandle, t.State, t.Class)
+	}
+	if t.OperationID != "" {
+		return fmt.Errorf("%w: source artifact %s is bound to operation %s", domain.ErrInvalid, subject.SourceHandle, t.OperationID)
 	}
 	return nil
 }

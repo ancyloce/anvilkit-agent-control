@@ -610,10 +610,13 @@ func artifactRelationship(ctx context.Context, r Repo, op *domain.Operation, t *
 			return nil
 		}
 	}
+	if op.Kind == domain.KindPreviewBuild && op.Subject.SourceHandle != "" && op.Subject.SourceHandle == t.Handle {
+		return nil
+	}
 	if _, err := r.GetStageArtifactByTransfer(ctx, t.ID, op.ID); err == nil {
 		return nil
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
-	return fmt.Errorf("%w: transfer %s is no input of operation %s: not its prompt, an accepted answer, its brief or an accepted stage artifact", domain.ErrStaleExecution, t.ID, op.ID)
+	return fmt.Errorf("%w: transfer %s is no input of operation %s: not its prompt, an accepted answer, its brief, its preview source or an accepted stage artifact", domain.ErrStaleExecution, t.ID, op.ID)
 }

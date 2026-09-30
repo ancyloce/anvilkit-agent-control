@@ -118,6 +118,12 @@ type Repo interface {
 	GetTransferByCommand(ctx context.Context, tenantID, commandID string) (*domain.Transfer, error)
 	GetTransfer(ctx context.Context, transferID string) (*domain.Transfer, error)
 	GetTransferByHandle(ctx context.Context, handle string) (*domain.Transfer, error)
+	// Preview builds (P20).
+	GetPreview(ctx context.Context, operationID string) (*domain.Preview, error)
+	LockPreview(ctx context.Context, operationID string) (*domain.Preview, error)
+	InsertPreview(ctx context.Context, p *domain.Preview) error
+	UpdatePreview(ctx context.Context, p *domain.Preview, expected uint64) (bool, error)
+	GetCertifiedSourceArtifact(ctx context.Context, operationID string) (*domain.StageArtifact, error)
 	LockTransfer(ctx context.Context, transferID string) (*domain.Transfer, error)
 	InsertTransfer(ctx context.Context, t *domain.Transfer) error
 	UpdateTransfer(ctx context.Context, t *domain.Transfer) error
