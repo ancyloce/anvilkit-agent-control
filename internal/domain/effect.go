@@ -119,6 +119,9 @@ type EffectContext struct {
 	Operation       *Operation
 	Attempt         *Attempt // nil when the request names no attempt
 	AdmissionClosed bool     // the tenant's scope is closed by a recovery run
+	// Release is the recorded projection of a release operation (P21);
+	// publication and activation permits are checked against it.
+	Release *Release
 }
 
 // DenyRecoveryRestricted is the denial code of a scope whose admission a
@@ -143,6 +146,9 @@ func CheckEffect(req EffectRequest, c EffectContext) error {
 	}
 	if req.Owner == "" || req.CanonicalSubject == "" || req.Occurrence == 0 {
 		return deny(DenyInvalidArgument, "effect needs an owner, a canonical subject and an occurrence")
+	}
+	if err := CheckReleaseEffect(req, op, c.Release); err != nil {
+		return err
 	}
 	if c.AdmissionClosed {
 		return deny(DenyRecoveryRestricted, "admission for tenant %s is closed by a recovery run", op.TenantID)
