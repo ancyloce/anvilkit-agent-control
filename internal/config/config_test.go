@@ -88,6 +88,8 @@ func TestRequiredValuesAndRanges(t *testing.T) {
 	require.ErrorContains(t, err, "temporal.address is required")
 	_, err = config.LoadFrom(write(t, minimal+"grpc:\n  control_capacity: 0\n"), env)
 	require.ErrorContains(t, err, "grpc.control_capacity")
+	_, err = config.LoadFrom(write(t, minimal+"database:\n  max_conns: 0\n"), env)
+	require.ErrorContains(t, err, "database.max_conns")
 	_, err = config.LoadFrom(write(t, minimal+"relay:\n  interval: 10ms\n"), env)
 	require.ErrorContains(t, err, "relay.interval")
 	_, err = config.LoadFrom(write(t, minimal+"profiles:\n  local_check_deadline: 48h\n"), env)

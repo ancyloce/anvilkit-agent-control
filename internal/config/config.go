@@ -40,9 +40,12 @@ type GRPC struct {
 	ShutdownTimeout   time.Duration `koanf:"shutdown_timeout"`
 }
 
-// Database holds the app-role connection; URL is env-only.
+// Database holds the app-role connection; URL is env-only. MaxConns is the
+// exact per-replica pool bound that the deployment lock's connection budget
+// counts (pool x replicas plus reserves within the cluster's limit).
 type Database struct {
-	URL string `koanf:"url"`
+	URL      string `koanf:"url"`
+	MaxConns int32  `koanf:"max_conns"`
 }
 
 // Inventory selects the obligation inventory backend (DD-02 §5): the
@@ -270,6 +273,7 @@ var defaults = map[string]any{
 	"grpc.control_capacity":                 32,
 	"grpc.execution_capacity":               64,
 	"grpc.shutdown_timeout":                 "20s",
+	"database.max_conns":                    8,
 	"temporal.namespace":                    "anvilkit",
 	"temporal.task_queue":                   "anvilkit-workflow",
 	"relay.interval":                        "500ms",
@@ -403,6 +407,9 @@ func (c Config) validate() error {
 	}
 	req("grpc.listen", c.GRPC.Listen)
 	req("database.url (ANVILKIT_CONTROL_DATABASE_URL)", c.Database.URL)
+	if c.Database.MaxConns < 1 || c.Database.MaxConns > 100 {
+		errs = append(errs, fmt.Errorf("database.max_conns %d outside [1, 100]", c.Database.MaxConns))
+	}
 	switch c.Inventory.Backend {
 	case InventoryFilesystem:
 		req("inventory.dir", c.Inventory.Dir)
