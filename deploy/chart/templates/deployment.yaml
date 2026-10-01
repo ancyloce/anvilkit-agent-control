@@ -9,7 +9,9 @@ metadata:
   labels:
     {{- include "anvilkit-agent-control.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "anvilkit-agent-control.selectorLabels" . | nindent 6 }}

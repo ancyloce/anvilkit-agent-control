@@ -16,6 +16,16 @@ image:
 imagePullSecrets: []
 replicaCount: 2
 
+# HorizontalPodAutoscaler (autoscaling/v2). Off unless the environment enables
+# it with an explicit maxReplicas: the maximum is bounded by downstream caps
+# and the database connection budget (deploy/gitops/lock.yaml), never a chart
+# default. While enabled the Deployment leaves replicas to the autoscaler.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 0
+  targetCPUUtilizationPercentage: 70
+
 serviceAccount:
   create: true
   name: ""
@@ -97,6 +107,8 @@ config:
     control_capacity: 32
     execution_capacity: 64
     shutdown_timeout: 20s
+  database:
+    max_conns: 8
   inventory:
     backend: s3
     s3:
