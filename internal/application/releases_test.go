@@ -15,7 +15,7 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/testdb"
 )
 
-var releaseProfile = domain.Profile{ID: "release-v1", Kind: domain.KindRelease, OperationDeadline: 720 * time.Hour, StepID: "certify", MultiStep: true}
+var releaseProfile = domain.Profile{ID: "release-v1", Kind: domain.KindRelease, OperationDeadline: 720 * time.Hour, StepID: "certify", MultiStep: true, AttemptWindow: time.Hour}
 
 // Releases (P21) against real PostgreSQL: the intake binds the exact saved
 // revision of a source operation, the projection binds the operation's
@@ -89,6 +89,14 @@ func TestReleases(t *testing.T) {
 
 	op, _, err := ops.Create(ctx, cmd("tenant_a", "rel_flow", "flow"), scopeA, domain.KindRelease, subj(saved.ID, "4"), nil)
 	require.NoError(t, err)
+
+	t.Run("an attempt of a release is bounded by the attempt window, not the approval-spanning deadline", func(t *testing.T) {
+		exec := application.NewExecution(store, inv, manifests, []domain.Profile{profile, previewProfile, releaseProfile}, domain.SystemClock{}, testLog)
+		at, _, err := exec.OpenAttempt(ctx, cmd("tenant_a", "rel_window_open", "w"), op.ID, "publication_npm", 0, "release-v1")
+		require.NoError(t, err)
+		require.WithinDuration(t, time.Now().Add(time.Hour), at.Deadline, time.Minute)
+		require.True(t, at.Deadline.Before(op.Deadline))
+	})
 
 	// The accepted certified stage of the release's certify attempt.
 	h := func(s string) domain.Digest { return application.DigestOf([]byte(s)) }

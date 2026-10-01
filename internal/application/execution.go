@@ -73,6 +73,9 @@ func (s *Execution) OpenAttempt(ctx context.Context, cmd domain.CommandIdentity,
 		if err != nil {
 			return err
 		}
+		if w := s.profiles[op.Subject.ProfileID].AttemptWindow; w > 0 && now.Add(w).Before(fresh.Deadline) {
+			fresh.Deadline = now.Add(w).UTC().Truncate(time.Microsecond)
+		}
 		if err := r.InsertAttempt(ctx, fresh); err != nil {
 			return err
 		}
