@@ -59,6 +59,10 @@ profiles:
   # activation. The approval wait never extends it.
   release:
     deadline: 720h
+    # Each attempt (the certification Job, each guarded mutation) is bounded
+    # below the operation deadline; the artifact store refuses transfer
+    # windows beyond artifacts.max_window.
+    attempt_window: 1h
 # recovery: bounds of the rollback-window reconciliation (P07).
 recovery:
   enumeration_page: 500
