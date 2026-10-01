@@ -13,6 +13,10 @@ grpc:
   control_capacity: 32
   execution_capacity: 64
   shutdown_timeout: 20s
+# database: the app-role pool; max_conns is the exact per-replica bound the
+# deployment lock budgets (the URL is a secret from the environment).
+database:
+  max_conns: 8
 # inventory: the external-obligation inventory (DD-02 §5). backend is
 # filesystem (DEVELOPMENT_ONLY; inventory.dir comes from
 # ANVILKIT_CONTROL_INVENTORY_DIR) or s3 (an S3-compatible backend through the
