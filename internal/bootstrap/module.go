@@ -284,7 +284,12 @@ func newArtifactStore(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (app
 }
 
 func newPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(context.Background(), cfg.Database.URL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.Database.URL)
+	if err != nil {
+		return nil, err
+	}
+	poolCfg.MaxConns = cfg.Database.MaxConns
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		return nil, err
 	}
