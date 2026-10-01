@@ -89,7 +89,7 @@ func Profiles(cfg config.Config) []domain.Profile {
 			// both targets and activate (no funding: compute and guarded
 			// business writes only).
 			ID: "release-v1", Kind: domain.KindRelease, OperationDeadline: cfg.Profiles.Release.Deadline, StepID: "certify",
-			MultiStep: true,
+			MultiStep: true, AttemptWindow: cfg.Profiles.Release.AttemptWindow,
 		},
 	}
 }

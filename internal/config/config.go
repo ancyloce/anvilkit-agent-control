@@ -145,6 +145,9 @@ type Profiles struct {
 // extends it. Destinations and job profiles are the Workflow's.
 type ReleaseProfile struct {
 	Deadline time.Duration `koanf:"deadline"`
+	// AttemptWindow bounds each attempt (the certification Job, each
+	// guarded mutation) below the operation deadline.
+	AttemptWindow time.Duration `koanf:"attempt_window"`
 }
 
 // PreviewProfile: the preview_build operation deadline (conditional save
@@ -286,6 +289,7 @@ var defaults = map[string]any{
 	"profiles.generation.validator_profile": "validator-fixed-dev-v1",
 	"profiles.preview_build.deadline":       "30m",
 	"profiles.release.deadline":             "720h",
+	"profiles.release.attempt_window":       "1h",
 	"dispatch.authority_freshness":          "30s",
 	"dispatch.development.enabled":          false,
 	"inventory.backend":                     InventoryFilesystem,
@@ -460,6 +464,9 @@ func (c Config) validate() error {
 	}
 	if rp := c.Profiles.Release; rp.Deadline < time.Hour || rp.Deadline > 2160*time.Hour {
 		errs = append(errs, fmt.Errorf("profiles.release.deadline %s outside [1h, 2160h]", rp.Deadline))
+	}
+	if rp := c.Profiles.Release; rp.AttemptWindow < time.Minute || rp.AttemptWindow > 24*time.Hour || rp.AttemptWindow > rp.Deadline {
+		errs = append(errs, fmt.Errorf("profiles.release.attempt_window %s outside [1m, min(24h, deadline)]", rp.AttemptWindow))
 	}
 	if c.Profiles.LocalCheckDeadline < time.Minute || c.Profiles.LocalCheckDeadline > 24*time.Hour {
 		errs = append(errs, fmt.Errorf("profiles.local_check_deadline %s outside [1m, 24h]", c.Profiles.LocalCheckDeadline))

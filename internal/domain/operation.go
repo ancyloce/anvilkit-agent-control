@@ -150,6 +150,11 @@ type Profile struct {
 	QueuePool string
 	// ActiveWindow is the execution window the first permit opens once.
 	ActiveWindow time.Duration
+	// AttemptWindow bounds each attempt's deadline below the operation's
+	// (P21: a release's operation deadline spans the maintainer's approval
+	// wait; its certification Job and each guarded mutation get their own
+	// bound). Zero lets an attempt inherit the operation deadline.
+	AttemptWindow time.Duration
 	// Definitions are the reviewed definition activations of the profile;
 	// the first is the default, a tracked change moves to another.
 	Definitions []string
