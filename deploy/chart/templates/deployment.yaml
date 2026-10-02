@@ -61,6 +61,14 @@ spec:
               value: {{ printf "%s:%d" .Values.listen.address (int .Values.listen.port) | quote }}
             - name: ANVILKIT_CONTROL_TEMPORAL_ADDRESS
               value: {{ .Values.temporal.address | quote }}
+            {{- if .Values.telemetry.otlpEndpoint }}
+            - name: ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.telemetry.metricsPort }}
+            - name: ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN
+              value: {{ printf "0.0.0.0:%d" (int .Values.telemetry.metricsPort) | quote }}
+            {{- end }}
             - name: ANVILKIT_CONTROL_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -100,11 +108,22 @@ spec:
             - name: grpc
               containerPort: {{ .Values.listen.port }}
               protocol: TCP
+            {{- if .Values.telemetry.metricsPort }}
+            - name: metrics
+              containerPort: {{ .Values.telemetry.metricsPort }}
+              protocol: TCP
+            {{- end }}
           startupProbe:
             grpc:
               port: {{ .Values.listen.port }}
             periodSeconds: {{ .Values.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- if .Values.shutdownDelaySeconds }}
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.shutdownDelaySeconds }}
+          {{- end }}
           readinessProbe:
             grpc:
               port: {{ .Values.listen.port }}

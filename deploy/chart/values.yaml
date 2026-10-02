@@ -169,6 +169,11 @@ probes:
 # Shutdown: Fx stops the server with grpc.shutdown_timeout from the
 # configuration; the grace period must exceed it.
 terminationGracePeriodSeconds: 30
+# Seconds the Pod keeps serving after termination starts, before the process is
+# told to stop: Service endpoints and kube-proxy rules converge meanwhile, so no
+# new connection reaches a closed listener during a rolling restart. Counts
+# against terminationGracePeriodSeconds; 0 disables it.
+shutdownDelaySeconds: 5
 
 podSecurityContext:
   runAsNonRoot: true
@@ -194,3 +199,11 @@ tolerations: []
 affinity: {}
 podAnnotations: {}
 podLabels: {}
+
+# Telemetry placement (P23): the collector's OTLP endpoint for spans
+# (ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT) and the port of its own metrics listener
+# (ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN, never the service port); empty disables it.
+# Scraping is the environment's pod annotations.
+telemetry:
+  otlpEndpoint: ""
+  metricsPort: 0
