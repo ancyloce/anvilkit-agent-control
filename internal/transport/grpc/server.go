@@ -25,16 +25,16 @@ type Server struct {
 	listen string
 }
 
-func NewServer(listen string, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases) (*Server, error) {
+func NewServer(listen string, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, extra ...grpc.ServerOption) (*Server, error) {
 	validator, err := protovalidate.New()
 	if err != nil {
 		return nil, err
 	}
 	cap := newCapacity(controlCapacity, executionCapacity)
-	s := grpc.NewServer(
+	s := grpc.NewServer(append([]grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(cap.unary(), validateUnary(validator)),
 		grpc.ChainStreamInterceptor(cap.stream()),
-	)
+	}, extra...)...)
 	h := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(s, h)
 	controlv1.RegisterOperationServiceServer(s, &operationServer{ops: ops, preparations: preparations})
