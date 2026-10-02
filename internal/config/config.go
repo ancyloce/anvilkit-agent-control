@@ -255,7 +255,18 @@ type Recovery struct {
 	EnumerationPage int `koanf:"enumeration_page"`
 }
 
+// Telemetry places the redacted signals (security.md "data classification,
+// logging and deletion"): spans over OTLP to the collector when an endpoint
+// is placed (no exporter otherwise), sampled at SampleRatio, and the
+// Prometheus metrics on their own listener.
+type Telemetry struct {
+	OTLPEndpoint  string  `koanf:"otlp_endpoint"`
+	SampleRatio   float64 `koanf:"sample_ratio"`
+	MetricsListen string  `koanf:"metrics_listen"`
+}
+
 type Config struct {
+	Telemetry  Telemetry  `koanf:"telemetry"`
 	GRPC       GRPC       `koanf:"grpc"`
 	Database   Database   `koanf:"database"`
 	Inventory  Inventory  `koanf:"inventory"`
@@ -274,6 +285,7 @@ var defaults = map[string]any{
 	"grpc.execution_capacity":               64,
 	"grpc.shutdown_timeout":                 "20s",
 	"database.max_conns":                    8,
+	"telemetry.sample_ratio":                1.0,
 	"temporal.namespace":                    "anvilkit",
 	"temporal.task_queue":                   "anvilkit-workflow",
 	"relay.interval":                        "500ms",
@@ -317,6 +329,8 @@ var defaults = map[string]any{
 var envOverrides = map[string]string{
 	"ANVILKIT_CONTROL_LISTEN":                         "grpc.listen",
 	"ANVILKIT_CONTROL_DATABASE_URL":                   "database.url",
+	"ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT":        "telemetry.otlp_endpoint",
+	"ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN":       "telemetry.metrics_listen",
 	"ANVILKIT_CONTROL_INVENTORY_DIR":                  "inventory.dir",
 	"ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT":          "inventory.s3.endpoint",
 	"ANVILKIT_CONTROL_INVENTORY_S3_BUCKET":            "inventory.s3.bucket",
@@ -407,6 +421,12 @@ func (c Config) validate() error {
 	}
 	req("grpc.listen", c.GRPC.Listen)
 	req("database.url (ANVILKIT_CONTROL_DATABASE_URL)", c.Database.URL)
+	if c.Telemetry.SampleRatio < 0 || c.Telemetry.SampleRatio > 1 {
+		errs = append(errs, fmt.Errorf("telemetry.sample_ratio %v outside [0, 1]", c.Telemetry.SampleRatio))
+	}
+	if c.Telemetry.MetricsListen != "" && c.Telemetry.MetricsListen == c.GRPC.Listen {
+		errs = append(errs, fmt.Errorf("telemetry.metrics_listen must not be grpc.listen"))
+	}
 	if c.Database.MaxConns < 1 || c.Database.MaxConns > 100 {
 		errs = append(errs, fmt.Errorf("database.max_conns %d outside [1, 100]", c.Database.MaxConns))
 	}

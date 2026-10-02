@@ -172,3 +172,14 @@ func TestModelProxyPlacementAndSecret(t *testing.T) {
 	_, err = config.LoadFrom(write(t, minimal+"model_proxy:\n  identity:\n    mode: mtls\n"), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=https://proxy"))
 	require.ErrorContains(t, err, "model_proxy.identity.mtls.cert_file, key_file and ca_file are required")
 }
+
+func TestTelemetryPlacement(t *testing.T) {
+	c, err := config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT=collector:4317", "ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN=0.0.0.0:9111"))
+	require.NoError(t, err)
+	require.Equal(t, "collector:4317", c.Telemetry.OTLPEndpoint)
+	require.Equal(t, "0.0.0.0:9111", c.Telemetry.MetricsListen)
+	_, err = config.LoadFrom(write(t, minimal+"telemetry:\n  sample_ratio: -0.5\n"), env)
+	require.ErrorContains(t, err, "telemetry.sample_ratio")
+	_, err = config.LoadFrom(write(t, minimal+"telemetry:\n  metrics_listen: 127.0.0.1:9101\n"), env)
+	require.ErrorContains(t, err, "must not be grpc.listen")
+}
