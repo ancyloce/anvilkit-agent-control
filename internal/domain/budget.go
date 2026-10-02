@@ -341,6 +341,24 @@ func (a *Allocation) Reserve(exposure Money) error {
 	return nil
 }
 
+// Restore re-establishes a reservation that a database rollback lost while
+// the send it covers may have happened: recovery restores the dispatch from
+// the independent inventory and its exposure with it. It records a fact,
+// not an admission, so the cap is not checked (an overspend stays visible
+// through Exhausted); only the currency and overflow are.
+func (a *Allocation) Restore(exposure Money) error {
+	if exposure.Currency != a.Currency || exposure.Amount < 0 {
+		return fmt.Errorf("%w: allocation %s cannot restore %s", ErrInvalid, a.ID, exposure)
+	}
+	next, ok := addInt64(a.Reserved, exposure.Amount)
+	if !ok {
+		return fmt.Errorf("%w: allocation %s overflow", ErrInvalid, a.ID)
+	}
+	a.Reserved = next
+	a.Revision++
+	return nil
+}
+
 // Release returns a reservation that will never be spent (a confirmed
 // not-sent call, a denied second transaction).
 func (a *Allocation) Release(exposure Money) error {

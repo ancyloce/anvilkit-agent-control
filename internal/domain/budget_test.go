@@ -418,3 +418,19 @@ func TestDispatchBindsOnlyTheRecordedRequest(t *testing.T) {
 		t.Fatalf("the original request no longer binds its confirmed call: %v", err)
 	}
 }
+
+func TestAllocationRestoreRecordsALostReservationPastTheCap(t *testing.T) {
+	a := &Allocation{ID: "alloc", Currency: "USD", Amount: 100, Consumed: 90}
+	if err := a.Restore(Money{Currency: "USD", Amount: 50}); err != nil {
+		t.Fatal(err)
+	}
+	if a.Reserved != 50 || !a.Exhausted() {
+		t.Fatalf("the restored exposure is held past the cap and the allocation reads exhausted: %+v", a)
+	}
+	if err := a.Release(Money{Currency: "USD", Amount: 50}); err != nil {
+		t.Fatalf("the settlement releases what the restore holds: %v", err)
+	}
+	if err := a.Restore(Money{Currency: "EUR", Amount: 1}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("another currency is refused: %v", err)
+	}
+}
