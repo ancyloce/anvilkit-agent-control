@@ -674,6 +674,25 @@ func (s *Recovery) restore(ctx context.Context, run *domain.RecoveryRun, f *doma
 				if err := r.InsertCostEntry(ctx, &domain.CostEntry{ID: domain.NewID("cost"), OperationID: d.OperationID, DispatchID: d.ID, Kind: domain.CostEstimate, Amount: d.Reserved, CreatedAt: now}); err != nil {
 					return err
 				}
+				// The rollback lost the send's reservation together with the
+				// dispatch: the restored exposure is held again on every
+				// allocation of the operation (rank 1 before the operation),
+				// so the budget never shows headroom the unresolved send may
+				// have spent and its settlement releases or charges what it
+				// holds. Allocations created after the restore point are gone
+				// with their operation and hold nothing.
+				allocs, err := r.LockAllocations(ctx, rec.OperationID)
+				if err != nil {
+					return err
+				}
+				for _, a := range allocs {
+					if err := a.Restore(d.Reserved); err != nil {
+						return err
+					}
+					if err := r.UpdateAllocation(ctx, a); err != nil {
+						return err
+					}
+				}
 				op, err := r.LockOperation(ctx, rec.OperationID)
 				if err != nil {
 					return err

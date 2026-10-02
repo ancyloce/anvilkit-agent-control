@@ -662,6 +662,9 @@ func TestRecovery(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, denied.Allowed)
 		require.Equal(t, domain.DenyRecoveryRestricted, denied.DenialCode, "no send permission while the scope is closed")
+		var recorded int
+		require.NoError(t, p2.pool.QueryRow(ctx, "SELECT count(*) FROM dispatches WHERE call_id = $1", "rec_closed").Scan(&recorded))
+		require.Zero(t, recorded, "the refusal under the closure takes no call identity the run may still restore")
 		_, _, err = p2.exec.OpenAttempt(ctx, cmd("tenant_a", "rec_closed_open", "o"), opF.ID, "local-check", 1, "local-check-v1")
 		require.ErrorIs(t, err, domain.ErrStaleExecution)
 		other, _, err := p1.ops.Create(ctx, cmd("tenant_b", "rec_open_b", "body"), scopeB, domain.KindLocalCheck, subject, nil)

@@ -201,6 +201,14 @@ func (s *Dispatch) Admit(ctx context.Context, cmd domain.CommandIdentity, req do
 					return err
 				}
 				d = domain.DeniedDispatch(req, ac, denial)
+				// A scope a recovery run has closed refuses without a record:
+				// the closure is the record, and a denial row would take the
+				// call identity the run may still have to restore from the
+				// inventory (a send the restore point lost, reentered by its
+				// old exit), leaving the scope restricted for good.
+				if ac.AdmissionClosed {
+					return nil
+				}
 				return r.InsertDispatch(ctx, d)
 			}
 			fresh := domain.NewDispatch(req, ac)
