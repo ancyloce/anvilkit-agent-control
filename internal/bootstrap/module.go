@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/trace"
 	"go.temporal.io/sdk/client"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
@@ -210,8 +212,10 @@ func Module() fx.Option {
 			func(store application.Store, clock domain.Clock) *application.Releases {
 				return application.NewReleases(store, clock)
 			},
-			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases) (*grpctransport.Server, error) {
-				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases)
+			newTracer,
+			newMetrics,
+			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, _ trace.Tracer, reg *prometheus.Registry) (*grpctransport.Server, error) {
+				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases, grpctransport.Observability(reg)...)
 			},
 		),
 		fx.Invoke(run),
