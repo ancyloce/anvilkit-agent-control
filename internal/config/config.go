@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -38,6 +39,53 @@ type GRPC struct {
 	ControlCapacity   int           `koanf:"control_capacity"`
 	ExecutionCapacity int           `koanf:"execution_capacity"`
 	ShutdownTimeout   time.Duration `koanf:"shutdown_timeout"`
+	// Identity is the listener's workload identity (P0.1): mtls serves TLS
+	// 1.3 with required, verified client certificates and authorizes every
+	// RPC by the peer's SPIFFE URI SAN; development is plaintext and
+	// authorizes nothing, admitted only with development.enabled.
+	Identity ServerIdentity `koanf:"identity"`
+}
+
+// ServerIdentity names the mounted identity material and the trust domain
+// peers must belong to. The files are placements (ANVILKIT_CONTROL_IDENTITY_
+// {CERT,KEY,CA}_FILE); they are watched and reloaded as a whole.
+type ServerIdentity struct {
+	Mode        string `koanf:"mode"`
+	TrustDomain string `koanf:"trust_domain"`
+	CertFile    string `koanf:"cert_file"`
+	KeyFile     string `koanf:"key_file"`
+	CAFile      string `koanf:"ca_file"`
+	// MaxConnectionAge bounds every accepted connection so that no
+	// connection outlives a trust change by more than this.
+	MaxConnectionAge time.Duration `koanf:"max_connection_age"`
+	// ReloadInterval is the polling interval of the identity files.
+	ReloadInterval time.Duration `koanf:"reload_interval"`
+}
+
+// ClientTLS is the transport of an outbound connection whose server is not
+// an AnvilKit workload (Temporal, the OTLP collector): development is
+// plaintext (admitted only with development.enabled), tls verifies the
+// server against ca_file and server_name, mtls additionally presents
+// cert_file/key_file.
+type ClientTLS struct {
+	Mode       string `koanf:"mode"`
+	CAFile     string `koanf:"ca_file"`
+	CertFile   string `koanf:"cert_file"`
+	KeyFile    string `koanf:"key_file"`
+	ServerName string `koanf:"server_name"`
+}
+
+// Development is the top-level DEVELOPMENT_ONLY guard: every plaintext
+// business connection of this process requires both its own development
+// mode and Enabled; Enabled alone downgrades nothing. File-only.
+type Development struct {
+	Enabled bool `koanf:"enabled"`
+}
+
+// Health is the plaintext HTTP probe listener (/healthz, /readyz), never a
+// business endpoint; inside a Pod it binds the Pod IP for the kubelet.
+type Health struct {
+	Listen string `koanf:"listen"`
 }
 
 // Database holds the app-role connection; URL is env-only. MaxConns is the
@@ -96,9 +144,10 @@ const (
 )
 
 type Temporal struct {
-	Address   string `koanf:"address"`
-	Namespace string `koanf:"namespace"`
-	TaskQueue string `koanf:"task_queue"`
+	Address   string    `koanf:"address"`
+	Namespace string    `koanf:"namespace"`
+	TaskQueue string    `koanf:"task_queue"`
+	TLS       ClientTLS `koanf:"tls"`
 }
 
 type Relay struct {
@@ -263,20 +312,24 @@ type Telemetry struct {
 	OTLPEndpoint  string  `koanf:"otlp_endpoint"`
 	SampleRatio   float64 `koanf:"sample_ratio"`
 	MetricsListen string  `koanf:"metrics_listen"`
+	// OTLPTLS is validated only while an endpoint is placed.
+	OTLPTLS ClientTLS `koanf:"otlp_tls"`
 }
 
 type Config struct {
-	Telemetry  Telemetry  `koanf:"telemetry"`
-	GRPC       GRPC       `koanf:"grpc"`
-	Database   Database   `koanf:"database"`
-	Inventory  Inventory  `koanf:"inventory"`
-	Artifacts  Artifacts  `koanf:"artifacts"`
-	Temporal   Temporal   `koanf:"temporal"`
-	Relay      Relay      `koanf:"relay"`
-	Profiles   Profiles   `koanf:"profiles"`
-	Dispatch   Dispatch   `koanf:"dispatch"`
-	Recovery   Recovery   `koanf:"recovery"`
-	ModelProxy ModelProxy `koanf:"model_proxy"`
+	Development Development `koanf:"development"`
+	Health      Health      `koanf:"health"`
+	Telemetry   Telemetry   `koanf:"telemetry"`
+	GRPC        GRPC        `koanf:"grpc"`
+	Database    Database    `koanf:"database"`
+	Inventory   Inventory   `koanf:"inventory"`
+	Artifacts   Artifacts   `koanf:"artifacts"`
+	Temporal    Temporal    `koanf:"temporal"`
+	Relay       Relay       `koanf:"relay"`
+	Profiles    Profiles    `koanf:"profiles"`
+	Dispatch    Dispatch    `koanf:"dispatch"`
+	Recovery    Recovery    `koanf:"recovery"`
+	ModelProxy  ModelProxy  `koanf:"model_proxy"`
 }
 
 var defaults = map[string]any{
@@ -284,6 +337,13 @@ var defaults = map[string]any{
 	"grpc.control_capacity":                 32,
 	"grpc.execution_capacity":               64,
 	"grpc.shutdown_timeout":                 "20s",
+	"grpc.identity.mode":                    "mtls",
+	"grpc.identity.max_connection_age":      "1h",
+	"grpc.identity.reload_interval":         "5s",
+	"development.enabled":                   false,
+	"health.listen":                         "127.0.0.1:9113",
+	"temporal.tls.mode":                     "tls",
+	"telemetry.otlp_tls.mode":               "tls",
 	"database.max_conns":                    8,
 	"telemetry.sample_ratio":                1.0,
 	"temporal.namespace":                    "anvilkit",
@@ -328,6 +388,11 @@ var defaults = map[string]any{
 // variable rejects the candidate.
 var envOverrides = map[string]string{
 	"ANVILKIT_CONTROL_LISTEN":                         "grpc.listen",
+	"ANVILKIT_CONTROL_HEALTH_LISTEN":                  "health.listen",
+	"ANVILKIT_CONTROL_IDENTITY_CERT_FILE":             "grpc.identity.cert_file",
+	"ANVILKIT_CONTROL_IDENTITY_KEY_FILE":              "grpc.identity.key_file",
+	"ANVILKIT_CONTROL_IDENTITY_CA_FILE":               "grpc.identity.ca_file",
+	"ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN":          "grpc.identity.trust_domain",
 	"ANVILKIT_CONTROL_DATABASE_URL":                   "database.url",
 	"ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT":        "telemetry.otlp_endpoint",
 	"ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN":       "telemetry.metrics_listen",
@@ -420,6 +485,11 @@ func (c Config) validate() error {
 		}
 	}
 	req("grpc.listen", c.GRPC.Listen)
+	req("health.listen", c.Health.Listen)
+	if c.Health.Listen != "" && c.Health.Listen == c.GRPC.Listen {
+		errs = append(errs, errors.New("health.listen must not be grpc.listen: the probe listener never carries business traffic"))
+	}
+	errs = append(errs, c.validateIdentity()...)
 	req("database.url (ANVILKIT_CONTROL_DATABASE_URL)", c.Database.URL)
 	if c.Telemetry.SampleRatio < 0 || c.Telemetry.SampleRatio > 1 {
 		errs = append(errs, fmt.Errorf("telemetry.sample_ratio %v outside [0, 1]", c.Telemetry.SampleRatio))
@@ -544,6 +614,9 @@ func (c Config) validate() error {
 		if mp.Address != "" && mp.Token == "" {
 			errs = append(errs, errors.New("ANVILKIT_CONTROL_MODEL_PROXY_TOKEN (model_proxy.token) is required with a model_proxy.address under identity mode development"))
 		}
+		if mp.Address != "" && !c.Development.Enabled {
+			errs = append(errs, errors.New("model_proxy.identity.mode development (plaintext bearer) requires development.enabled: true (DEVELOPMENT_ONLY)"))
+		}
 	case "mtls":
 		m := mp.Identity.MTLS
 		if mp.Address != "" && (m.CertFile == "" || m.KeyFile == "" || m.CAFile == "") {
@@ -605,4 +678,78 @@ func (d DispatchDevelopment) DomainPrices() ([]domain.Price, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// validateIdentity checks the listener identity, the top-level guard and
+// the outbound TLS modes (P0.1).
+func (c Config) validateIdentity() []error {
+	var errs []error
+	id := c.GRPC.Identity
+	switch id.Mode {
+	case "mtls":
+		if id.CertFile == "" || id.KeyFile == "" || id.CAFile == "" {
+			errs = append(errs, errors.New("grpc.identity.cert_file, key_file and ca_file are required under grpc.identity.mode mtls (ANVILKIT_CONTROL_IDENTITY_{CERT,KEY,CA}_FILE)"))
+		}
+	case "development":
+		if !c.Development.Enabled {
+			errs = append(errs, errors.New("grpc.identity.mode development (plaintext, no caller identity) requires development.enabled: true (DEVELOPMENT_ONLY)"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("grpc.identity.mode %q is not one of mtls, development", id.Mode))
+	}
+	switch {
+	case id.TrustDomain == "" && c.Development.Enabled:
+		// The development default is applied by the loader's caller
+		// (TrustDomain()); outside development it is an explicit input.
+	case id.TrustDomain == "":
+		errs = append(errs, errors.New("grpc.identity.trust_domain is required outside development (the development default anvilkit.local applies only with development.enabled: true)"))
+	case !trustDomainPattern.MatchString(id.TrustDomain):
+		errs = append(errs, fmt.Errorf("grpc.identity.trust_domain %q is not a lowercase DNS name", id.TrustDomain))
+	}
+	if id.MaxConnectionAge < time.Minute || id.MaxConnectionAge > 24*time.Hour {
+		errs = append(errs, fmt.Errorf("grpc.identity.max_connection_age %s outside [1m, 24h]", id.MaxConnectionAge))
+	}
+	if id.ReloadInterval < 100*time.Millisecond || id.ReloadInterval > time.Hour {
+		errs = append(errs, fmt.Errorf("grpc.identity.reload_interval %s outside [100ms, 1h]", id.ReloadInterval))
+	}
+	errs = append(errs, c.Temporal.TLS.validate("temporal.tls", true, c.Development.Enabled)...)
+	if c.Telemetry.OTLPEndpoint != "" {
+		errs = append(errs, c.Telemetry.OTLPTLS.validate("telemetry.otlp_tls", true, c.Development.Enabled)...)
+	}
+	return errs
+}
+
+var trustDomainPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$`)
+
+// DevelopmentTrustDomain is the trust domain of the development foundation.
+const DevelopmentTrustDomain = "anvilkit.local"
+
+// TrustDomain is the configured trust domain, or the development default
+// when development is enabled and none was named.
+func (c Config) TrustDomain() string {
+	if c.GRPC.Identity.TrustDomain == "" {
+		return DevelopmentTrustDomain
+	}
+	return c.GRPC.Identity.TrustDomain
+}
+
+func (t ClientTLS) validate(name string, required bool, development bool) []error {
+	var errs []error
+	switch t.Mode {
+	case "development":
+		if !development {
+			errs = append(errs, fmt.Errorf("%s.mode development (plaintext) requires development.enabled: true (DEVELOPMENT_ONLY)", name))
+		}
+	case "tls":
+		if required && t.CAFile == "" {
+			errs = append(errs, fmt.Errorf("%s.ca_file is required under %s.mode tls", name, name))
+		}
+	case "mtls":
+		if required && (t.CAFile == "" || t.CertFile == "" || t.KeyFile == "") {
+			errs = append(errs, fmt.Errorf("%s.ca_file, cert_file and key_file are required under %s.mode mtls", name, name))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("%s.mode %q is not one of development, tls, mtls", name, t.Mode))
+	}
+	return errs
 }

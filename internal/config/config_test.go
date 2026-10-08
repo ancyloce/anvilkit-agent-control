@@ -19,7 +19,16 @@ func write(t *testing.T, body string) string {
 	return path
 }
 
-const minimal = "temporal:\n  address: 127.0.0.1:27233\n"
+const minimal = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    ca_file: /etc/anvilkit/identity/ca.crt\n"
+
+// identityEnv places the mounted identity files and the trust domain
+// (P0.1); the loader does not read the files.
+var identityEnv = []string{
+	"ANVILKIT_CONTROL_IDENTITY_CERT_FILE=/etc/anvilkit/identity/tls.crt",
+	"ANVILKIT_CONTROL_IDENTITY_KEY_FILE=/etc/anvilkit/identity/tls.key",
+	"ANVILKIT_CONTROL_IDENTITY_CA_FILE=/etc/anvilkit/identity/ca.crt",
+	"ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN=anvilkit.local",
+}
 
 var env = []string{
 	"ANVILKIT_CONTROL_DATABASE_URL=postgres://anvilkit_control_app:secret@127.0.0.1:25432/anvilkit_control",
@@ -29,6 +38,10 @@ var env = []string{
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID=artifacts-key",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY=artifacts-secret",
 	"ANVILKIT_API_LISTEN=other-service",
+	"ANVILKIT_CONTROL_IDENTITY_CERT_FILE=/etc/anvilkit/identity/tls.crt",
+	"ANVILKIT_CONTROL_IDENTITY_KEY_FILE=/etc/anvilkit/identity/tls.key",
+	"ANVILKIT_CONTROL_IDENTITY_CA_FILE=/etc/anvilkit/identity/ca.crt",
+	"ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN=anvilkit.local",
 }
 
 func TestPrecedenceDefaultsFileEnvironment(t *testing.T) {
@@ -143,7 +156,7 @@ func TestInventoryS3BackendRequiresPlacementAndEnvOnlyCredentials(t *testing.T) 
 	require.ErrorContains(t, err, "inventory.s3.access_key_id")
 	_, err = config.LoadFrom(write(t, s3+"    access_key_id: AKIA\n"), env[:1])
 	require.ErrorContains(t, err, "inventory.s3.access_key_id is a secret")
-	c, err := config.LoadFrom(write(t, s3), append(env[:1:1],
+	c, err := config.LoadFrom(write(t, s3), append(append(env[:1:1], identityEnv...),
 		"ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT=http://rgw.internal:7480", "ANVILKIT_CONTROL_INVENTORY_S3_BUCKET=anvilkit-inventory",
 		"ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID=AKIA", "ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY=secret"))
 	require.NoError(t, err)
@@ -164,7 +177,9 @@ func TestModelProxyPlacementAndSecret(t *testing.T) {
 	require.Equal(t, "anvilkit-agent-model-proxy", c.ModelProxy.Owner)
 	_, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103"))
 	require.ErrorContains(t, err, "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN")
-	c, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
+	_, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
+	require.ErrorContains(t, err, "model_proxy.identity.mode development (plaintext bearer) requires development.enabled", "the bearer path is DEVELOPMENT_ONLY")
+	c, err = config.LoadFrom(write(t, minimal+"development:\n  enabled: true\n"), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
 	require.NoError(t, err)
 	require.Equal(t, "secret", c.ModelProxy.Token)
 	_, err = config.LoadFrom(write(t, minimal+"model_proxy:\n  token: in-file\n"), env)
@@ -174,7 +189,9 @@ func TestModelProxyPlacementAndSecret(t *testing.T) {
 }
 
 func TestTelemetryPlacement(t *testing.T) {
-	c, err := config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT=collector:4317", "ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN=0.0.0.0:9111"))
+	_, err := config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT=collector:4317"))
+	require.ErrorContains(t, err, "telemetry.otlp_tls.ca_file is required", "a placed collector needs a verified transport")
+	c, err := config.LoadFrom(write(t, minimal+"telemetry:\n  otlp_tls:\n    ca_file: /etc/anvilkit/identity/ca.crt\n"), append(env, "ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT=collector:4317", "ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN=0.0.0.0:9111"))
 	require.NoError(t, err)
 	require.Equal(t, "collector:4317", c.Telemetry.OTLPEndpoint)
 	require.Equal(t, "0.0.0.0:9111", c.Telemetry.MetricsListen)
@@ -182,4 +199,64 @@ func TestTelemetryPlacement(t *testing.T) {
 	require.ErrorContains(t, err, "telemetry.sample_ratio")
 	_, err = config.LoadFrom(write(t, minimal+"telemetry:\n  metrics_listen: 127.0.0.1:9101\n"), env)
 	require.ErrorContains(t, err, "must not be grpc.listen")
+}
+
+// TestIdentityAndDevelopmentGuard (P0.1): the listener is mTLS by default
+// and needs its files; plaintext anywhere needs that connection's
+// development mode and the top-level guard; the guard downgrades nothing
+// by itself; the trust domain is explicit outside development.
+func TestIdentityAndDevelopmentGuard(t *testing.T) {
+	base := append(env[:0:0], env...)
+	c, err := config.LoadFrom(write(t, minimal), base)
+	require.NoError(t, err)
+	require.Equal(t, "mtls", c.GRPC.Identity.Mode)
+	require.Equal(t, "anvilkit.local", c.TrustDomain())
+	require.Equal(t, "127.0.0.1:9113", c.Health.Listen)
+	require.Equal(t, "tls", c.Temporal.TLS.Mode)
+	require.False(t, c.Development.Enabled)
+
+	noFiles := []string{}
+	for _, kv := range base {
+		if !strings.HasPrefix(kv, "ANVILKIT_CONTROL_IDENTITY_CERT_FILE") && !strings.HasPrefix(kv, "ANVILKIT_CONTROL_IDENTITY_KEY_FILE") && !strings.HasPrefix(kv, "ANVILKIT_CONTROL_IDENTITY_CA_FILE") {
+			noFiles = append(noFiles, kv)
+		}
+	}
+	_, err = config.LoadFrom(write(t, minimal), noFiles)
+	require.ErrorContains(t, err, "grpc.identity.cert_file, key_file and ca_file are required")
+
+	noDomain := []string{}
+	for _, kv := range base {
+		if !strings.HasPrefix(kv, "ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN") {
+			noDomain = append(noDomain, kv)
+		}
+	}
+	_, err = config.LoadFrom(write(t, minimal), noDomain)
+	require.ErrorContains(t, err, "grpc.identity.trust_domain is required outside development")
+	c, err = config.LoadFrom(write(t, minimal+"development:\n  enabled: true\n"), noDomain)
+	require.NoError(t, err)
+	require.Equal(t, config.DevelopmentTrustDomain, c.TrustDomain(), "the development default applies only under the guard")
+	_, err = config.LoadFrom(write(t, minimal+"grpc:\n  identity:\n    trust_domain: Not_A_Domain\n"), noDomain)
+	require.ErrorContains(t, err, "grpc.identity.trust_domain")
+
+	_, err = config.LoadFrom(write(t, minimal+"grpc:\n  identity:\n    mode: development\n"), base)
+	require.ErrorContains(t, err, "grpc.identity.mode development (plaintext, no caller identity) requires development.enabled")
+	c, err = config.LoadFrom(write(t, minimal+"grpc:\n  identity:\n    mode: development\ndevelopment:\n  enabled: true\n"), base)
+	require.NoError(t, err)
+	require.Equal(t, "development", c.GRPC.Identity.Mode)
+	require.Equal(t, "tls", c.Temporal.TLS.Mode, "the guard does not downgrade other connections")
+	_, err = config.LoadFrom(write(t, minimal+"grpc:\n  identity:\n    mode: plaintext\n"), base)
+	require.ErrorContains(t, err, "grpc.identity.mode")
+
+	_, err = config.LoadFrom(write(t, "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    mode: development\n"), base)
+	require.ErrorContains(t, err, "temporal.tls.mode development (plaintext) requires development.enabled")
+	_, err = config.LoadFrom(write(t, "temporal:\n  address: 127.0.0.1:27233\n"), base)
+	require.ErrorContains(t, err, "temporal.tls.ca_file is required")
+	_, err = config.LoadFrom(write(t, "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    mode: mtls\n    ca_file: /c\n"), base)
+	require.ErrorContains(t, err, "temporal.tls.ca_file, cert_file and key_file are required")
+	_, err = config.LoadFrom(write(t, minimal+"health:\n  listen: 127.0.0.1:9101\n"), base)
+	require.ErrorContains(t, err, "health.listen must not be grpc.listen")
+	_, err = config.LoadFrom(write(t, minimal+"grpc:\n  identity:\n    max_connection_age: 10s\n"), base)
+	require.ErrorContains(t, err, "grpc.identity.max_connection_age")
+	_, err = config.LoadFrom(write(t, minimal+"development:\n  enabled: true\n"), append(base, "ANVILKIT_CONTROL_DEVELOPMENT_ENABLED=true"))
+	require.ErrorContains(t, err, "not allowed overrides", "the guard is file-only")
 }
