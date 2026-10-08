@@ -1,6 +1,8 @@
 # anvilkit-agent-control configuration (reviewed, secret-free). Loaded by
 # internal/config with precedence defaults < this file < allowed environment
-# overrides (ANVILKIT_CONTROL_LISTEN, ANVILKIT_CONTROL_DATABASE_URL,
+# overrides (ANVILKIT_CONTROL_LISTEN, ANVILKIT_CONTROL_HEALTH_LISTEN,
+# ANVILKIT_CONTROL_IDENTITY_{CERT,KEY,CA}_FILE, ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN,
+# ANVILKIT_CONTROL_DATABASE_URL,
 # ANVILKIT_CONTROL_INVENTORY_DIR, ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT,
 # ANVILKIT_CONTROL_INVENTORY_S3_BUCKET, ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID,
 # ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY, ANVILKIT_CONTROL_TEMPORAL_ADDRESS,
@@ -8,11 +10,34 @@
 # Unknown keys fail startup. database.url and the inventory and artifact S3
 # credentials are secrets: they are refused here and come only from the
 # environment (ANVILKIT_CONTROL_ARTIFACTS_S3_{ENDPOINT,BUCKET,ACCESS_KEY_ID,SECRET_ACCESS_KEY}).
+# development: the top-level DEVELOPMENT_ONLY guard (P0.1). This checked-in
+# file configures host-side runs on the development foundation
+# (deploy/dev), whose Temporal frontend and OTLP collector are plaintext;
+# every plaintext connection below names its own development mode as well.
+# The guard downgrades nothing by itself: the gRPC listener stays mTLS. The
+# chart renders its own file with the guard off.
+development:
+  enabled: true
 grpc:
   listen: 127.0.0.1:9101
   control_capacity: 32
   execution_capacity: 64
   shutdown_timeout: 20s
+  # identity: the listener's workload identity (P0.1). mtls serves TLS 1.3
+  # with required, verified client certificates and authorizes every RPC by
+  # the peer's SPIFFE URI SAN under trust_domain; the files are placements
+  # (ANVILKIT_CONTROL_IDENTITY_{CERT,KEY,CA}_FILE, .local/dev/certs on the
+  # foundation) watched and reloaded as a whole. development is plaintext
+  # and authorizes nothing (requires development.enabled).
+  identity:
+    mode: mtls
+    trust_domain: anvilkit.local
+    max_connection_age: 1h
+    reload_interval: 5s
+# health: the plaintext HTTP probe listener (/healthz, /readyz); never a
+# business endpoint (ANVILKIT_CONTROL_HEALTH_LISTEN).
+health:
+  listen: 127.0.0.1:9113
 # database: the app-role pool; max_conns is the exact per-replica bound the
 # deployment lock budgets (the URL is a secret from the environment).
 database:
@@ -49,6 +74,12 @@ temporal:
   address: 127.0.0.1:27233
   namespace: anvilkit
   task_queue: anvilkit-workflow
+  # tls: the frontend transport; development is the foundation's plaintext
+  # Temporal (DEVELOPMENT_ONLY, needs development.enabled), tls verifies the
+  # frontend against ca_file/server_name, mtls also presents cert_file and
+  # key_file (server-side TLS is P0.6).
+  tls:
+    mode: development
 relay:
   interval: 500ms
 profiles:
