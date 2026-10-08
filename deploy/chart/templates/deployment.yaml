@@ -1,7 +1,5 @@
 {{- include "anvilkit-agent-control.require" . -}}
-{{- $cfg := deepCopy .Values.config -}}
-{{- $_ := set $cfg.inventory "backend" "s3" -}}
-{{- $_ = set $cfg.artifacts "backend" (ternary "s3" "disabled" .Values.artifacts.enabled) -}}
+{{- $cfg := include "anvilkit-agent-control.config" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,7 +27,7 @@ spec:
         {{- end }}
       annotations:
         # A changed configuration file rolls the Pods.
-        checksum/config: {{ toYaml $cfg | sha256sum }}
+        checksum/config: {{ $cfg | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -59,6 +57,8 @@ spec:
               value: /etc/anvilkit/anvilkit-agent-control/config.yaml
             - name: ANVILKIT_CONTROL_LISTEN
               value: {{ printf "%s:%d" .Values.listen.address (int .Values.listen.port) | quote }}
+            - name: ANVILKIT_CONTROL_HEALTH_LISTEN
+              value: {{ printf "0.0.0.0:%d" (int .Values.health.port) | quote }}
             - name: ANVILKIT_CONTROL_TEMPORAL_ADDRESS
               value: {{ .Values.temporal.address | quote }}
             {{- if .Values.telemetry.otlpEndpoint }}
@@ -108,14 +108,21 @@ spec:
             - name: grpc
               containerPort: {{ .Values.listen.port }}
               protocol: TCP
+            - name: health
+              containerPort: {{ .Values.health.port }}
+              protocol: TCP
             {{- if .Values.telemetry.metricsPort }}
             - name: metrics
               containerPort: {{ .Values.telemetry.metricsPort }}
               protocol: TCP
             {{- end }}
+          # The probes target the plaintext health listener: the kubelet
+          # presents no client certificate and the mTLS business listener
+          # refuses a handshake without one.
           startupProbe:
-            grpc:
-              port: {{ .Values.listen.port }}
+            httpGet:
+              path: /readyz
+              port: health
             periodSeconds: {{ .Values.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.probes.startup.failureThreshold }}
           {{- if .Values.shutdownDelaySeconds }}
@@ -125,13 +132,15 @@ spec:
                 seconds: {{ .Values.shutdownDelaySeconds }}
           {{- end }}
           readinessProbe:
-            grpc:
-              port: {{ .Values.listen.port }}
+            httpGet:
+              path: /readyz
+              port: health
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           livenessProbe:
-            grpc:
-              port: {{ .Values.listen.port }}
+            httpGet:
+              path: /healthz
+              port: health
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           resources:
@@ -140,10 +149,47 @@ spec:
             - name: config
               mountPath: /etc/anvilkit/anvilkit-agent-control
               readOnly: true
+            {{- if eq .Values.identity.mode "mtls" }}
+            - name: identity
+              mountPath: /etc/anvilkit/identity
+              readOnly: true
+            {{- end }}
+            {{- if ne .Values.temporal.tls.mode "development" }}
+            - name: temporal-ca
+              mountPath: /etc/anvilkit/temporal-ca
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.telemetry.otlpEndpoint (ne .Values.telemetry.otlpTls.mode "development") }}
+            - name: otlp-ca
+              mountPath: /etc/anvilkit/otlp-ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "anvilkit-agent-control.fullname" . }}
+        {{- if eq .Values.identity.mode "mtls" }}
+        - name: identity
+          secret:
+            secretName: {{ include "anvilkit-agent-control.identitySecret" . }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if ne .Values.temporal.tls.mode "development" }}
+        - name: temporal-ca
+          secret:
+            secretName: {{ .Values.temporal.tls.caSecret.name }}
+            items:
+              - key: {{ .Values.temporal.tls.caSecret.key }}
+                path: ca.crt
+        {{- end }}
+        {{- if and .Values.telemetry.otlpEndpoint (ne .Values.telemetry.otlpTls.mode "development") }}
+        - name: otlp-ca
+          secret:
+            secretName: {{ .Values.telemetry.otlpTls.caSecret.name }}
+            items:
+              - key: {{ .Values.telemetry.otlpTls.caSecret.key }}
+                path: ca.crt
+        {{- end }}
       {{- with .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}

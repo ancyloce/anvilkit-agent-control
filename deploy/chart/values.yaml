@@ -33,10 +33,47 @@ serviceAccount:
   automountServiceAccountToken: false
 
 # The gRPC listener inside the Pod (ANVILKIT_CONTROL_LISTEN); the Service
-# targets its port. The health service (grpc.health.v1) answers on it.
+# targets its port. Under identity.mode mtls it is mTLS-only: the kubelet's
+# probes never target it (see health).
 listen:
   address: 0.0.0.0
   port: 9101
+
+# The plaintext HTTP probe listener inside the Pod
+# (ANVILKIT_CONTROL_HEALTH_LISTEN): /healthz and /readyz only, bound on the
+# Pod IP for the kubelet; no business endpoint, not exposed by the Service.
+health:
+  port: 9113
+
+# The listener's workload identity (P0.1). mtls (the default) serves TLS 1.3
+# with required client certificates verified against the mounted CA bundle
+# and authorizes every RPC by the peer's SPIFFE URI SAN
+# (spiffe://<trustDomain>/ns/<namespace>/sa/<service-account>) under the
+# reviewed allowlist. The certificate is a cert-manager Certificate this
+# chart renders (certificate.create) from issuerRef, or an existing Secret
+# (secretName, keys tls.crt, tls.key, ca.crt) when create is false; the
+# files are mounted at /etc/anvilkit/identity and reloaded as a whole.
+# development is the plaintext listener of the development foundation and
+# renders only with development.enabled: true.
+identity:
+  mode: mtls
+  trustDomain: ""
+  secretName: ""
+  certificate:
+    create: true
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+    duration: 2160h
+    renewBefore: 720h
+  maxConnectionAge: 1h
+
+# The top-level DEVELOPMENT_ONLY guard: every development transport below
+# (identity.mode, temporal.tls.mode, telemetry.otlpTls.mode) renders only
+# while this is true; it downgrades nothing by itself.
+development:
+  enabled: false
 
 # The application-role connection (ANVILKIT_CONTROL_DATABASE_URL): a secret,
 # read from an existing Secret that this chart never creates. Required.
@@ -45,9 +82,19 @@ database:
     name: ""
     key: url
 
-# The Temporal frontend (ANVILKIT_CONTROL_TEMPORAL_ADDRESS). Required.
+# The Temporal frontend (ANVILKIT_CONTROL_TEMPORAL_ADDRESS). Required. tls
+# is the transport: tls verifies the frontend against the CA bundle of
+# caSecret (key ca.crt) and serverName; mtls additionally presents the
+# workload certificate of identity; development is the plaintext frontend
+# of the development foundation (development.enabled only).
 temporal:
   address: ""
+  tls:
+    mode: tls
+    serverName: ""
+    caSecret:
+      name: ""
+      key: ca.crt
 
 # The obligation inventory (DD-02 §5): in a cluster every replica must share
 # one backend, so the chart renders the S3 backend only (the filesystem
@@ -107,6 +154,8 @@ config:
     control_capacity: 32
     execution_capacity: 64
     shutdown_timeout: 20s
+    identity:
+      reload_interval: 5s
   database:
     max_conns: 8
   inventory:
@@ -207,3 +256,12 @@ podLabels: {}
 telemetry:
   otlpEndpoint: ""
   metricsPort: 0
+  # The collector transport while otlpEndpoint is set: tls verifies the
+  # collector against caSecret (key ca.crt) and serverName, mtls also presents
+  # the workload certificate, development is plaintext (development.enabled).
+  otlpTls:
+    mode: tls
+    serverName: ""
+    caSecret:
+      name: ""
+      key: ca.crt
