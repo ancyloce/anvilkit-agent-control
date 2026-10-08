@@ -27,8 +27,8 @@ import (
 const serviceName = "anvilkit-agent-control"
 
 // newTracer installs the process's tracer provider: spans go over OTLP/gRPC
-// to the placed collector (plaintext, DEVELOPMENT_ONLY until ENV-03's
-// workload PKI) or nowhere. The provider is global: the gRPC server stats
+// to the placed collector under telemetry.otlp_tls (plaintext only with the
+// development guard) or nowhere. The provider is global: the gRPC server stats
 // handler continues the callers' traces; the stop hook flushes within the
 // stop deadline.
 func newTracer(lc fx.Lifecycle, cfg config.Config) (trace.Tracer, error) {
@@ -36,7 +36,11 @@ func newTracer(lc fx.Lifecycle, cfg config.Config) (trace.Tracer, error) {
 	if cfg.Telemetry.OTLPEndpoint == "" {
 		return noop.NewTracerProvider().Tracer(serviceName), nil
 	}
-	exporter, err := otlptracegrpc.New(context.Background(), otlptracegrpc.WithEndpoint(cfg.Telemetry.OTLPEndpoint), otlptracegrpc.WithInsecure())
+	transport, err := clientTransport("telemetry.otlp_tls", cfg.Telemetry.OTLPTLS, cfg.Development.Enabled, slog.Default())
+	if err != nil {
+		return nil, err
+	}
+	exporter, err := otlptracegrpc.New(context.Background(), otlptracegrpc.WithEndpoint(cfg.Telemetry.OTLPEndpoint), otlptracegrpc.WithDialOption(transport))
 	if err != nil {
 		return nil, err
 	}

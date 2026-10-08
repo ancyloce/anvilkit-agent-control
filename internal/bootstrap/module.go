@@ -123,8 +123,12 @@ func Module() fx.Option {
 				return application.NewArtifacts(store, objects, application.ArtifactLimits{MaxObjectBytes: cfg.Artifacts.MaxObjectBytes, MaxWindow: cfg.Artifacts.MaxWindow, CapabilityTTL: cfg.Artifacts.CapabilityTTL}, clock, log)
 			},
 			func() application.ManifestValidator { return jobs.Contract{} },
-			func(cfg config.Config) (client.Client, error) {
-				return temporaladapter.Dial(cfg.Temporal.Address, cfg.Temporal.Namespace)
+			func(cfg config.Config, log *slog.Logger) (client.Client, error) {
+				transport, err := clientTransport("temporal.tls", cfg.Temporal.TLS, cfg.Development.Enabled, log)
+				if err != nil {
+					return nil, err
+				}
+				return temporaladapter.Dial(cfg.Temporal.Address, cfg.Temporal.Namespace, transport)
 			},
 			func(cfg config.Config, c client.Client) application.WorkflowRelay {
 				return temporaladapter.NewRelay(c, cfg.Temporal.TaskQueue, WorkflowNames(), RecoveryWorkflowName)
@@ -214,9 +218,17 @@ func Module() fx.Option {
 			},
 			newTracer,
 			newMetrics,
-			func(cfg config.Config, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, _ trace.Tracer, reg *prometheus.Registry) (*grpctransport.Server, error) {
-				return grpctransport.NewServer(cfg.GRPC.Listen, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases, grpctransport.Observability(reg)...)
+			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, _ trace.Tracer, reg *prometheus.Registry) (*grpctransport.Server, error) {
+				id, reloader, err := serverIdentity(cfg, log)
+				if err != nil {
+					return nil, err
+				}
+				if reloader != nil {
+					lc.Append(fx.Hook{OnStart: func(context.Context) error { reloader.Start(); return nil }, OnStop: func(context.Context) error { reloader.Stop(); return nil }})
+				}
+				return grpctransport.NewServerWithIdentity(cfg.GRPC.Listen, id, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases, grpctransport.Observability(reg)...)
 			},
+			newHealth,
 		),
 		fx.Invoke(run),
 	)
@@ -306,9 +318,12 @@ func newPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {
 
 // run orders the lifecycle so the server and relay stop before the pool and
 // the Temporal client close (DD-09 §3).
-func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, relay *application.Relay, generations *application.Generations, tc client.Client, log *slog.Logger) {
+func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, h *health, relay *application.Relay, generations *application.Generations, tc client.Client, log *slog.Logger) {
 	relayCtx, cancelRelay := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	// The probe listener is registered first: up before the business
+	// listener, down after it.
+	h.register(lc, log)
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			// The reviewed execution pools of this build are configuration:
@@ -321,10 +336,11 @@ func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, relay *a
 				return err
 			}
 			go func() { relay.Run(relayCtx); close(done) }()
-			log.Info("control serving", "listen", addr.String(), "temporalNamespace", cfg.Temporal.Namespace, "taskQueue", cfg.Temporal.TaskQueue)
+			log.Info("control serving", "listen", addr.String(), "identity", cfg.GRPC.Identity.Mode, "trustDomain", cfg.TrustDomain(), "temporalNamespace", cfg.Temporal.Namespace, "taskQueue", cfg.Temporal.TaskQueue)
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
+			h.withdraw()
 			srv.Stop(cfg.GRPC.ShutdownTimeout)
 			cancelRelay()
 			select {
