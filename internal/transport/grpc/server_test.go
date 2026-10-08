@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -24,6 +25,8 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 	"github.com/ancyloce/anvilkit-agent-control/internal/testdb"
 	grpctransport "github.com/ancyloce/anvilkit-agent-control/internal/transport/grpc"
+	"github.com/ancyloce/anvilkit-agent-control/internal/transport/identity"
+	"github.com/ancyloce/anvilkit-agent-control/internal/transport/identity/identitytest"
 )
 
 // priceBook holds the DEVELOPMENT_ONLY fixture prices of the transport
@@ -272,3 +275,93 @@ func TestTransport(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestPolicyCoversEveryRegisteredMethod (P0.1 AC2): the server refuses to
+// construct under an mTLS identity unless every registered RPC has an
+// allowlist entry and every entry names a registered RPC; a stale or
+// missing entry is reported by method name.
+func TestPolicyCoversEveryRegisteredMethod(t *testing.T) {
+	ca := identitytest.NewCA(t, "ca")
+	dir := filepath.Join(t.TempDir(), "srv")
+	identitytest.Mount(t, dir, ca.Issue(t, "anvilkit-agent-control", []string{identitytest.SPIFFE("anvilkit.local", "anvilkit-apps", "anvilkit-agent-control")}), ca.PEM)
+	cert, key, caFile := identitytest.Files(dir)
+	r, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
+	require.NoError(t, err)
+	build := func(p identity.Policy) error {
+		_, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: "anvilkit.local", Policy: p}, 4, 4, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		return err
+	}
+	require.NoError(t, build(grpctransport.Policy()), "the reviewed policy covers every registered method")
+	partial := grpctransport.Policy()
+	delete(partial, "/anvilkit.control.v1.DispatchService/AdmitModel")
+	err = build(partial)
+	require.ErrorContains(t, err, "/anvilkit.control.v1.DispatchService/AdmitModel")
+	stale := grpctransport.Policy()
+	stale["/anvilkit.control.v1.AuthorizationService/CheckDisclosure"] = []identity.Workload{{Namespace: "anvilkit-apps", ServiceAccount: "anvilkit-agent-api"}}
+	err = build(stale)
+	require.ErrorContains(t, err, "AuthorizationService/CheckDisclosure", "an entry for an unregistered service is a configuration error")
+}
+
+// TestWorkloadAuthorizationBeforeHandlers (P0.1 AC2) runs the real server
+// under a throwaway CA: an allowed workload reaches a handler, an
+// unauthorized workload of the same CA is refused before protovalidate or
+// the handler can answer, a plaintext dial never completes.
+func TestWorkloadAuthorizationBeforeHandlers(t *testing.T) {
+	ca := identitytest.NewCA(t, "ca")
+	td := "anvilkit.local"
+	mount := func(cn string, uris []string) string {
+		dir := filepath.Join(t.TempDir(), cn)
+		identitytest.Mount(t, dir, ca.Issue(t, cn, uris, cn), ca.PEM)
+		return dir
+	}
+	srvDir := mount("anvilkit-agent-control", []string{identitytest.SPIFFE(td, "anvilkit-apps", "anvilkit-agent-control")})
+	cert, key, caFile := identitytest.Files(srvDir)
+	r, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
+	require.NoError(t, err)
+	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: td, Policy: grpctransport.Policy()}, 4, 4, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+	addr, err := srv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { srv.Stop(time.Second) })
+	dial := func(dir string) *grpc.ClientConn {
+		cert, key, caFile := identitytest.Files(dir)
+		cr, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
+		require.NoError(t, err)
+		creds, err := identity.NewClientCredentials(cr, "anvilkit-agent-control")
+		require.NoError(t, err)
+		conn, err := grpc.NewClient(addr.String(), grpc.WithTransportCredentials(creds))
+		require.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		return conn
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The Model Proxy may call AdmitModel: with nil use cases the handler
+	// panics, which grpc-go reports as Unknown/Internal; what matters is that
+	// protovalidate ran (InvalidArgument on an empty request) after
+	// authorization admitted the caller.
+	proxy := controlv1.NewDispatchServiceClient(dial(mount("anvilkit-agent-model-proxy", []string{identitytest.SPIFFE(td, "anvilkit-apps", "anvilkit-agent-model-proxy")})))
+	_, err = proxy.AdmitModel(ctx, &controlv1.AdmitModelRequest{})
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "the allowed workload passes authorization and reaches validation: %v", err)
+	// The API may not admit model dispatches.
+	api := controlv1.NewDispatchServiceClient(dial(mount("anvilkit-agent-api", []string{identitytest.SPIFFE(td, "anvilkit-apps", "anvilkit-agent-api")})))
+	_, err = api.AdmitModel(ctx, &controlv1.AdmitModelRequest{})
+	require.Equal(t, codes.PermissionDenied, status.Code(err), "%v", err)
+	// A stream RPC is authorized the same way.
+	stream, err := controlv1.NewOperationServiceClient(dial(mount("anvilkit-agent-mcp", []string{identitytest.SPIFFE(td, "anvilkit-apps", "anvilkit-agent-mcp")}))).StreamOperationEvents(ctx, &controlv1.StreamOperationEventsRequest{})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.Equal(t, codes.PermissionDenied, status.Code(err), "%v", err)
+	// Health is open to any authenticated workload, but not to a foreign trust domain.
+	require.NoError(t, func() error {
+		_, err := grpc_health_v1.NewHealthClient(dial(mount("anvilkit-agent-mcp", []string{identitytest.SPIFFE(td, "anvilkit-apps", "anvilkit-agent-mcp")}))).Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+		return err
+	}())
+	_, err = grpc_health_v1.NewHealthClient(dial(mount("anvilkit-agent-api", []string{identitytest.SPIFFE("other.invalid", "anvilkit-apps", "anvilkit-agent-api")}))).Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+	require.Equal(t, codes.PermissionDenied, status.Code(err), "%v", err)
+	// Plaintext never completes a handshake.
+	plain, err := grpc.NewClient(addr.String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	_, err = grpc_health_v1.NewHealthClient(plain).Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+	require.Equal(t, codes.Unavailable, status.Code(err), "%v", err)
+}
