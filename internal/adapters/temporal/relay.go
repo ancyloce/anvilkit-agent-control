@@ -16,6 +16,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
+	"google.golang.org/grpc"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
@@ -36,9 +37,13 @@ type Relay struct {
 	recoveryWorkflowName string
 }
 
-// Dial connects to the namespace; the caller closes the returned client.
-func Dial(address, namespace string) (client.Client, error) {
-	return client.Dial(client.Options{HostPort: address, Namespace: namespace})
+// Dial connects to the namespace with the given transport (the rotating
+// mTLS credential, the verified TLS credential or, under the development
+// guard, plaintext); the caller closes the returned client. The transport
+// is passed as a dial option, which the SDK applies after its own default,
+// so it is the one in force.
+func Dial(address, namespace string, transport grpc.DialOption) (client.Client, error) {
+	return client.Dial(client.Options{HostPort: address, Namespace: namespace, ConnectionOptions: client.ConnectionOptions{DialOptions: []grpc.DialOption{transport}}})
 }
 
 // NewRelay binds the registered workflow type of every operation kind this

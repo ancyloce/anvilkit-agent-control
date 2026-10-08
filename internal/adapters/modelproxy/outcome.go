@@ -12,20 +12,19 @@ package modelproxy
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/ancyloce/anvilkit-agent-contracts/go/modelproxyapi"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
+	"github.com/ancyloce/anvilkit-agent-control/internal/transport/identity"
 )
 
 // Source is the observation source of answers of the Proxy's query.
@@ -65,19 +64,23 @@ func New(o Options, inner application.OutcomeQuery) (*OutcomeQuery, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if o.TLS != nil {
-		cert, err := tls.LoadX509KeyPair(o.TLS.CertFile, o.TLS.KeyFile)
+		// The identity files are watched and reloaded as a whole; every new
+		// connection handshakes with the current material and verifies the
+		// Proxy's certificate against the current bundle by server name.
+		r, err := identity.New(identity.Files{CertFile: o.TLS.CertFile, KeyFile: o.TLS.KeyFile, CAFile: o.TLS.CAFile}, 0, nil)
 		if err != nil {
-			return nil, fmt.Errorf("model proxy query: client certificate: %w", err)
+			return nil, fmt.Errorf("model proxy query: %w", err)
 		}
-		ca, err := os.ReadFile(o.TLS.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("model proxy query: ca: %w", err)
+		r.Start()
+		serverName := o.TLS.ServerName
+		if serverName == "" {
+			u, err := url.Parse(o.BaseURL)
+			if err != nil || u.Hostname() == "" {
+				return nil, errors.New("model proxy query: base url has no host for hostname verification")
+			}
+			serverName = u.Hostname()
 		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(ca) {
-			return nil, errors.New("model proxy query: ca file holds no certificate")
-		}
-		transport.TLSClientConfig = &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: pool, ServerName: o.TLS.ServerName, MinVersion: tls.VersionTLS13}
+		transport = identity.HTTPTransport(r, serverName)
 	}
 	httpClient := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	opts := []modelproxyapi.ClientOption{modelproxyapi.WithHTTPClient(httpClient)}
