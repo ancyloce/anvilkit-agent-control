@@ -138,9 +138,15 @@ func toClarification(qs *domain.QuestionSet) *controlv1.Clarification {
 }
 
 // view projects the operation and, for a waiting preparation, its open
-// question set.
+// question set; for a preview build or a release, the component identity
+// allocated to its lineage (P0.8).
 func (s *operationServer) view(ctx context.Context, o *domain.Operation) (*controlv1.OperationView, error) {
 	v := toView(o)
+	id, err := s.ops.LineageIdentity(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	v.LineageIdentity = toComponentIdentity(id)
 	if o.Kind == domain.KindPreparation && o.Lifecycle == domain.LifecycleWaiting && s.preparations != nil {
 		prep, err := s.preparations.Get(ctx, o.TenantID, o.ID)
 		if err != nil {

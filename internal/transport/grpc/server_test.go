@@ -52,7 +52,10 @@ func TestTransport(t *testing.T) {
 	inv, err := inventory.NewFilesystem(filepath.Join(t.TempDir(), "inv"))
 	require.NoError(t, err)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	profiles := []domain.Profile{{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"}}
+	profiles := []domain.Profile{
+		{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"},
+		{ID: "preview-build-v1", Kind: domain.KindPreviewBuild, OperationDeadline: 30 * time.Minute, StepID: "preview-build", MultiStep: true},
+	}
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log)
 	exec := application.NewExecution(store, inv, jobs.Contract{}, profiles, domain.SystemClock{}, log)
 	authority := development.NewAuthority([]development.RouteAuthorization{{TenantID: "tenant_a", RouteID: "authorized-route"}}, 30*time.Second, domain.SystemClock{})
@@ -272,6 +275,44 @@ func TestTransport(t *testing.T) {
 	require.Equal(t, controlv1.DispatchState_DISPATCH_STATE_OBSERVED, settled.GetDispatch().GetState(), "explicitly reported zero usage settles")
 	require.NoError(t, pool.QueryRow(ctx, "SELECT max(reserved) FROM allocations WHERE operation_id = $1", secondOp.Operation.OperationId).Scan(&reserved))
 	require.Zero(t, reserved)
+
+	// P0.8: a brief's component identity is validated before any handler;
+	// the projection of a preview build names its lineage's identity once
+	// one is recorded and nothing before.
+	pc := controlv1.NewPreparationServiceClient(conn)
+	recordBrief := func(identity *controlv1.ComponentIdentity) error {
+		_, err := pc.RecordBrief(ctx, &controlv1.RecordBriefRequest{Command: &controlv1.CommandIdentity{TenantId: "tenant_a", CommandId: "brief", ActorId: "u", RequestDigest: digest},
+			OperationId: "op_missing", Brief: &controlv1.ArtifactBinding{TransferId: "xfer_brief", Digest: digest}, RequirementsDigest: digest, Component: identity})
+		return err
+	}
+	err = recordBrief(&controlv1.ComponentIdentity{ComponentId: "cmp_hero", PuckType: "hero", PackageName: "@acme/hero"})
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "a Puck type outside the contract's pattern: %v", err)
+	err = recordBrief(&controlv1.ComponentIdentity{ComponentId: "cmp_hero", PuckType: "Hero", PackageName: "@acme/hero"})
+	require.Equal(t, codes.NotFound, status.Code(err), "a valid identity reaches the handler: %v", err)
+	lineage := string(application.DigestOf([]byte("transport lineage")))
+	_, err = pool.Exec(ctx, `INSERT INTO artifact_transfers (transfer_id, tenant_id, class, media_type, expected_digest, expected_size, handle, state, object_version, command_id, request_digest, deadline, actual_digest, actual_size)
+		VALUES ('xfer_transport_src', 'tenant_a', 'source', 'application/x-tar', $1, 10, 'hdl_transport_src', 'finalized', 'v1', 'xfer_transport_src', $1, now() + interval '1 hour', $1, 10)`, digest)
+	require.NoError(t, err)
+	preview, err := client.CreateOperation(ctx, &controlv1.CreateOperationRequest{
+		Command: &controlv1.CommandIdentity{TenantId: "tenant_a", CommandId: "c7", ActorId: "u", RequestDigest: digest},
+		Scope:   &controlv1.Scope{TenantId: "tenant_a", ActorId: "u"}, Kind: controlv1.OperationKind_OPERATION_KIND_PREVIEW_BUILD,
+		Subject: &controlv1.OperationSubject{ProfileId: "preview-build-v1", SubjectDigest: lineage, SourceRevision: strPtr("3"), SourceHandle: strPtr("hdl_transport_src")},
+	})
+	require.NoError(t, err)
+	view := func(id string) *controlv1.OperationView {
+		got, err := client.GetOperation(ctx, &controlv1.GetOperationRequest{Scope: &controlv1.Scope{TenantId: "tenant_a", ActorId: "u"}, OperationId: id})
+		require.NoError(t, err)
+		return got.GetOperation()
+	}
+	require.Nil(t, view(preview.Operation.OperationId).LineageIdentity, "an unbound lineage has no identity")
+	_, err = pool.Exec(ctx, `INSERT INTO lineage_identities (tenant_id, lineage, component_id, puck_type, package_name, operation_id, brief_id, recorded_at)
+		VALUES ('tenant_a', $1, 'cmp_hero', 'Hero', '@acme/hero', 'op_generation', 'brf_hero', now())`, lineage)
+	require.NoError(t, err)
+	identity := view(preview.Operation.OperationId).GetLineageIdentity()
+	require.Equal(t, "cmp_hero", identity.GetComponentId())
+	require.Equal(t, "Hero", identity.GetPuckType())
+	require.Equal(t, "@acme/hero", identity.GetPackageName())
+	require.Nil(t, view(created.Operation.OperationId).LineageIdentity, "only preview builds and releases resolve a lineage identity")
 }
 
 func strPtr(s string) *string { return &s }

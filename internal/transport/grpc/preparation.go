@@ -73,12 +73,21 @@ func toContentDigests(ds []domain.ContentDigest) []*controlv1.ContentDigest {
 	return out
 }
 
+// toComponentIdentity is the allocated identity on the wire; nil when none
+// is recorded.
+func toComponentIdentity(c *domain.ComponentIdentity) *controlv1.ComponentIdentity {
+	if c == nil {
+		return nil
+	}
+	return &controlv1.ComponentIdentity{ComponentId: c.ComponentID, PuckType: c.PuckType, PackageName: c.PackageName}
+}
+
 func toBrief(b *domain.Brief) *controlv1.Brief {
 	return &controlv1.Brief{
 		BriefId: b.ID, OperationId: b.OperationID, TenantId: b.TenantID, Revision: domain.Revision(b.Revision).String(),
 		Brief: &controlv1.ArtifactBinding{TransferId: b.Brief.TransferID, Digest: string(b.Brief.Digest)}, Handle: b.Handle,
 		RequirementsDigest: string(b.RequirementsDigest), SourceRevisions: toSourceRefs(b.SourceRevisions), BrandDigests: toContentDigests(b.BrandDigests),
-		AssetDigests: toContentDigests(b.AssetDigests), State: briefStateToProto[b.State], FrozenAt: timestamppb.New(b.FrozenAt),
+		AssetDigests: toContentDigests(b.AssetDigests), State: briefStateToProto[b.State], FrozenAt: timestamppb.New(b.FrozenAt), Component: toComponentIdentity(b.Component),
 	}
 }
 
@@ -204,7 +213,11 @@ func (s *preparationServer) RecordBrief(ctx context.Context, req *controlv1.Reco
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	b, existing, err := s.preparations.RecordBrief(ctx, cmd, req.GetOperationId(), domain.ArtifactBinding{TransferID: req.GetBrief().GetTransferId(), Digest: digest}, requirements, sources, brands, assets)
+	var component *domain.ComponentIdentity
+	if c := req.GetComponent(); c != nil {
+		component = &domain.ComponentIdentity{ComponentID: c.GetComponentId(), PuckType: c.GetPuckType(), PackageName: c.GetPackageName()}
+	}
+	b, existing, err := s.preparations.RecordBrief(ctx, cmd, req.GetOperationId(), domain.ArtifactBinding{TransferID: req.GetBrief().GetTransferId(), Digest: digest}, requirements, sources, brands, assets, component)
 	if err != nil {
 		return nil, toStatus(err)
 	}
