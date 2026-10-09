@@ -3,9 +3,10 @@
 // configuration file < the allowed ANVILKIT_CONTROL_* environment overrides.
 // The candidate is validated (unknown keys, required values, ranges,
 // cross-field rules) before anything starts; a rejected candidate never
-// starts the process. The database URL is a secret: it is accepted only
-// from the environment (the existing secure injection path) and never from
-// the file, and it is never logged.
+// starts the process. The database URL and the S3 credentials are secrets:
+// each is accepted only from the environment or from the mounted secret
+// file its *_file key names (the OpenBao CSI injection path, P0.6), never
+// from the reviewed file, and it is never logged.
 package config
 
 import (
@@ -77,7 +78,10 @@ type ClientTLS struct {
 
 // Development is the top-level DEVELOPMENT_ONLY guard: every plaintext
 // business connection of this process requires both its own development
-// mode and Enabled; Enabled alone downgrades nothing. File-only.
+// mode and Enabled; Enabled alone downgrades nothing. The database and the
+// S3 endpoints name their mode themselves (the DSN's sslmode, the
+// endpoint's scheme): outside development only sslmode=verify-full and
+// https are accepted (P0.6). File-only.
 type Development struct {
 	Enabled bool `koanf:"enabled"`
 }
@@ -88,11 +92,13 @@ type Health struct {
 	Listen string `koanf:"listen"`
 }
 
-// Database holds the app-role connection; URL is env-only. MaxConns is the
+// Database holds the app-role connection: URL (env-only) or URLFile, a
+// mounted secret read once at load (exactly one of the two). MaxConns is the
 // exact per-replica pool bound that the deployment lock's connection budget
 // counts (pool x replicas plus reserves within the cluster's limit).
 type Database struct {
 	URL      string `koanf:"url"`
+	URLFile  string `koanf:"url_file"`
 	MaxConns int32  `koanf:"max_conns"`
 }
 
@@ -100,22 +106,28 @@ type Database struct {
 // DEVELOPMENT_ONLY filesystem store, or an S3-compatible backend through the
 // AWS SDK (Ceph RGW is the C09 primary; the independent failure domain is
 // an ENV-02 input this file cannot establish). The S3 credentials are
-// secrets and arrive only from the environment.
+// secrets and arrive only from the environment or from mounted secret
+// files.
 type Inventory struct {
 	Backend string      `koanf:"backend"`
 	Dir     string      `koanf:"dir"`
 	S3      InventoryS3 `koanf:"s3"`
 }
 
+// InventoryS3 is one S3-compatible placement. Each credential is either the
+// value (env-only) or the path of a mounted secret file read once at load
+// (*_file), never both.
 type InventoryS3 struct {
-	Endpoint        string `koanf:"endpoint"`
-	Region          string `koanf:"region"`
-	Bucket          string `koanf:"bucket"`
-	Prefix          string `koanf:"prefix"`
-	PathStyle       bool   `koanf:"path_style"`
-	QualifyOnStart  bool   `koanf:"qualify_on_start"`
-	AccessKeyID     string `koanf:"access_key_id"`
-	SecretAccessKey string `koanf:"secret_access_key"`
+	Endpoint            string `koanf:"endpoint"`
+	Region              string `koanf:"region"`
+	Bucket              string `koanf:"bucket"`
+	Prefix              string `koanf:"prefix"`
+	PathStyle           bool   `koanf:"path_style"`
+	QualifyOnStart      bool   `koanf:"qualify_on_start"`
+	AccessKeyID         string `koanf:"access_key_id"`
+	AccessKeyIDFile     string `koanf:"access_key_id_file"`
+	SecretAccessKey     string `koanf:"secret_access_key"`
+	SecretAccessKeyFile string `koanf:"secret_access_key_file"`
 }
 
 const (
@@ -260,18 +272,10 @@ type Dispatch struct {
 // inputs; with Enabled false every paid route is denied. It is file-only:
 // no environment variable can enable it.
 type DispatchDevelopment struct {
-	Enabled          bool                    `koanf:"enabled"`
-	Prices           []PriceFixture          `koanf:"prices"`
-	AuthorizedRoutes []RouteAuthorization    `koanf:"authorized_routes"`
-	NotSentIssuers   []string                `koanf:"not_sent_issuers"`
-	Operators        []OperatorAuthorization `koanf:"operators"`
-}
-
-// OperatorAuthorization is one fixture actor allowed to begin recovery
-// runs and record dispositions for a tenant ("*" for every scope).
-type OperatorAuthorization struct {
-	TenantID string `koanf:"tenant_id"`
-	ActorID  string `koanf:"actor_id"`
+	Enabled          bool                 `koanf:"enabled"`
+	Prices           []PriceFixture       `koanf:"prices"`
+	AuthorizedRoutes []RouteAuthorization `koanf:"authorized_routes"`
+	NotSentIssuers   []string             `koanf:"not_sent_issuers"`
 }
 
 // PriceFixture is one immutable pricing observation of the fixture: money
@@ -362,7 +366,7 @@ var defaults = map[string]any{
 	"profiles.generation.definitions":       []string{"generation-v1:def-1", "generation-v1:def-2"},
 	"profiles.generation.max_repairs":       1,
 	"profiles.generation.codegen_profile":   "codegen-team-dev-v1",
-	"profiles.generation.validator_profile": "validator-fixed-dev-v1",
+	"profiles.generation.validator_profile": "validator-source-v1",
 	"profiles.preview_build.deadline":       "30m",
 	"profiles.release.deadline":             "720h",
 	"profiles.release.attempt_window":       "1h",
@@ -384,30 +388,35 @@ var defaults = map[string]any{
 }
 
 // envOverrides is the complete set of accepted environment variables:
-// deployment placement and the secret. Any other ANVILKIT_CONTROL_*
-// variable rejects the candidate.
+// deployment placement, the secrets and the mounted secret files. Any other
+// ANVILKIT_CONTROL_* variable rejects the candidate.
 var envOverrides = map[string]string{
-	"ANVILKIT_CONTROL_LISTEN":                         "grpc.listen",
-	"ANVILKIT_CONTROL_HEALTH_LISTEN":                  "health.listen",
-	"ANVILKIT_CONTROL_IDENTITY_CERT_FILE":             "grpc.identity.cert_file",
-	"ANVILKIT_CONTROL_IDENTITY_KEY_FILE":              "grpc.identity.key_file",
-	"ANVILKIT_CONTROL_IDENTITY_CA_FILE":               "grpc.identity.ca_file",
-	"ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN":          "grpc.identity.trust_domain",
-	"ANVILKIT_CONTROL_DATABASE_URL":                   "database.url",
-	"ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT":        "telemetry.otlp_endpoint",
-	"ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN":       "telemetry.metrics_listen",
-	"ANVILKIT_CONTROL_INVENTORY_DIR":                  "inventory.dir",
-	"ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT":          "inventory.s3.endpoint",
-	"ANVILKIT_CONTROL_INVENTORY_S3_BUCKET":            "inventory.s3.bucket",
-	"ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID":     "inventory.s3.access_key_id",
-	"ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY": "inventory.s3.secret_access_key",
-	"ANVILKIT_CONTROL_TEMPORAL_ADDRESS":               "temporal.address",
-	"ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS":            "model_proxy.address",
-	"ANVILKIT_CONTROL_MODEL_PROXY_TOKEN":              "model_proxy.token",
-	"ANVILKIT_CONTROL_ARTIFACTS_S3_ENDPOINT":          "artifacts.s3.endpoint",
-	"ANVILKIT_CONTROL_ARTIFACTS_S3_BUCKET":            "artifacts.s3.bucket",
-	"ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID":     "artifacts.s3.access_key_id",
-	"ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY": "artifacts.s3.secret_access_key",
+	"ANVILKIT_CONTROL_LISTEN":                              "grpc.listen",
+	"ANVILKIT_CONTROL_HEALTH_LISTEN":                       "health.listen",
+	"ANVILKIT_CONTROL_IDENTITY_CERT_FILE":                  "grpc.identity.cert_file",
+	"ANVILKIT_CONTROL_IDENTITY_KEY_FILE":                   "grpc.identity.key_file",
+	"ANVILKIT_CONTROL_IDENTITY_CA_FILE":                    "grpc.identity.ca_file",
+	"ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN":               "grpc.identity.trust_domain",
+	"ANVILKIT_CONTROL_DATABASE_URL":                        "database.url",
+	"ANVILKIT_CONTROL_DATABASE_URL_FILE":                   "database.url_file",
+	"ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT":             "telemetry.otlp_endpoint",
+	"ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN":            "telemetry.metrics_listen",
+	"ANVILKIT_CONTROL_INVENTORY_DIR":                       "inventory.dir",
+	"ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT":               "inventory.s3.endpoint",
+	"ANVILKIT_CONTROL_INVENTORY_S3_BUCKET":                 "inventory.s3.bucket",
+	"ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID":          "inventory.s3.access_key_id",
+	"ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID_FILE":     "inventory.s3.access_key_id_file",
+	"ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY":      "inventory.s3.secret_access_key",
+	"ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY_FILE": "inventory.s3.secret_access_key_file",
+	"ANVILKIT_CONTROL_TEMPORAL_ADDRESS":                    "temporal.address",
+	"ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS":                 "model_proxy.address",
+	"ANVILKIT_CONTROL_MODEL_PROXY_TOKEN":                   "model_proxy.token",
+	"ANVILKIT_CONTROL_ARTIFACTS_S3_ENDPOINT":               "artifacts.s3.endpoint",
+	"ANVILKIT_CONTROL_ARTIFACTS_S3_BUCKET":                 "artifacts.s3.bucket",
+	"ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID":          "artifacts.s3.access_key_id",
+	"ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID_FILE":     "artifacts.s3.access_key_id_file",
+	"ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY":      "artifacts.s3.secret_access_key",
+	"ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY_FILE": "artifacts.s3.secret_access_key_file",
 }
 
 // secretKeys may only arrive through the environment.
@@ -451,7 +460,58 @@ func LoadFrom(path string, environ []string) (Config, error) {
 	}}); err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
+	if err := c.readSecretFiles(); err != nil {
+		return Config{}, err
+	}
 	return c, c.validate()
+}
+
+// readSecretFiles resolves each secret that names a mounted file instead of
+// a value (P0.6, the OpenBao CSI volume): the value and its *_file key are
+// mutually exclusive, and the file is read once, here; its content replaces
+// the value for the life of the process.
+func (c *Config) readSecretFiles() error {
+	var errs []error
+	for _, s := range []struct {
+		key, env string
+		value    *string
+		file     string
+	}{
+		{"database.url", "ANVILKIT_CONTROL_DATABASE_URL", &c.Database.URL, c.Database.URLFile},
+		{"inventory.s3.access_key_id", "ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID", &c.Inventory.S3.AccessKeyID, c.Inventory.S3.AccessKeyIDFile},
+		{"inventory.s3.secret_access_key", "ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY", &c.Inventory.S3.SecretAccessKey, c.Inventory.S3.SecretAccessKeyFile},
+		{"artifacts.s3.access_key_id", "ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID", &c.Artifacts.S3.AccessKeyID, c.Artifacts.S3.AccessKeyIDFile},
+		{"artifacts.s3.secret_access_key", "ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY", &c.Artifacts.S3.SecretAccessKey, c.Artifacts.S3.SecretAccessKeyFile},
+	} {
+		switch {
+		case s.file == "":
+		case *s.value != "":
+			errs = append(errs, fmt.Errorf("config: %s and %s_file are mutually exclusive (%s, %s_FILE)", s.key, s.key, s.env, s.env))
+		default:
+			v, err := ReadSecretFile(s.key+"_file", s.file)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("config: %w", err))
+				continue
+			}
+			*s.value = v
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// ReadSecretFile reads a mounted secret file once: surrounding whitespace
+// (the trailing newline) is trimmed, and an unreadable or empty file is an
+// error naming key and the path, never the content.
+func ReadSecretFile(key, path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", key, err)
+	}
+	v := strings.TrimSpace(string(raw))
+	if v == "" {
+		return "", fmt.Errorf("%s: %s is empty", key, path)
+	}
+	return v, nil
 }
 
 func applyEnv(k *koanf.Koanf, environ []string) error {
@@ -490,7 +550,8 @@ func (c Config) validate() error {
 		errs = append(errs, errors.New("health.listen must not be grpc.listen: the probe listener never carries business traffic"))
 	}
 	errs = append(errs, c.validateIdentity()...)
-	req("database.url (ANVILKIT_CONTROL_DATABASE_URL)", c.Database.URL)
+	errs = append(errs, c.validateDataPlane()...)
+	req("database.url (ANVILKIT_CONTROL_DATABASE_URL or ANVILKIT_CONTROL_DATABASE_URL_FILE)", c.Database.URL)
 	if c.Telemetry.SampleRatio < 0 || c.Telemetry.SampleRatio > 1 {
 		errs = append(errs, fmt.Errorf("telemetry.sample_ratio %v outside [0, 1]", c.Telemetry.SampleRatio))
 	}
@@ -507,8 +568,8 @@ func (c Config) validate() error {
 		req("inventory.s3.endpoint (ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT)", c.Inventory.S3.Endpoint)
 		req("inventory.s3.region", c.Inventory.S3.Region)
 		req("inventory.s3.bucket (ANVILKIT_CONTROL_INVENTORY_S3_BUCKET)", c.Inventory.S3.Bucket)
-		req("inventory.s3.access_key_id (ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID)", c.Inventory.S3.AccessKeyID)
-		req("inventory.s3.secret_access_key (ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY)", c.Inventory.S3.SecretAccessKey)
+		req("inventory.s3.access_key_id (ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID or _FILE)", c.Inventory.S3.AccessKeyID)
+		req("inventory.s3.secret_access_key (ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY or _FILE)", c.Inventory.S3.SecretAccessKey)
 	default:
 		errs = append(errs, fmt.Errorf("inventory.backend %q is not filesystem or s3", c.Inventory.Backend))
 	}
@@ -521,8 +582,8 @@ func (c Config) validate() error {
 		req("artifacts.s3.endpoint (ANVILKIT_CONTROL_ARTIFACTS_S3_ENDPOINT)", c.Artifacts.S3.Endpoint)
 		req("artifacts.s3.region", c.Artifacts.S3.Region)
 		req("artifacts.s3.bucket (ANVILKIT_CONTROL_ARTIFACTS_S3_BUCKET)", c.Artifacts.S3.Bucket)
-		req("artifacts.s3.access_key_id (ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID)", c.Artifacts.S3.AccessKeyID)
-		req("artifacts.s3.secret_access_key (ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY)", c.Artifacts.S3.SecretAccessKey)
+		req("artifacts.s3.access_key_id (ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID or _FILE)", c.Artifacts.S3.AccessKeyID)
+		req("artifacts.s3.secret_access_key (ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY or _FILE)", c.Artifacts.S3.SecretAccessKey)
 		if c.Inventory.Backend == InventoryS3Backend && c.Artifacts.S3.Bucket == c.Inventory.S3.Bucket && c.Artifacts.S3.Endpoint == c.Inventory.S3.Endpoint {
 			errs = append(errs, errors.New("artifacts.s3 and inventory.s3 name the same bucket; the artifact store and the obligation inventory are separate permission boundaries"))
 		}
@@ -634,7 +695,7 @@ func (c Config) validate() error {
 		errs = append(errs, fmt.Errorf("dispatch.authority_freshness %s outside [1s, 30s]", c.Dispatch.AuthorityFreshness))
 	}
 	dev := c.Dispatch.Development
-	if !dev.Enabled && (len(dev.Prices) > 0 || len(dev.AuthorizedRoutes) > 0 || len(dev.NotSentIssuers) > 0 || len(dev.Operators) > 0) {
+	if !dev.Enabled && (len(dev.Prices) > 0 || len(dev.AuthorizedRoutes) > 0 || len(dev.NotSentIssuers) > 0) {
 		errs = append(errs, errors.New("dispatch.development fixtures require dispatch.development.enabled: true (DEVELOPMENT_ONLY)"))
 	}
 	if _, err := dev.DomainPrices(); err != nil {
@@ -643,11 +704,6 @@ func (c Config) validate() error {
 	for i, r := range dev.AuthorizedRoutes {
 		if r.TenantID == "" || r.RouteID == "" {
 			errs = append(errs, fmt.Errorf("dispatch.development.authorized_routes[%d] needs tenant_id and route_id", i))
-		}
-	}
-	for i, o := range dev.Operators {
-		if o.TenantID == "" || o.ActorID == "" {
-			errs = append(errs, fmt.Errorf("dispatch.development.operators[%d] needs tenant_id and actor_id", i))
 		}
 	}
 	return errors.Join(errs...)
@@ -717,6 +773,47 @@ func (c Config) validateIdentity() []error {
 		errs = append(errs, c.Telemetry.OTLPTLS.validate("telemetry.otlp_tls", true, c.Development.Enabled)...)
 	}
 	return errs
+}
+
+// validateDataPlane is the data-plane TLS rule (P0.6): outside development
+// the database DSN verifies the server's certificate and name
+// (sslmode=verify-full) and the endpoint of each selected S3 backend is
+// https. The Temporal and OTLP transports are checked with the identity.
+// Neither the DSN nor an endpoint is echoed.
+func (c Config) validateDataPlane() []error {
+	if c.Development.Enabled {
+		return nil
+	}
+	var errs []error
+	if c.Database.URL != "" {
+		if err := CheckPostgresTLS("database.url", c.Database.URL, false); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.Inventory.Backend == InventoryS3Backend && c.Inventory.S3.Endpoint != "" {
+		if err := requireHTTPS("inventory.s3.endpoint", c.Inventory.S3.Endpoint); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.Artifacts.Backend == ArtifactsS3Backend && c.Artifacts.S3.Endpoint != "" {
+		if err := requireHTTPS("artifacts.s3.endpoint", c.Artifacts.S3.Endpoint); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+// requireHTTPS refuses an endpoint that is not an absolute https URL; the
+// error names only the scheme.
+func requireHTTPS(name, endpoint string) error {
+	u, err := url.Parse(endpoint)
+	switch {
+	case err != nil || (u.Scheme == "https" && u.Host == ""):
+		return fmt.Errorf("%s must be an absolute https URL outside development", name)
+	case u.Scheme != "https":
+		return fmt.Errorf("%s: scheme must be https outside development (got %q)", name, u.Scheme)
+	}
+	return nil
 }
 
 var trustDomainPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$`)

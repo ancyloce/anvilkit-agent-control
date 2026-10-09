@@ -162,11 +162,7 @@ func Module() fx.Option {
 				for _, r := range cfg.Dispatch.Development.AuthorizedRoutes {
 					routes = append(routes, development.RouteAuthorization{TenantID: r.TenantID, RouteID: r.RouteID})
 				}
-				operators := make([]development.OperatorAuthorization, 0, len(cfg.Dispatch.Development.Operators))
-				for _, o := range cfg.Dispatch.Development.Operators {
-					operators = append(operators, development.OperatorAuthorization{TenantID: o.TenantID, ActorID: o.ActorID})
-				}
-				return development.NewAuthority(routes, cfg.Dispatch.AuthorityFreshness, clock).WithOperators(operators)
+				return development.NewAuthority(routes, cfg.Dispatch.AuthorityFreshness, clock)
 			},
 			// The original-identity query: the Model Proxy for model dispatches
 			// when its placement is configured (P11), otherwise — and for
@@ -195,8 +191,8 @@ func Module() fx.Option {
 			func(store application.Store, inv application.Inventory, queries application.OutcomeQuery, clock domain.Clock, log *slog.Logger) *application.Effects {
 				return application.NewEffects(store, inv, queries, clock, log)
 			},
-			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, dispatch *application.Dispatch, effects *application.Effects, exec *application.Execution, auth application.Authority, ev application.NotSentEvidence, de application.DispositionEvidence, clock domain.Clock, log *slog.Logger) *application.Recovery {
-				return application.NewRecovery(store, inv, queries, dispatch, effects, exec, Profiles(cfg), auth, ev, de, clock, log, cfg.Recovery.EnumerationPage)
+			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, dispatch *application.Dispatch, effects *application.Effects, exec *application.Execution, ev application.NotSentEvidence, de application.DispositionEvidence, clock domain.Clock, log *slog.Logger) *application.Recovery {
+				return application.NewRecovery(store, inv, queries, dispatch, effects, exec, Profiles(cfg), ev, de, clock, log, cfg.Recovery.EnumerationPage)
 			},
 			func(cfg config.Config, inv application.Inventory) application.NotSentEvidence {
 				return development.NewNotSentEvidence(inv, cfg.Dispatch.Development.NotSentIssuers)
