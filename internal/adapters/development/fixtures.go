@@ -64,7 +64,6 @@ func (b *PriceBook) PriceByRevision(revision string) (*domain.Price, bool) {
 // the fixture's; a real decision carries the IdP/Pagix revision.
 type Authority struct {
 	allowed   map[string]bool
-	operators map[string]bool
 	freshness time.Duration
 	clock     domain.Clock
 }
@@ -154,32 +153,6 @@ func (e *NotSentEvidence) VerifyNotSent(ctx context.Context, d *domain.Dispatch,
 		return fmt.Errorf("%w: attestation %s has no valid sealing time", domain.ErrEvidenceInsufficient, evidenceRef)
 	}
 	return nil
-}
-
-// OperatorAuthorization is one allowed (tenant, actor) pair of the fixture
-// for platform-owned operator actions; tenant "*" allows every scope.
-type OperatorAuthorization struct {
-	TenantID string
-	ActorID  string
-}
-
-// WithOperators adds the fixture's operator authorizations.
-func (a *Authority) WithOperators(operators []OperatorAuthorization) *Authority {
-	if a.operators == nil {
-		a.operators = map[string]bool{}
-	}
-	for _, o := range operators {
-		a.operators[o.TenantID+"\x00"+o.ActorID] = true
-	}
-	return a
-}
-
-func (a *Authority) CheckOperator(_ context.Context, scope domain.Scope, action string) (domain.Decision, error) {
-	now := a.clock.Now()
-	if a.operators[scope.TenantID+"\x00"+scope.ActorID] || a.operators["*\x00"+scope.ActorID] {
-		return domain.Decision{Allow: true, Revision: "development-fixture", FreshUntil: now.Add(a.freshness)}, nil
-	}
-	return domain.Decision{Allow: false, Revision: "development-fixture", ReasonCode: "OPERATOR_NOT_AUTHORIZED:" + action, FreshUntil: now.Add(a.freshness)}, nil
 }
 
 // OutcomeAttestation is the object a controlled upstream double publishes
