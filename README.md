@@ -34,7 +34,7 @@ The service reads one reviewed, secret-free file (`config.yaml`, path from `ANVI
 
 ## Migrations
 
-`internal/migrate/sql` is the migration source of `anvilkit_control` (`00001_init.sql` plus the forward migrations `00002` to `00007`; goose/v3, append-only). `anvilkit-migration (-dsn "$ANVILKIT_MIGRATION_DSN" | -dsn-file "$ANVILKIT_MIGRATION_DSN_FILE") [-development] [-to N] [-status]` applies them (exactly one DSN source; outside `-development`/`ANVILKIT_MIGRATION_DEVELOPMENT=true` the DSN must name `sslmode=verify-full`) with the migrator role (`anvilkit_control_migrator`); the runtime role (`anvilkit_control_app`) receives DML only. The chart runs the same binary as a Job before the release's Pods roll. `internal/migrate/migrate_test.go` installs an empty PostgreSQL 17, checks the role boundary, the version, Down/Up and the forward migration of a stage accepted before `00002`.
+`internal/migrate/sql` is the migration source of `anvilkit_control` (`00001_init.sql` plus the forward migrations `00002` to `00014`; goose/v3, append-only). `anvilkit-migration (-dsn "$ANVILKIT_MIGRATION_DSN" | -dsn-file "$ANVILKIT_MIGRATION_DSN_FILE") [-development] [-to N] [-status]` applies them (exactly one DSN source; outside `-development`/`ANVILKIT_MIGRATION_DEVELOPMENT=true` the DSN must name `sslmode=verify-full`) with the migrator role (`anvilkit_control_migrator`); the runtime role (`anvilkit_control_app`) receives DML only. The chart runs the same binary as a Job before the release's Pods roll. `internal/migrate/migrate_test.go` installs an empty PostgreSQL 17, checks the role boundary, the version, Down/Up and the forward migration of a stage accepted before `00002`.
 
 ## Build and verify from this repository alone
 
