@@ -305,11 +305,54 @@ func checkTarget(name string, cur, next ReleaseTarget, s *ReleaseSubject, destin
 	return nil
 }
 
+// ReleaseEffects are the effect rows a release names (its review and its
+// targets' effects) by effect id, as Control's ledger holds them; an id
+// without a row is absent.
+type ReleaseEffects map[string]*Effect
+
+// checkTargetEffect binds a succeeded target to the effect ledger (B-38):
+// the effect it names is a succeeded effect of this release operation, of
+// the target's kind and canonical subject, whose observed outcome is the
+// digest of the target's receipt. A recorder's assertion alone never makes
+// a target succeeded.
+func checkTargetEffect(op *Operation, name string, t ReleaseTarget, s *ReleaseSubject, effects ReleaseEffects) error {
+	kind := EffectPublication
+	if name == "activation" {
+		kind = EffectActivation
+	}
+	e := effects[t.EffectID]
+	switch {
+	case e == nil || e.OperationID != op.ID:
+		return fmt.Errorf("%w: the %s target names effect %s, which is no effect of release %s", ErrIntegrity, name, t.EffectID, op.ID)
+	case e.Kind != kind || e.CanonicalSubject != ReleaseEffectSubject(s.SubjectDigest, name):
+		return fmt.Errorf("%w: effect %s is a %s of %q, not the %s target of subject %s", ErrIntegrity, e.ID, e.Kind, e.CanonicalSubject, name, s.SubjectDigest)
+	case e.State != EffectSucceeded:
+		return fmt.Errorf("%w: effect %s of the %s target is %s; a succeeded target needs a succeeded effect", ErrIntegrity, e.ID, name, e.State)
+	case e.OutcomeRef != t.ReceiptDigest:
+		return fmt.Errorf("%w: effect %s observed receipt %q, the %s target names receipt %s", ErrIntegrity, e.ID, e.OutcomeRef, name, t.ReceiptDigest)
+	}
+	return nil
+}
+
+// checkReviewEffect binds an approval to the registered review: the
+// release's review effect is a succeeded review of this operation whose
+// observed outcome is the subject the approval decides.
+func checkReviewEffect(op *Operation, subject Digest, reviewEffectID string, effects ReleaseEffects) error {
+	e := effects[reviewEffectID]
+	switch {
+	case e == nil || e.OperationID != op.ID || e.Kind != EffectReview:
+		return fmt.Errorf("%w: the approval names review effect %s, which is no review of release %s", ErrIntegrity, reviewEffectID, op.ID)
+	case e.State != EffectSucceeded || e.OutcomeRef != string(subject):
+		return fmt.Errorf("%w: review effect %s is %s with outcome %q; an approval needs the registered review of subject %s", ErrIntegrity, e.ID, e.State, e.OutcomeRef, subject)
+	}
+	return nil
+}
+
 // ApplyRelease decides a record against the current projection (nil for
 // none): the next projection, or existing=true when the same transition
 // was already recorded. cert is the operation's accepted certified stage
-// (nil when it has none).
-func ApplyRelease(op *Operation, cur *Release, r ReleaseRecord, cert *ReleaseCertification, now time.Time) (next *Release, existing bool, err error) {
+// (nil when it has none); effects are the ledger rows the record names.
+func ApplyRelease(op *Operation, cur *Release, r ReleaseRecord, cert *ReleaseCertification, effects ReleaseEffects, now time.Time) (next *Release, existing bool, err error) {
 	if op.Kind != KindRelease {
 		return nil, false, fmt.Errorf("%w: operation %s is not a release", ErrInvalid, op.ID)
 	}
@@ -363,6 +406,23 @@ func ApplyRelease(op *Operation, cur *Release, r ReleaseRecord, cert *ReleaseCer
 	}
 	if err := checkTarget("activation", base.Activation, r.Activation, s, ""); err != nil {
 		return nil, false, err
+	}
+	// The ledger: an approval is decided under the registered review, and
+	// every succeeded target is a succeeded effect with the target's receipt.
+	if r.Approval != nil && r.Approval.State == ApprovalApproved {
+		if err := checkReviewEffect(op, s.SubjectDigest, r.ReviewEffectID, effects); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, t := range []struct {
+		name   string
+		target ReleaseTarget
+	}{{"npm", r.Npm}, {"browser", r.Browser}, {"activation", r.Activation}} {
+		if t.target.State == TargetSucceeded {
+			if err := checkTargetEffect(op, t.name, t.target, s, effects); err != nil {
+				return nil, false, err
+			}
+		}
 	}
 	probe := &Release{Subject: s, Approval: r.Approval, Npm: r.Npm, Browser: r.Browser, Activation: r.Activation}
 	sent := r.Npm.State != TargetPending || r.Browser.State != TargetPending || r.Activation.State != TargetPending
@@ -448,9 +508,11 @@ func ReleaseEffectSubject(subjectDigest Digest, target string) string {
 
 // CheckReleaseEffect refuses a release mutation the recorded projection
 // does not authorize (DD-06 §4): a publication without an approval of
-// exactly the subject it names, an activation without both verified
-// receipts. Review registration needs only a release operation.
-func CheckReleaseEffect(req EffectRequest, op *Operation, rel *Release) error {
+// exactly the subject it names, decided under the registered review; an
+// activation without both verified receipts, each a succeeded publication
+// effect of the ledger (B-38). Review registration needs only a release
+// operation.
+func CheckReleaseEffect(req EffectRequest, op *Operation, rel *Release, effects ReleaseEffects) error {
 	if op.Kind != KindRelease {
 		if req.Kind == EffectPublication || req.Kind == EffectActivation || req.Kind == EffectReview {
 			return deny(DenyInvalidArgument, "a %s effect belongs to a release operation", req.Kind)
@@ -462,12 +524,23 @@ func CheckReleaseEffect(req EffectRequest, op *Operation, rel *Release) error {
 		if !rel.Approved() {
 			return deny(DenyApprovalRequired, "release %s has no approval of its subject", op.ID)
 		}
+		if err := checkReviewEffect(op, rel.Subject.SubjectDigest, rel.ReviewEffectID, effects); err != nil {
+			return deny(DenyApprovalRequired, "%v", err)
+		}
 		if req.CanonicalSubject != ReleaseEffectSubject(rel.Subject.SubjectDigest, "npm") && req.CanonicalSubject != ReleaseEffectSubject(rel.Subject.SubjectDigest, "browser") {
 			return deny(DenyApprovalRequired, "publication subject %q is not the approved subject %s", req.CanonicalSubject, rel.Subject.SubjectDigest)
 		}
 	case EffectActivation:
 		if rel == nil || !rel.Published() {
 			return deny(DenyReceiptsRequired, "release %s has not both verified receipts under its approval", op.ID)
+		}
+		for _, t := range []struct {
+			name   string
+			target ReleaseTarget
+		}{{"npm", rel.Npm}, {"browser", rel.Browser}} {
+			if err := checkTargetEffect(op, t.name, t.target, rel.Subject, effects); err != nil {
+				return deny(DenyReceiptsRequired, "%v", err)
+			}
 		}
 		if req.CanonicalSubject != ReleaseEffectSubject(rel.Subject.SubjectDigest, "activation") {
 			return deny(DenyReceiptsRequired, "activation subject %q is not the published subject %s", req.CanonicalSubject, rel.Subject.SubjectDigest)

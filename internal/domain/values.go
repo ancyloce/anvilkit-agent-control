@@ -85,11 +85,40 @@ type CommandIdentity struct {
 	RequestDigest Digest
 }
 
-// Scope is the verified caller scope, never a caller claim.
+// Scope is the verified caller scope, never a caller claim. Roles are the
+// user's roles as the API verified them (P0.3); the transport keeps them
+// only when the verified caller is the API workload.
 type Scope struct {
 	TenantID  string
 	ProjectID string
 	ActorID   string
+	Roles     []string
+}
+
+// RoleOperator is the role of a user who may run recovery, dispose
+// obligations and act on operations of every project of the tenant.
+const RoleOperator = "operator"
+
+// RolePlatformOperator may begin a recovery run of every tenant ("*").
+const RolePlatformOperator = "platform_operator"
+
+// HasRole reports whether the scope holds the verified role.
+func (s Scope) HasRole(role string) bool {
+	for _, r := range s.Roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// Sees reports whether an operation is inside the scope: the same tenant
+// and, for a scope that names a project, that project unless the scope
+// holds the operator role. A scope without a project is the tenant-wide
+// scope of a platform workload (the Workflow); the API always names the
+// user's project.
+func (s Scope) Sees(op *Operation) bool {
+	return op.TenantID == s.TenantID && (s.ProjectID == "" || op.ProjectID == s.ProjectID || s.HasRole(RoleOperator))
 }
 
 // NewID returns a prefixed, URL-safe random identifier such as "op_7k3…".

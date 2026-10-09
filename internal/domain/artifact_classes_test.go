@@ -63,7 +63,7 @@ func TestBuildDeliverableClassesBind(t *testing.T) {
 		})
 	}
 	// A validator profile embeds nothing: a deliverable without a handle is refused.
-	profile := JobProfile{ID: "validator-fixed-dev-v1", JobKind: "validator"}
+	profile := JobProfile{ID: "validator-source-v1", JobKind: "validator"}
 	if err := profile.EmbeddedOutput(ManifestOutput{Class: "npm", Digest: digest, SizeBytes: 2637}, VerdictCertified); err == nil {
 		t.Fatal("an npm output without a finalized object was accepted")
 	}
