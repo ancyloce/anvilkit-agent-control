@@ -111,6 +111,9 @@ type Brief struct {
 	CommandID          string
 	RequestDigest      string
 	FrozenAt           pgtype.Timestamptz
+	ComponentID        *string
+	PuckType           *string
+	PackageName        *string
 }
 
 type BudgetPool struct {
@@ -261,6 +264,17 @@ type Launch struct {
 	InventoryVersion *string
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
+}
+
+type LineageIdentity struct {
+	TenantID    string
+	Lineage     string
+	ComponentID string
+	PuckType    string
+	PackageName string
+	OperationID string
+	BriefID     string
+	RecordedAt  pgtype.Timestamptz
 }
 
 type ObligationDisposition struct {

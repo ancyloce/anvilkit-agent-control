@@ -51,8 +51,8 @@ UPDATE answers SET relay_state = $2, relayed_at = $3 WHERE answer_id = $1;
 -- name: InsertBrief :exec
 INSERT INTO briefs (
     brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests,
-    asset_digests, state, command_id, request_digest, frozen_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
+    asset_digests, state, command_id, request_digest, frozen_at, component_id, puck_type, package_name
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18);
 
 -- name: GetBrief :one
 SELECT * FROM briefs WHERE brief_id = $1;

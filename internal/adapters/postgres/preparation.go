@@ -169,16 +169,23 @@ func toBrief(m sqlc.Brief) *domain.Brief {
 	_ = json.Unmarshal(m.SourceRevisions, &b.SourceRevisions)
 	_ = json.Unmarshal(m.BrandDigests, &b.BrandDigests)
 	_ = json.Unmarshal(m.AssetDigests, &b.AssetDigests)
+	if m.ComponentID != nil {
+		b.Component = &domain.ComponentIdentity{ComponentID: *m.ComponentID, PuckType: deref(m.PuckType), PackageName: deref(m.PackageName)}
+	}
 	return b
 }
 
 func (r *repo) InsertBrief(ctx context.Context, b *domain.Brief) error {
-	return r.q.InsertBrief(ctx, sqlc.InsertBriefParams{
+	p := sqlc.InsertBriefParams{
 		BriefID: b.ID, OperationID: b.OperationID, TenantID: b.TenantID, Revision: int64(b.Revision), TransferID: b.Brief.TransferID,
 		Digest: string(b.Brief.Digest), Handle: b.Handle, RequirementsDigest: string(b.RequirementsDigest),
 		SourceRevisions: jsonOrEmptyList(b.SourceRevisions), BrandDigests: jsonOrEmptyList(b.BrandDigests), AssetDigests: jsonOrEmptyList(b.AssetDigests),
 		State: string(b.State), CommandID: b.CommandID, RequestDigest: string(b.RequestDigest), FrozenAt: ts(b.FrozenAt),
-	})
+	}
+	if c := b.Component; c != nil {
+		p.ComponentID, p.PuckType, p.PackageName = &c.ComponentID, &c.PuckType, &c.PackageName
+	}
+	return r.q.InsertBrief(ctx, p)
 }
 
 func (r *repo) GetBrief(ctx context.Context, briefID string) (*domain.Brief, error) {

@@ -100,3 +100,22 @@ func (r *repo) UpdateRelease(ctx context.Context, p *domain.Release, expected ui
 	})
 	return n == 1, err
 }
+
+func (r *repo) GetLineageIdentity(ctx context.Context, tenantID string, lineage domain.Digest) (*domain.LineageIdentity, error) {
+	m, err := r.q.GetLineageIdentity(ctx, sqlc.GetLineageIdentityParams{TenantID: tenantID, Lineage: string(lineage)})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &domain.LineageIdentity{
+		TenantID: m.TenantID, Lineage: domain.Digest(m.Lineage), Identity: domain.ComponentIdentity{ComponentID: m.ComponentID, PuckType: m.PuckType, PackageName: m.PackageName},
+		OperationID: m.OperationID, BriefID: m.BriefID, RecordedAt: fromTs(m.RecordedAt),
+	}, nil
+}
+
+func (r *repo) InsertLineageIdentity(ctx context.Context, l *domain.LineageIdentity) (bool, error) {
+	n, err := r.q.InsertLineageIdentity(ctx, sqlc.InsertLineageIdentityParams{
+		TenantID: l.TenantID, Lineage: string(l.Lineage), ComponentID: l.Identity.ComponentID, PuckType: l.Identity.PuckType, PackageName: l.Identity.PackageName,
+		OperationID: l.OperationID, BriefID: l.BriefID, RecordedAt: ts(l.RecordedAt),
+	})
+	return n == 1, mapErr(err)
+}

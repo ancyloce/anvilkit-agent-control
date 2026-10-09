@@ -114,7 +114,7 @@ func (q *Queries) GetAnswerByQuestionSet(ctx context.Context, arg GetAnswerByQue
 }
 
 const getBrief = `-- name: GetBrief :one
-SELECT brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests, asset_digests, state, command_id, request_digest, frozen_at FROM briefs WHERE brief_id = $1
+SELECT brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests, asset_digests, state, command_id, request_digest, frozen_at, component_id, puck_type, package_name FROM briefs WHERE brief_id = $1
 `
 
 func (q *Queries) GetBrief(ctx context.Context, briefID string) (Brief, error) {
@@ -136,12 +136,15 @@ func (q *Queries) GetBrief(ctx context.Context, briefID string) (Brief, error) {
 		&i.CommandID,
 		&i.RequestDigest,
 		&i.FrozenAt,
+		&i.ComponentID,
+		&i.PuckType,
+		&i.PackageName,
 	)
 	return i, err
 }
 
 const getBriefByCommand = `-- name: GetBriefByCommand :one
-SELECT brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests, asset_digests, state, command_id, request_digest, frozen_at FROM briefs WHERE operation_id = $1 AND command_id = $2
+SELECT brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests, asset_digests, state, command_id, request_digest, frozen_at, component_id, puck_type, package_name FROM briefs WHERE operation_id = $1 AND command_id = $2
 `
 
 type GetBriefByCommandParams struct {
@@ -168,12 +171,15 @@ func (q *Queries) GetBriefByCommand(ctx context.Context, arg GetBriefByCommandPa
 		&i.CommandID,
 		&i.RequestDigest,
 		&i.FrozenAt,
+		&i.ComponentID,
+		&i.PuckType,
+		&i.PackageName,
 	)
 	return i, err
 }
 
 const getCurrentBrief = `-- name: GetCurrentBrief :one
-SELECT brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests, asset_digests, state, command_id, request_digest, frozen_at FROM briefs WHERE operation_id = $1 AND state = 'current'
+SELECT brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests, asset_digests, state, command_id, request_digest, frozen_at, component_id, puck_type, package_name FROM briefs WHERE operation_id = $1 AND state = 'current'
 `
 
 func (q *Queries) GetCurrentBrief(ctx context.Context, operationID string) (Brief, error) {
@@ -195,6 +201,9 @@ func (q *Queries) GetCurrentBrief(ctx context.Context, operationID string) (Brie
 		&i.CommandID,
 		&i.RequestDigest,
 		&i.FrozenAt,
+		&i.ComponentID,
+		&i.PuckType,
+		&i.PackageName,
 	)
 	return i, err
 }
@@ -322,8 +331,8 @@ func (q *Queries) InsertAnswer(ctx context.Context, arg InsertAnswerParams) erro
 const insertBrief = `-- name: InsertBrief :exec
 INSERT INTO briefs (
     brief_id, operation_id, tenant_id, revision, transfer_id, digest, handle, requirements_digest, source_revisions, brand_digests,
-    asset_digests, state, command_id, request_digest, frozen_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    asset_digests, state, command_id, request_digest, frozen_at, component_id, puck_type, package_name
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 `
 
 type InsertBriefParams struct {
@@ -342,6 +351,9 @@ type InsertBriefParams struct {
 	CommandID          string
 	RequestDigest      string
 	FrozenAt           pgtype.Timestamptz
+	ComponentID        *string
+	PuckType           *string
+	PackageName        *string
 }
 
 func (q *Queries) InsertBrief(ctx context.Context, arg InsertBriefParams) error {
@@ -361,6 +373,9 @@ func (q *Queries) InsertBrief(ctx context.Context, arg InsertBriefParams) error 
 		arg.CommandID,
 		arg.RequestDigest,
 		arg.FrozenAt,
+		arg.ComponentID,
+		arg.PuckType,
+		arg.PackageName,
 	)
 	return err
 }

@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getLineageIdentity = `-- name: GetLineageIdentity :one
+SELECT tenant_id, lineage, component_id, puck_type, package_name, operation_id, brief_id, recorded_at FROM lineage_identities WHERE tenant_id = $1 AND lineage = $2
+`
+
+type GetLineageIdentityParams struct {
+	TenantID string
+	Lineage  string
+}
+
+func (q *Queries) GetLineageIdentity(ctx context.Context, arg GetLineageIdentityParams) (LineageIdentity, error) {
+	row := q.db.QueryRow(ctx, getLineageIdentity, arg.TenantID, arg.Lineage)
+	var i LineageIdentity
+	err := row.Scan(
+		&i.TenantID,
+		&i.Lineage,
+		&i.ComponentID,
+		&i.PuckType,
+		&i.PackageName,
+		&i.OperationID,
+		&i.BriefID,
+		&i.RecordedAt,
+	)
+	return i, err
+}
+
 const getRelease = `-- name: GetRelease :one
 
 SELECT operation_id, tenant_id, lineage, source_revision, state, subject, subject_digest, release_id, review_effect_id, approval, approval_deadline, npm, browser, activation, catalog_revision, failure_code, revision, updated_at FROM releases WHERE operation_id = $1
@@ -42,6 +67,44 @@ func (q *Queries) GetRelease(ctx context.Context, operationID string) (Release, 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertLineageIdentity = `-- name: InsertLineageIdentity :execrows
+
+INSERT INTO lineage_identities (tenant_id, lineage, component_id, puck_type, package_name, operation_id, brief_id, recorded_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (tenant_id, lineage) DO NOTHING
+`
+
+type InsertLineageIdentityParams struct {
+	TenantID    string
+	Lineage     string
+	ComponentID string
+	PuckType    string
+	PackageName string
+	OperationID string
+	BriefID     string
+	RecordedAt  pgtype.Timestamptz
+}
+
+// Lineage identities (P0.8): the component identity allocated to a
+// component source lineage, recorded once by the first candidate
+// registration of a Generation on it and never changed.
+func (q *Queries) InsertLineageIdentity(ctx context.Context, arg InsertLineageIdentityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertLineageIdentity,
+		arg.TenantID,
+		arg.Lineage,
+		arg.ComponentID,
+		arg.PuckType,
+		arg.PackageName,
+		arg.OperationID,
+		arg.BriefID,
+		arg.RecordedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertRelease = `-- name: InsertRelease :exec
