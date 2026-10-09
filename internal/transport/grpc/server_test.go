@@ -58,7 +58,7 @@ func TestTransport(t *testing.T) {
 	authority := development.NewAuthority([]development.RouteAuthorization{{TenantID: "tenant_a", RouteID: "authorized-route"}}, 30*time.Second, domain.SystemClock{})
 	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log)
 	effects := application.NewEffects(store, inv, development.NewOutcomeQuery(inv, nil), domain.SystemClock{}, log)
-	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, authority, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, log, 100)
+	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, log, 100)
 	srv, err := grpctransport.NewServer("127.0.0.1:0", 4, 4, ops, exec, dispatch, effects, recovery, application.NewArtifacts(store, nil, application.ArtifactLimits{}, domain.SystemClock{}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))), application.NewPreparations(store, profiles, domain.SystemClock{}, log), application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}, log), application.NewGrantPolicies(store, domain.SystemClock{}, log), application.NewPreviews(store, domain.SystemClock{}), application.NewReleases(store, domain.SystemClock{}))
 	require.NoError(t, err)
 	addr, err := srv.Start()
@@ -185,7 +185,7 @@ func TestTransport(t *testing.T) {
 	require.False(t, denied.Admission.DispatchAllowed)
 	require.Equal(t, controlv1.DispatchState_DISPATCH_STATE_DENIED, denied.Admission.Dispatch.State)
 	require.Equal(t, "FORBIDDEN", denied.Admission.GetDenialCode(), "no authorized route for the tenant (the fixture authority has none): the route is denied before any budget is consulted")
-	got, err := dc.GetDispatch(ctx, &controlv1.GetDispatchRequest{Owner: "proxy-a", CallId: "call-1"})
+	got, err := dc.GetDispatch(ctx, &controlv1.GetDispatchRequest{Owner: "proxy-a", CallId: "call-1", TenantId: "tenant_a"})
 	require.NoError(t, err)
 	require.Equal(t, denied.Admission.Dispatch.DispatchId, got.Dispatch.DispatchId)
 	_, err = dc.ObserveDispatch(ctx, &controlv1.ObserveDispatchRequest{DispatchId: got.Dispatch.DispatchId, Source: "proxy", Sequence: "1",
@@ -253,7 +253,7 @@ func TestTransport(t *testing.T) {
 	_, err = dc.ObserveDispatch(ctx, &controlv1.ObserveDispatchRequest{DispatchId: id, Source: "proxy", Sequence: "1", Outcome: controlv1.DispatchOutcome_DISPATCH_OUTCOME_SUCCEEDED, ObservedAt: timestamppb.Now()})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err), "a definite outcome without cumulative_usage: %v", err)
 	require.Contains(t, status.Convert(err).Message(), "EFFECT_UNCERTAIN")
-	after, err := dc.GetDispatch(ctx, &controlv1.GetDispatchRequest{DispatchId: id})
+	after, err := dc.GetDispatch(ctx, &controlv1.GetDispatchRequest{DispatchId: id, TenantId: "tenant_a"})
 	require.NoError(t, err)
 	require.Equal(t, controlv1.DispatchState_DISPATCH_STATE_AUTHORIZED, after.GetDispatch().GetState(), "the refused report changed nothing")
 	var reserved int64

@@ -137,7 +137,7 @@ func (s *preparationServer) SubmitAnswer(ctx context.Context, req *controlv1.Sub
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	a, existing, err := s.preparations.SubmitAnswer(ctx, cmd, scope(req.GetScope()), req.GetOperationId(), req.GetQuestionSetId(), uint64(revision), domain.ArtifactBinding{TransferID: req.GetAnswer().GetTransferId(), Digest: digest})
+	a, existing, err := s.preparations.SubmitAnswer(ctx, cmd, scope(ctx, req.GetScope()), req.GetOperationId(), req.GetQuestionSetId(), uint64(revision), domain.ArtifactBinding{TransferID: req.GetAnswer().GetTransferId(), Digest: digest})
 	if err != nil {
 		return nil, toStatus(err)
 	}

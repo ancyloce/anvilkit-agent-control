@@ -9,6 +9,7 @@ import (
 	controlv1 "github.com/ancyloce/anvilkit-agent-contracts/go/anvilkit/control/v1"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
+	"github.com/ancyloce/anvilkit-agent-control/internal/transport/identity"
 )
 
 type operationServer struct {
@@ -29,8 +30,15 @@ func commandIdentity(c *controlv1.CommandIdentity) (domain.CommandIdentity, erro
 	return domain.CommandIdentity{TenantID: c.GetTenantId(), CommandID: c.GetCommandId(), ActorID: c.GetActorId(), RequestDigest: d}, nil
 }
 
-func scope(s *controlv1.Scope) domain.Scope {
-	return domain.Scope{TenantID: s.GetTenantId(), ProjectID: s.GetProjectId(), ActorID: s.GetActorId()}
+// scope maps the caller's scope. Roles are the user's verified roles the
+// API carries (P0.3): they count only when the verified caller is the API
+// workload, never from another workload or an unverified connection.
+func scope(ctx context.Context, s *controlv1.Scope) domain.Scope {
+	out := domain.Scope{TenantID: s.GetTenantId(), ProjectID: s.GetProjectId(), ActorID: s.GetActorId()}
+	if p, ok := identity.Caller(ctx); ok && isWorkload(p, api) {
+		out.Roles = s.GetRoles()
+	}
+	return out
 }
 
 var kindFromProto = map[controlv1.OperationKind]domain.OperationKind{
@@ -187,7 +195,7 @@ func (s *operationServer) CreateOperation(ctx context.Context, req *controlv1.Cr
 		}
 		intake = &in
 	}
-	op, existing, err := s.ops.Create(ctx, cmd, scope(req.GetScope()), kindFromProto[req.GetKind()], subject, intake)
+	op, existing, err := s.ops.Create(ctx, cmd, scope(ctx, req.GetScope()), kindFromProto[req.GetKind()], subject, intake)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -218,7 +226,7 @@ func toIntake(p *controlv1.PreparationIntake) (domain.PreparationIntake, error) 
 }
 
 func (s *operationServer) GetOperation(ctx context.Context, req *controlv1.GetOperationRequest) (*controlv1.GetOperationResponse, error) {
-	op, err := s.ops.Get(ctx, scope(req.GetScope()), req.GetOperationId())
+	op, err := s.ops.Get(ctx, scope(ctx, req.GetScope()), req.GetOperationId())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -242,7 +250,7 @@ func (s *operationServer) ListOperationEvents(ctx context.Context, req *controlv
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	page, err := s.ops.ListEvents(ctx, scope(req.GetScope()), req.GetOperationId(), after, int(req.GetLimit()))
+	page, err := s.ops.ListEvents(ctx, scope(ctx, req.GetScope()), req.GetOperationId(), after, int(req.GetLimit()))
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -263,7 +271,7 @@ func (s *operationServer) StreamOperationEvents(req *controlv1.StreamOperationEv
 		return toStatus(err)
 	}
 	for {
-		page, err := s.ops.ListEvents(ctx, scope(req.GetScope()), req.GetOperationId(), after, 200)
+		page, err := s.ops.ListEvents(ctx, scope(ctx, req.GetScope()), req.GetOperationId(), after, 200)
 		if err != nil {
 			return toStatus(err)
 		}
@@ -296,7 +304,7 @@ func (s *operationServer) SubmitCommand(ctx context.Context, req *controlv1.Subm
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	c, existing, err := s.ops.SubmitCommand(ctx, cmd, scope(req.GetScope()), req.GetOperationId(), commandKindFromProto[req.GetKind()], expected, req.GetTargetDefinitionActivation())
+	c, existing, err := s.ops.SubmitCommand(ctx, cmd, scope(ctx, req.GetScope()), req.GetOperationId(), commandKindFromProto[req.GetKind()], expected, req.GetTargetDefinitionActivation())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -304,7 +312,7 @@ func (s *operationServer) SubmitCommand(ctx context.Context, req *controlv1.Subm
 }
 
 func (s *operationServer) GetCommand(ctx context.Context, req *controlv1.GetCommandRequest) (*controlv1.GetCommandResponse, error) {
-	c, err := s.ops.GetCommand(ctx, scope(req.GetScope()), req.GetOperationId(), req.GetCommandId())
+	c, err := s.ops.GetCommand(ctx, scope(ctx, req.GetScope()), req.GetOperationId(), req.GetCommandId())
 	if err != nil {
 		return nil, toStatus(err)
 	}

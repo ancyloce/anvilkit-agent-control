@@ -58,6 +58,10 @@ func toPreview(p *domain.Preview) *controlv1.Preview {
 }
 
 func (s *previewServer) RecordPreview(ctx context.Context, req *controlv1.RecordPreviewRequest) (*controlv1.RecordPreviewResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	expected, err := strconv.ParseUint(req.GetExpectedRevision(), 10, 64)
 	if err != nil {
 		return nil, toStatus(fmt.Errorf("%w: expected revision", domain.ErrInvalid))
@@ -80,7 +84,7 @@ func (s *previewServer) RecordPreview(ctx context.Context, req *controlv1.Record
 		}
 		styles = append(styles, *st)
 	}
-	p, existing, err := s.previews.Record(ctx, req.GetOperationId(), domain.PreviewRecord{
+	p, existing, err := s.previews.Record(ctx, cmd, req.GetOperationId(), domain.PreviewRecord{
 		ExpectedRevision: expected, State: state, SourceRevision: req.GetSourceRevision(), CurrentRevision: req.GetCurrentRevision(),
 		SourceDigest: domain.Digest(req.GetSourceDigest()), Module: module, Styles: styles, BuildProfileID: req.GetBuildProfileId(),
 		HostProfileID: req.GetHostProfileId(), FailureCode: req.GetFailureCode(),

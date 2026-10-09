@@ -79,8 +79,12 @@ func (s *dispatchServer) AdmitModel(ctx context.Context, req *controlv1.AdmitMod
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	owner, err := callingOwner(ctx, req.GetOwner())
+	if err != nil {
+		return nil, err
+	}
 	a, err := s.dispatch.Admit(ctx, cmd, domain.AdmissionRequest{
-		Kind: domain.DispatchModel, CallID: req.GetCallId(), Owner: req.GetOwner(), RequestDigest: cmd.RequestDigest, OperationID: opID, AttemptID: attemptID,
+		Kind: domain.DispatchModel, CallID: req.GetCallId(), Owner: owner, RequestDigest: cmd.RequestDigest, OperationID: opID, AttemptID: attemptID,
 		InstanceID: instanceID, ExecutionEpoch: epoch, RouteID: req.GetRouteId(), Provider: req.GetProvider(), Model: req.GetModel(), MaxExposure: exposure, Deadline: req.GetDeadline().AsTime(),
 		SupersedesCallID: req.GetSupersedesCallId(), EvidenceRef: req.GetEvidenceRef(),
 	})
@@ -107,8 +111,12 @@ func (s *dispatchServer) AdmitTool(ctx context.Context, req *controlv1.AdmitTool
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	owner, err := callingOwner(ctx, req.GetOwner())
+	if err != nil {
+		return nil, err
+	}
 	a, err := s.dispatch.Admit(ctx, cmd, domain.AdmissionRequest{
-		Kind: domain.DispatchTool, CallID: req.GetCallId(), Owner: req.GetOwner(), RequestDigest: cmd.RequestDigest, OperationID: opID, AttemptID: attemptID,
+		Kind: domain.DispatchTool, CallID: req.GetCallId(), Owner: owner, RequestDigest: cmd.RequestDigest, OperationID: opID, AttemptID: attemptID,
 		InstanceID: instanceID, ExecutionEpoch: epoch, RouteID: req.GetServerId() + "/" + req.GetMethod(), GrantID: req.GetGrantId(), GrantRevision: uint64(grantRevision),
 		ServerID: req.GetServerId(), Method: req.GetMethod(), MaxExposure: exposure, Deadline: req.GetDeadline().AsTime(),
 		SupersedesCallID: req.GetSupersedesCallId(), EvidenceRef: req.GetEvidenceRef(),
@@ -160,7 +168,11 @@ func (s *dispatchServer) ObserveDispatch(ctx context.Context, req *controlv1.Obs
 			*c.dst = v
 		}
 	}
-	d, existing, err := s.dispatch.Observe(ctx, req.GetDispatchId(), req.GetSource(), uint64(sequence), dispatchOutcomeFromProto[req.GetOutcome()], usage, req.GetNativeReference(), req.GetObservedAt().AsTime())
+	reader, err := dispatchReader(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+	d, existing, err := s.dispatch.Observe(ctx, reader, req.GetDispatchId(), req.GetSource(), uint64(sequence), dispatchOutcomeFromProto[req.GetOutcome()], usage, req.GetNativeReference(), req.GetObservedAt().AsTime())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -168,7 +180,11 @@ func (s *dispatchServer) ObserveDispatch(ctx context.Context, req *controlv1.Obs
 }
 
 func (s *dispatchServer) GetDispatch(ctx context.Context, req *controlv1.GetDispatchRequest) (*controlv1.GetDispatchResponse, error) {
-	d, err := s.dispatch.Get(ctx, req.GetDispatchId(), req.GetOwner(), req.GetCallId())
+	reader, err := dispatchReader(ctx, req.GetTenantId(), req.GetOwner())
+	if err != nil {
+		return nil, err
+	}
+	d, err := s.dispatch.Get(ctx, reader, req.GetDispatchId(), req.GetOwner(), req.GetCallId())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -184,7 +200,11 @@ func (s *dispatchServer) ConfirmNotSent(ctx context.Context, req *controlv1.Conf
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	d, _, err := s.dispatch.ConfirmNotSent(ctx, cmd, req.GetDispatchId(), req.GetEvidenceRef(), digest)
+	reader, err := dispatchReader(ctx, cmd.TenantID, "")
+	if err != nil {
+		return nil, err
+	}
+	d, _, err := s.dispatch.ConfirmNotSent(ctx, cmd, reader.Owner, req.GetDispatchId(), req.GetEvidenceRef(), digest)
 	if err != nil {
 		return nil, toStatus(err)
 	}

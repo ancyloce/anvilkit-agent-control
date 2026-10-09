@@ -143,7 +143,7 @@ func (s *executionServer) RegisterInstance(ctx context.Context, req *controlv1.R
 }
 
 func (s *executionServer) ObserveInstance(ctx context.Context, req *controlv1.ObserveInstanceRequest) (*controlv1.ObserveInstanceResponse, error) {
-	inst, err := s.exec.ObserveInstance(ctx, req.GetAttemptId(), req.GetInstanceId(), phaseFromProto[req.GetPhase()], req.ExitCode, req.GetObservedAt().AsTime())
+	inst, err := s.exec.ObserveInstance(ctx, req.GetTenantId(), req.GetAttemptId(), req.GetInstanceId(), phaseFromProto[req.GetPhase()], req.ExitCode, req.GetObservedAt().AsTime())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -168,7 +168,13 @@ func (s *executionServer) AcceptResult(ctx context.Context, req *controlv1.Accep
 		v := uint64(rev)
 		epoch = &v
 	}
-	st, existing, err := s.exec.AcceptResult(ctx, cmd, req.GetAttemptId(), req.GetInstanceId(), req.GetProfileId(), verdictFromProto[req.GetVerdict()], req.GetFailureCode(), digest, req.GetResultManifest(), req.GetObserverIdentity(), epoch)
+	// The recorded observer is the verified caller, never the request's
+	// statement (P0.2).
+	observer, err := callingObserver(ctx, req.GetObserverIdentity())
+	if err != nil {
+		return nil, err
+	}
+	st, existing, err := s.exec.AcceptResult(ctx, cmd, req.GetAttemptId(), req.GetInstanceId(), req.GetProfileId(), verdictFromProto[req.GetVerdict()], req.GetFailureCode(), digest, req.GetResultManifest(), observer, epoch)
 	if err != nil {
 		return nil, toStatus(err)
 	}

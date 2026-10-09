@@ -87,7 +87,7 @@ func (s *recoveryServer) BeginRecovery(ctx context.Context, req *controlv1.Begin
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	run, existing, err := s.recovery.Begin(ctx, cmd, req.GetScopeKey(), req.GetWindowStart().AsTime(), req.GetWindowEnd().AsTime(), req.GetClockUncertainty().AsDuration(), req.GetReason())
+	run, existing, err := s.recovery.Begin(ctx, cmd, scope(ctx, req.GetScope()), req.GetScopeKey(), req.GetWindowStart().AsTime(), req.GetWindowEnd().AsTime(), req.GetClockUncertainty().AsDuration(), req.GetReason())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -174,7 +174,7 @@ func (s *recoveryServer) DisposeObligation(ctx context.Context, req *controlv1.D
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	d, existing, err := s.recovery.Dispose(ctx, cmd, application.DispositionRequest{
+	d, existing, err := s.recovery.Dispose(ctx, cmd, scope(ctx, req.GetScope()), application.DispositionRequest{
 		Class: req.GetClass(), ObligationID: req.GetObligationId(), Decision: decisionFromProto[req.GetDecision()], EvidenceRef: req.GetEvidenceRef(),
 		EvidenceDigest: digest, RecoveryEpoch: uint64(epoch), RunID: req.GetRunId(), Reason: req.GetReason(),
 	})

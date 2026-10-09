@@ -75,7 +75,7 @@ func (s *artifactServer) BeginTransfer(ctx context.Context, req *controlv1.Begin
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	t, existing, cap, err := s.artifacts.Begin(ctx, cmd, scope(req.GetScope()), domain.TransferRequest{
+	t, existing, cap, err := s.artifacts.Begin(ctx, cmd, scope(ctx, req.GetScope()), domain.TransferRequest{
 		Class: artifactClassFromProto[req.GetClass()], MediaType: req.GetMediaType(), ExpectedDigest: digest, ExpectedSize: int64(size),
 		OperationID: req.GetOperationId(), AttemptID: req.GetAttemptId(), Deadline: req.GetDeadline().AsTime(),
 	})
@@ -106,7 +106,7 @@ func (s *artifactServer) FinalizeTransfer(ctx context.Context, req *controlv1.Fi
 }
 
 func (s *artifactServer) GetTransfer(ctx context.Context, req *controlv1.GetTransferRequest) (*controlv1.GetTransferResponse, error) {
-	t, err := s.artifacts.Get(ctx, scope(req.GetScope()), req.GetTransferId(), req.GetHandle())
+	t, err := s.artifacts.Get(ctx, scope(ctx, req.GetScope()), req.GetTransferId(), req.GetHandle())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -114,7 +114,7 @@ func (s *artifactServer) GetTransfer(ctx context.Context, req *controlv1.GetTran
 }
 
 func (s *artifactServer) ReadArtifact(ctx context.Context, req *controlv1.ReadArtifactRequest) (*controlv1.ReadArtifactResponse, error) {
-	t, cap, err := s.artifacts.Read(ctx, req.GetHandle(), req.GetTransferId(), req.GetOperationId(), req.GetInstanceId())
+	t, cap, err := s.artifacts.Read(ctx, req.GetTenantId(), req.GetHandle(), req.GetTransferId(), req.GetOperationId(), req.GetInstanceId())
 	if err != nil {
 		return nil, toStatus(err)
 	}

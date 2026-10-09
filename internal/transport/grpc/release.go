@@ -120,6 +120,10 @@ func toRelease(p *domain.Release) *controlv1.Release {
 }
 
 func (s *releaseServer) RecordRelease(ctx context.Context, req *controlv1.RecordReleaseRequest) (*controlv1.RecordReleaseResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	expected, err := strconv.ParseUint(req.GetExpectedRevision(), 10, 64)
 	if err != nil {
 		return nil, toStatus(fmt.Errorf("%w: expected revision", domain.ErrInvalid))
@@ -140,7 +144,7 @@ func (s *releaseServer) RecordRelease(ctx context.Context, req *controlv1.Record
 			rec.Approval.DecidedAt = &t
 		}
 	}
-	p, existing, err := s.releases.Record(ctx, req.GetOperationId(), rec)
+	p, existing, err := s.releases.Record(ctx, cmd, req.GetOperationId(), rec)
 	if err != nil {
 		return nil, toStatus(err)
 	}
