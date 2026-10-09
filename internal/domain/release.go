@@ -205,6 +205,9 @@ type ReleaseCertification struct {
 	Npm            ArtifactDigestRef
 	Browser        ArtifactDigestRef
 	CSS            []ArtifactDigestRef
+	// Allocated is the component identity allocated to the release's
+	// lineage (P0.8; nil when it has none): the subject must name it.
+	Allocated *ComponentIdentity
 }
 
 // CertificationOf reads the certification bindings from a certified
@@ -477,6 +480,10 @@ func checkSubject(op *Operation, s *ReleaseSubject, cert *ReleaseCertification) 
 		return fmt.Errorf("%w: the subject names version %s, the release was accepted for %s", ErrInvalid, s.Version, op.Subject.PackageVersion)
 	case cert == nil:
 		return fmt.Errorf("%w: release %s has no accepted certified stage", ErrInvalid, op.ID)
+	case cert.Allocated == nil:
+		return fmt.Errorf("%w: %s: the lineage %s has no allocated component identity", ErrInvalid, IdentityUnallocated, op.Subject.SubjectDigest)
+	case (ComponentIdentity{ComponentID: s.ComponentID, PuckType: s.PuckType, PackageName: s.PackageName}) != *cert.Allocated:
+		return fmt.Errorf("%w: %s: the subject names %s %s %s, the lineage was allocated %s", ErrInvalid, DenyIdentityMismatch, s.ComponentID, s.PuckType, s.PackageName, *cert.Allocated)
 	case s.CertificationEvidenceDigest != cert.EvidenceDigest || s.Npm != cert.Npm || s.Browser != cert.Browser || !slices.Equal(sortedRefs(s.CSS), sortedRefs(cert.CSS)):
 		return fmt.Errorf("%w: the subject's certification and artifact digests are not the operation's accepted certification", ErrInvalid)
 	case s.Destinations.NpmRegistry == "" || s.Destinations.BrowserOrigin == "":

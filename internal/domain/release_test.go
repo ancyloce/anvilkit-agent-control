@@ -11,7 +11,8 @@ func h(c string) Digest { return Digest("sha256:" + strings.Repeat(c, 64)) }
 
 func releaseFixture(t *testing.T) (*Operation, *ReleaseSubject, *ReleaseCertification) {
 	t.Helper()
-	cert := &ReleaseCertification{EvidenceDigest: h("9"), Npm: ArtifactDigestRef{h("6"), "20480"}, Browser: ArtifactDigestRef{h("7"), "8192"}, CSS: []ArtifactDigestRef{{h("8"), "512"}}}
+	cert := &ReleaseCertification{EvidenceDigest: h("9"), Npm: ArtifactDigestRef{h("6"), "20480"}, Browser: ArtifactDigestRef{h("7"), "8192"}, CSS: []ArtifactDigestRef{{h("8"), "512"}},
+		Allocated: &ComponentIdentity{ComponentID: "cmp_hero", PuckType: "Hero", PackageName: "@anvilkit/hero"}}
 	s := &ReleaseSubject{
 		SchemaVersion: 1, ComponentID: "cmp_hero", PuckType: "Hero", SourceRevision: "3", SourceDigest: h("4"), PackageName: "@anvilkit/hero", Version: "1.0.0",
 		Npm: cert.Npm, Browser: cert.Browser, CSS: cert.CSS, BuildProfileID: "build-support-v1", BuildProfileDigest: h("5"),
@@ -90,6 +91,17 @@ func TestApplyReleaseBindings(t *testing.T) {
 	forged.SubjectDigest, _ = ComputeSubjectDigest(forged)
 	bad.Subject = &forged
 	refuse(cur, bad, "another revision than the operation's")
+	// P0.8: the subject names the identity allocated to the lineage.
+	forged = *s
+	forged.PuckType = "Banner"
+	forged.SubjectDigest, _ = ComputeSubjectDigest(forged)
+	bad.Subject = &forged
+	refuse(cur, bad, "another Puck type than the lineage was allocated")
+	unallocated := *cert
+	unallocated.Allocated = nil
+	if _, _, err := ApplyRelease(op, cur, awaiting, &unallocated, effects, now); err == nil || !strings.Contains(err.Error(), IdentityUnallocated) {
+		t.Fatalf("a subject of a lineage without an allocated identity: %v", err)
+	}
 	if _, _, err := ApplyRelease(op, cur, awaiting, nil, effects, now); err == nil {
 		t.Fatal("a subject without an accepted certified stage")
 	}

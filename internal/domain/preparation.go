@@ -2,7 +2,9 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
 	"time"
+	"unicode/utf8"
 )
 
 // Preparation records (DD-01 §3): a grouped question round with its
@@ -175,10 +177,39 @@ type ContentDigest struct {
 	Digest   Digest `json:"digest"`
 }
 
+// ComponentIdentity is the identity a frozen brief allocates to a
+// component (P0.8): the validator certifies a source against it, never
+// against the source's own declaration.
+type ComponentIdentity struct {
+	ComponentID string
+	PuckType    string
+	PackageName string
+}
+
+var (
+	componentIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	puckTypePattern    = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
+)
+
+// Validate applies the contract's rules (control.proto ComponentIdentity):
+// the component id and Puck type patterns and a package name of 1 to 214
+// characters.
+func (c ComponentIdentity) Validate() error {
+	if n := utf8.RuneCountInString(c.PackageName); !componentIDPattern.MatchString(c.ComponentID) || !puckTypePattern.MatchString(c.PuckType) || n < 1 || n > 214 {
+		return fmt.Errorf("%w: component identity %q", ErrInvalid, c.String())
+	}
+	return nil
+}
+
+func (c ComponentIdentity) String() string {
+	return c.ComponentID + "/" + c.PuckType + "/" + c.PackageName
+}
+
 // Brief is the frozen brief of a preparation (DD-01 §3): it binds the
 // brief artifact, the requirements digest, the source revisions and the
 // brand/asset content digests to the preparation operation and its
-// revision. A superseded brief starts no generation.
+// revision, and carries the component identity the brief allocates (nil
+// for a brief frozen before P0.8). A superseded brief starts no generation.
 type Brief struct {
 	ID                 string
 	OperationID        string
@@ -194,13 +225,15 @@ type Brief struct {
 	CommandID          string
 	RequestDigest      Digest
 	FrozenAt           time.Time
+	Component          *ComponentIdentity
 }
 
 // NewBrief freezes a brief for the preparation: the transfer must be a
 // finalized brief artifact bound to the operation holding the declared
 // digest; every brand/asset reference of the intake must be frozen with a
-// content digest, none may be invented; the operation must not be fenced.
-func NewBrief(op *Operation, t *Transfer, cmd CommandIdentity, revision uint64, binding ArtifactBinding, requirements Digest, sources []SourceReference, brands, assets []ContentDigest, now time.Time) (*Brief, error) {
+// content digest, none may be invented; a component identity, when the
+// brief allocates one, must be valid; the operation must not be fenced.
+func NewBrief(op *Operation, t *Transfer, cmd CommandIdentity, revision uint64, binding ArtifactBinding, requirements Digest, sources []SourceReference, brands, assets []ContentDigest, component *ComponentIdentity, now time.Time) (*Brief, error) {
 	if op.Kind != KindPreparation || op.Preparation == nil {
 		return nil, fmt.Errorf("%w: operation %s is not a preparation with an intake", ErrInvalid, op.ID)
 	}
@@ -225,10 +258,15 @@ func NewBrief(op *Operation, t *Transfer, cmd CommandIdentity, revision uint64, 
 	if err := frozenReferences("asset", op.Preparation.AssetReferences, assets); err != nil {
 		return nil, err
 	}
+	if component != nil {
+		if err := component.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	return &Brief{
 		ID: NewID("brf"), OperationID: op.ID, TenantID: op.TenantID, Revision: revision, Brief: binding, Handle: t.Handle,
 		RequirementsDigest: requirements, SourceRevisions: sources, BrandDigests: brands, AssetDigests: assets, State: BriefCurrent,
-		CommandID: cmd.CommandID, RequestDigest: cmd.RequestDigest, FrozenAt: now,
+		CommandID: cmd.CommandID, RequestDigest: cmd.RequestDigest, FrozenAt: now, Component: component,
 	}, nil
 }
 
@@ -261,6 +299,47 @@ func (b *Brief) StartsGeneration(tenantID string) error {
 	}
 	if b.State != BriefCurrent {
 		return fmt.Errorf("%w: brief %s is %s", ErrStaleExecution, b.ID, b.State)
+	}
+	return nil
+}
+
+// LineageIdentity is the component identity allocated to a component
+// source lineage (P0.8, F-P0.8-1), recorded once: the first candidate
+// registration of a Generation on the lineage binds the identity of that
+// Generation's brief. Previews and releases of the lineage name it; it
+// never changes.
+type LineageIdentity struct {
+	TenantID    string
+	Lineage     Digest
+	Identity    ComponentIdentity
+	OperationID string
+	BriefID     string
+	RecordedAt  time.Time
+}
+
+const (
+	// DenyIdentityMismatch refuses a candidate registration on a lineage
+	// already allocated another component identity, so nothing is ever
+	// registered upstream under another identity.
+	DenyIdentityMismatch = "IDENTITY_MISMATCH"
+	// IdentityUnallocated refuses a release of a lineage that has no
+	// allocated component identity.
+	IdentityUnallocated = "IDENTITY_UNALLOCATED"
+)
+
+// BindsLineage reports whether the effect is a Generation's candidate
+// registration on its own lineage, the business write that binds the
+// lineage identity. A preview's save names the same subject form on a
+// preview_build operation and binds nothing.
+func (o *Operation) BindsLineage(req EffectRequest) bool {
+	return o.Kind == KindGeneration && o.Subject.BriefID != "" && req.Kind == EffectBusinessWrite && req.CanonicalSubject == "source:"+string(o.Subject.SubjectDigest)
+}
+
+// CheckLineageIdentity denies a registration whose brief allocates another
+// identity than the one recorded for the lineage.
+func CheckLineageIdentity(recorded *LineageIdentity, allocated ComponentIdentity) error {
+	if recorded.Identity != allocated {
+		return deny(DenyIdentityMismatch, "lineage %s is allocated %s by brief %s, the registration's brief allocates %s", recorded.Lineage, recorded.Identity, recorded.BriefID, allocated)
 	}
 	return nil
 }
