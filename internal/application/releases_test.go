@@ -336,6 +336,18 @@ func TestLineageIdentities(t *testing.T) {
 		second := register(generation("second", bound, heroBrief))
 		require.True(t, second.Permitted, second.DenialCode)
 		require.Equal(t, first.ID, recorded(bound).OperationID, "the identity is recorded once")
+		// F-P0.8-2: the registration is the Generation's candidate effect,
+		// whose observation answers the registered revision of a release.
+		var op *domain.Operation
+		require.NoError(t, store.Read(ctx, func(r application.Repo) error {
+			var err error
+			op, err = r.GetOperationScoped(ctx, first.ID, "tenant_a")
+			return err
+		}))
+		require.Equal(t, p.Effect.ID, op.CandidateEffectID)
+		require.Greater(t, op.Revision, first.Revision, "recorded as a transition of the operation")
+		again := register(first)
+		require.Equal(t, p.Effect.ID, again.Effect.ID, "the same command reenters the same effect")
 	})
 
 	t.Run("a registration under another identity is denied IDENTITY_MISMATCH", func(t *testing.T) {
@@ -391,6 +403,31 @@ func TestLineageIdentities(t *testing.T) {
 		boundRelease, err2 = release("bound", bound, boundPreview)
 		require.NoError(t, err2)
 		require.Equal(t, "hdl_src", boundRelease.Subject.SourceHandle)
+	})
+
+	t.Run("a release of the Generation itself reads the revision its candidate registration answered (F-P0.8-2)", func(t *testing.T) {
+		gen, err := ops.Get(ctx, scopeA, first.ID)
+		require.NoError(t, err)
+		require.NotEmpty(t, gen.CandidateEffectID)
+		// The Generation's accepted certified stage binds its source.
+		src := application.DigestOf([]byte("generated source tar"))
+		transfer("gensrc", "source", first.ID, src)
+		exec(`INSERT INTO attempts (attempt_id, operation_id, tenant_id, step_id, visit_ordinal, attempt_ordinal, profile_id, execution_epoch, command_id, request_digest, state, deadline)
+			VALUES ('att_gen', $1, 'tenant_a', 'codegen', 0, 1, 'codegen-team-dev-v1', 1, 'cmd_att_gen', $2, 'result_accepted', now() + interval '1 hour')`, first.ID, string(src))
+		exec(`INSERT INTO launches (launch_id, attempt_id, operation_id, launch_key, backend, profile_id, image_digest, execution_epoch, launch_epoch, deadline, command_id, request_digest, inventory_state)
+			VALUES ('lch_gen', 'att_gen', $1, 'gen-key', 'kind', 'codegen-team-dev-v1', $2, 1, 1, now() + interval '1 hour', 'cmd_lch_gen', $2, 'confirmed')`, first.ID, string(src))
+		exec(`INSERT INTO physical_instances (instance_id, attempt_id, launch_id, launch_key, backend, job_uid, pod_uid, image_digest, launch_epoch, phase, is_current)
+			VALUES ('inst_gen', 'att_gen', 'lch_gen', 'gen-key', 'kind', 'job', 'pod-gen', $1, 1, 'succeeded', true)`, string(src))
+		exec(`INSERT INTO stage_manifests (stage_id, attempt_id, instance_id, operation_id, phase_ordinal, profile_id, verdict, result_digest, result_manifest, observer_identity, command_id, request_digest)
+			VALUES ('stg_gen', 'att_gen', 'inst_gen', $1, 1, 'codegen-team-dev-v1', 'certified', $2, '{"verdict": "certified", "schemaVersion": 1}', 'observer', 'cmd_stg_gen', $2)`, first.ID, string(src))
+		exec(`INSERT INTO stage_artifacts (stage_id, transfer_id, handle, class, digest, size_bytes, object_version) VALUES ('stg_gen', 'xfer_gensrc', 'hdl_gensrc', 'source', $1, 10, 'v1')`, string(src))
+		_, err = release("gen-unregistered", bound, first)
+		require.ErrorIs(t, err, domain.ErrInvalid, "no registered revision is observed yet")
+		_, _, err = effects.Observe(ctx, "tenant_a", gen.CandidateEffectID, "workflow", 1, domain.EffectOutcomeSucceeded, "4", "cand_first", time.Now())
+		require.NoError(t, err)
+		rel, err := release("gen", bound, first)
+		require.NoError(t, err)
+		require.Equal(t, "hdl_gensrc", rel.Subject.SourceHandle, "the Generation's certified source at its registered revision")
 	})
 
 	t.Run("previews and releases read the lineage's identity; another kind or an unbound lineage none", func(t *testing.T) {

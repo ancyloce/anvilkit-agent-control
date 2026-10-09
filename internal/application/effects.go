@@ -120,8 +120,8 @@ func bindLineage(ctx context.Context, r Repo, c domain.EffectContext, req domain
 //     changed binding conflicts, a second command for the same
 //     (operation, kind, occurrence) conflicts, a refusal is recorded as
 //     denied, a Generation's candidate registration binds its lineage
-//     identity (bindLineage), and the first eligible request records
-//     PREPARED.
+//     identity (bindLineage) and becomes its candidate effect, and the
+//     first eligible request records PREPARED.
 //  2. Outside the transaction the immutable obligation is written; an
 //     uncertain write is recorded and grants nothing.
 //  3. A second transaction reacquires the locks of the persisted effect's
@@ -190,6 +190,16 @@ func (s *Effects) Prepare(ctx context.Context, cmd domain.CommandIdentity, req d
 				return err
 			}
 			e, proceed = fresh, true
+			// A Generation's first candidate registration is its candidate
+			// effect (F-P0.8-2): a release of the Generation reads the
+			// registered revision from that effect's observation.
+			if op := c.Operation; op.BindsLineage(req) && op.CandidateEffectID == "" {
+				ev := op.Transition("candidate:"+fresh.ID, c.Now, func(o *domain.Operation) { o.CandidateEffectID = fresh.ID })
+				if err := r.UpdateOperation(ctx, op); err != nil {
+					return err
+				}
+				return r.InsertEvent(ctx, ev)
+			}
 			return nil
 		})
 		if errors.Is(err, ErrDuplicateKey) && attempt == 0 {
