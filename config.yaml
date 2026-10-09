@@ -2,14 +2,19 @@
 # internal/config with precedence defaults < this file < allowed environment
 # overrides (ANVILKIT_CONTROL_LISTEN, ANVILKIT_CONTROL_HEALTH_LISTEN,
 # ANVILKIT_CONTROL_IDENTITY_{CERT,KEY,CA}_FILE, ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN,
-# ANVILKIT_CONTROL_DATABASE_URL,
+# ANVILKIT_CONTROL_DATABASE_URL[_FILE],
 # ANVILKIT_CONTROL_INVENTORY_DIR, ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT,
-# ANVILKIT_CONTROL_INVENTORY_S3_BUCKET, ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID,
-# ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY, ANVILKIT_CONTROL_TEMPORAL_ADDRESS,
+# ANVILKIT_CONTROL_INVENTORY_S3_BUCKET, ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID[_FILE],
+# ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY[_FILE], ANVILKIT_CONTROL_TEMPORAL_ADDRESS,
 # ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS, ANVILKIT_CONTROL_MODEL_PROXY_TOKEN (secret)).
 # Unknown keys fail startup. database.url and the inventory and artifact S3
 # credentials are secrets: they are refused here and come only from the
-# environment (ANVILKIT_CONTROL_ARTIFACTS_S3_{ENDPOINT,BUCKET,ACCESS_KEY_ID,SECRET_ACCESS_KEY}).
+# environment (ANVILKIT_CONTROL_ARTIFACTS_S3_{ENDPOINT,BUCKET,ACCESS_KEY_ID,SECRET_ACCESS_KEY})
+# or, one or the other, from the mounted secret file the matching *_FILE
+# variable (or *_file key) names, read once at load (P0.6, the OpenBao CSI
+# volume). Outside development the DSN must name sslmode=verify-full and a
+# selected S3 endpoint must be https (P0.6); this file's development guard
+# admits the foundation's plaintext DSN and http MinIO.
 # development: the top-level DEVELOPMENT_ONLY guard (P0.1). This checked-in
 # file configures host-side runs on the development foundation
 # (deploy/dev), whose Temporal frontend and OTLP collector are plaintext;
@@ -39,7 +44,8 @@ grpc:
 health:
   listen: 127.0.0.1:9113
 # database: the app-role pool; max_conns is the exact per-replica bound the
-# deployment lock budgets (the URL is a secret from the environment).
+# deployment lock budgets (the URL is a secret from the environment or the
+# mounted file database.url_file names).
 database:
   max_conns: 8
 # inventory: the external-obligation inventory (DD-02 §5). backend is
@@ -84,6 +90,12 @@ relay:
   interval: 500ms
 profiles:
   local_check_deadline: 15m
+  # generation: the validator profile of a generation's certification (P0.8):
+  # the bound source is candidate code, validator-source-v1 under gVisor by
+  # default; DEVELOPMENT_ONLY here the same chain on the foundation's
+  # containerd runtime (state development).
+  generation:
+    validator_profile: validator-source-dev-v1
   # preview_build (P20): the deadline of one conditional save plus the
   # isolated build of the saved revision (the Workflow names the build's
   # reviewed job profile).
