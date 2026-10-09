@@ -113,6 +113,17 @@ func TestControlSchema(t *testing.T) {
 	require.Equal(t, 4, n)
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'operations' AND column_name IN ('source_operation_id', 'package_version')`).Scan(&n))
 	require.Equal(t, 2, n)
+	// 00014: a brief carries the identity it allocates (all three columns
+	// or none); a lineage's identity is recorded once per (tenant, lineage)
+	// and the runtime role can record it but never change it.
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'briefs' AND column_name IN ('component_id', 'puck_type', 'package_name')`).Scan(&n))
+	require.Equal(t, 3, n)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname IN ('briefs_component_check', 'lineage_identities_pkey')`).Scan(&n))
+	require.Equal(t, 2, n)
+	var insert, update bool
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege('anvilkit_control_app', 'lineage_identities', 'INSERT'), has_table_privilege('anvilkit_control_app', 'lineage_identities', 'UPDATE')`).Scan(&insert, &update))
+	require.True(t, insert)
+	require.False(t, update)
 }
 
 // grantPolicyBarrier: 00010 keeps one registration per (tenant, command),
