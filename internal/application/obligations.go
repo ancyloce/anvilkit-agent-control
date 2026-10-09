@@ -64,11 +64,15 @@ func ParseObligationKey(key string) (class, id string, ok bool) {
 // IntakeRecord is the intake obligation: command/operation/kind/tenant/
 // subject/profile/requestDigest (DD-02 §5).
 type IntakeRecord struct {
-	Class          string `json:"class"`
-	CommandID      string `json:"commandId"`
-	OperationID    string `json:"operationId"`
-	Kind           string `json:"kind"`
-	TenantID       string `json:"tenantId"`
+	Class       string `json:"class"`
+	CommandID   string `json:"commandId"`
+	OperationID string `json:"operationId"`
+	Kind        string `json:"kind"`
+	TenantID    string `json:"tenantId"`
+	// ProjectID is the project the operation was accepted in (P0.3), so a
+	// restored operation keeps its project scope; absent on records written
+	// before it existed.
+	ProjectID      string `json:"projectId,omitempty"`
 	ProfileID      string `json:"profileId"`
 	SubjectDigest  string `json:"subjectDigest"`
 	RequestDigest  string `json:"requestDigest"`
@@ -78,7 +82,7 @@ type IntakeRecord struct {
 
 func intakeObligation(op *domain.Operation) (key string, body []byte) {
 	body, _ = json.Marshal(IntakeRecord{
-		Class: ClassIntake, CommandID: op.CommandID, OperationID: op.ID, Kind: string(op.Kind), TenantID: op.TenantID,
+		Class: ClassIntake, CommandID: op.CommandID, OperationID: op.ID, Kind: string(op.Kind), TenantID: op.TenantID, ProjectID: op.ProjectID,
 		ProfileID: op.Subject.ProfileID, SubjectDigest: string(op.Subject.SubjectDigest), RequestDigest: string(op.SemanticDigest),
 		CreatedAt: op.CreatedAt.UTC().Format(time.RFC3339Nano), ExecutionEpoch: op.ExecutionEpoch,
 	})

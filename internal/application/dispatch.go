@@ -439,9 +439,27 @@ func (s *Dispatch) markInventoryUncertain(ctx context.Context, dispatchID string
 	})
 }
 
+// Reader is who reads or reports on a dispatch, as the transport
+// established it: the tenant it acts for (empty: not stated) and, when the
+// caller is a dispatch owner, the owner identity its verified workload
+// carries (empty: any owner may be read, by id). A dispatch outside the
+// reader is not found.
+type Reader struct {
+	TenantID string
+	Owner    string
+}
+
+func (p Reader) sees(d *domain.Dispatch) bool {
+	return (p.TenantID == "" || d.TenantID == p.TenantID) && (p.Owner == "" || d.Owner == p.Owner)
+}
+
 // Get returns the dispatch record by id or by owner and call id; it never
-// returns permission.
-func (s *Dispatch) Get(ctx context.Context, dispatchID, owner, callID string) (*domain.Dispatch, error) {
+// returns permission. A reader bound to an owner looks call ids up under
+// that owner only.
+func (s *Dispatch) Get(ctx context.Context, reader Reader, dispatchID, owner, callID string) (*domain.Dispatch, error) {
+	if reader.Owner != "" {
+		owner = reader.Owner
+	}
 	var d *domain.Dispatch
 	err := s.store.Read(ctx, func(r Repo) error {
 		var err error
@@ -454,6 +472,9 @@ func (s *Dispatch) Get(ctx context.Context, dispatchID, owner, callID string) (*
 		}
 		return err
 	})
+	if err == nil && !reader.sees(d) {
+		return nil, domain.ErrNotFound
+	}
 	return d, err
 }
 
@@ -474,7 +495,10 @@ func (s *Dispatch) Get(ctx context.Context, dispatchID, owner, callID string) (*
 // reservation, and the sender reports again with the metered usage (zero
 // included) or reports unknown. An unknown outcome without counters is
 // recorded for deduplication, retains the exposure and meters nothing.
-func (s *Dispatch) Observe(ctx context.Context, dispatchID, source string, sequence uint64, outcome domain.DispatchOutcome, usage *domain.Usage, nativeRef string, observedAt time.Time) (d *domain.Dispatch, existing bool, err error) {
+//
+// Only the dispatch's owner reports on it: a reader bound to another owner
+// does not find it.
+func (s *Dispatch) Observe(ctx context.Context, reader Reader, dispatchID, source string, sequence uint64, outcome domain.DispatchOutcome, usage *domain.Usage, nativeRef string, observedAt time.Time) (d *domain.Dispatch, existing bool, err error) {
 	now := s.clock.Now()
 	var peek *domain.Dispatch
 	if err := s.store.Read(ctx, func(r Repo) error {
@@ -483,6 +507,9 @@ func (s *Dispatch) Observe(ctx context.Context, dispatchID, source string, seque
 		return err
 	}); err != nil {
 		return nil, false, err
+	}
+	if !reader.sees(peek) {
+		return nil, false, domain.ErrNotFound
 	}
 	price, ok := s.prices.PriceByRevision(peek.MeterRevision)
 	if !ok {
@@ -602,7 +629,7 @@ func (s *Dispatch) settleFinance(ctx context.Context, r Repo, op *domain.Operati
 // reservation is released. A call with observed usage — cost charged, or
 // counters explicitly reported even at zero — was sent and is refused;
 // insufficient evidence leaves the call as it is.
-func (s *Dispatch) ConfirmNotSent(ctx context.Context, cmd domain.CommandIdentity, dispatchID, evidenceRef string, evidenceDigest domain.Digest) (d *domain.Dispatch, existing bool, err error) {
+func (s *Dispatch) ConfirmNotSent(ctx context.Context, cmd domain.CommandIdentity, owner, dispatchID, evidenceRef string, evidenceDigest domain.Digest) (d *domain.Dispatch, existing bool, err error) {
 	var peek *domain.Dispatch
 	if err := s.store.Read(ctx, func(r Repo) error {
 		var err error
@@ -611,7 +638,7 @@ func (s *Dispatch) ConfirmNotSent(ctx context.Context, cmd domain.CommandIdentit
 	}); err != nil {
 		return nil, false, err
 	}
-	if peek.TenantID != cmd.TenantID {
+	if !(Reader{TenantID: cmd.TenantID, Owner: owner}).sees(peek) {
 		return nil, false, domain.ErrNotFound
 	}
 	if peek.State == domain.DispatchConfirmedNotSent {

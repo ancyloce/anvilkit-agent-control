@@ -343,12 +343,10 @@ type PriceBook interface {
 // a model route (DD-02 §3): a decision with an absolute freshness bound.
 // It is consulted outside database locks; the decision is rechecked for
 // freshness inside the consuming transaction and never refreshed by a hit.
-// CheckOperator decides whether the actor may record an operator
-// disposition for the tenant (platform-owned action; Casbin in production,
-// the DEVELOPMENT_ONLY fixture in development).
+// Operator actions are decided by the user's verified roles (P0.3), not by
+// this port.
 type Authority interface {
 	CheckExecution(ctx context.Context, scope domain.Scope, routeID string) (domain.Decision, error)
-	CheckOperator(ctx context.Context, scope domain.Scope, action string) (domain.Decision, error)
 }
 
 // OutcomeQuery answers the query of an obligation's original identity

@@ -21,13 +21,17 @@ func NewPreviews(store Store, clock domain.Clock) *Previews {
 	return &Previews{store: store, clock: clock}
 }
 
-// Record applies one transition; the same transition repeated answers the
+// Record applies one transition of the command's tenant (an operation of
+// another tenant is not found); the same transition repeated answers the
 // recorded projection (existing).
-func (s *Previews) Record(ctx context.Context, operationID string, rec domain.PreviewRecord) (p *domain.Preview, existing bool, err error) {
+func (s *Previews) Record(ctx context.Context, cmd domain.CommandIdentity, operationID string, rec domain.PreviewRecord) (p *domain.Preview, existing bool, err error) {
 	err = s.store.Tx(ctx, func(r Repo) error {
 		op, err := r.LockOperation(ctx, operationID)
 		if err != nil {
 			return err
+		}
+		if op.TenantID != cmd.TenantID {
+			return domain.ErrNotFound
 		}
 		if op.Kind == domain.KindPreviewBuild {
 			// The recorded source digest is the edited artifact's actual one.

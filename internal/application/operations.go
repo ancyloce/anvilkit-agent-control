@@ -224,7 +224,7 @@ func verifySourceArtifact(ctx context.Context, r Repo, scope domain.Scope, subje
 // the requested one. The answer is the source artifact's handle, which the
 // release binds; a revision that was only a base of an edit is refused.
 func releaseSource(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) (string, error) {
-	src, err := r.GetOperationScoped(ctx, subject.SourceOperationID, scope.TenantID)
+	src, err := scopedOperation(ctx, r, scope, subject.SourceOperationID)
 	if errors.Is(err, domain.ErrNotFound) {
 		return "", fmt.Errorf("%w: source operation %s is not an operation of this scope", domain.ErrInvalid, subject.SourceOperationID)
 	}
@@ -265,7 +265,7 @@ func verifyBriefBinding(ctx context.Context, r Repo, scope domain.Scope, briefID
 		}
 		return err
 	}
-	prep, err := r.GetOperationScoped(ctx, b.OperationID, scope.TenantID)
+	prep, err := scopedOperation(ctx, r, scope, b.OperationID)
 	if err != nil {
 		return err
 	}
@@ -341,7 +341,7 @@ func (s *Operations) Get(ctx context.Context, scope domain.Scope, operationID st
 	var op *domain.Operation
 	err := s.store.Read(ctx, func(r Repo) error {
 		var err error
-		op, err = r.GetOperationScoped(ctx, operationID, scope.TenantID)
+		op, err = scopedOperation(ctx, r, scope, operationID)
 		return err
 	})
 	return op, err
@@ -363,7 +363,7 @@ func (s *Operations) ListEvents(ctx context.Context, scope domain.Scope, operati
 	}
 	var page EventPage
 	err := s.store.Read(ctx, func(r Repo) error {
-		op, err := r.GetOperationScoped(ctx, operationID, scope.TenantID)
+		op, err := scopedOperation(ctx, r, scope, operationID)
 		if err != nil {
 			return err
 		}
@@ -400,7 +400,7 @@ func (s *Operations) SubmitCommand(ctx context.Context, cmd domain.CommandIdenti
 		case !errors.Is(err, domain.ErrNotFound):
 			return err
 		}
-		scoped, err := r.GetOperationScoped(ctx, operationID, scope.TenantID)
+		scoped, err := scopedOperation(ctx, r, scope, operationID)
 		if err != nil {
 			return err
 		}
@@ -506,10 +506,27 @@ func (s *Operations) GetCommand(ctx context.Context, scope domain.Scope, operati
 		if found.OperationID != operationID {
 			return domain.ErrNotFound
 		}
+		if _, err := scopedOperation(ctx, r, scope, operationID); err != nil {
+			return err
+		}
 		c = found
 		return nil
 	})
 	return c, err
+}
+
+// scopedOperation reads an operation inside the scope (P0.3): of its tenant
+// and, for a user scope, of the user's project unless the user holds the
+// operator role. Anything else is not found.
+func scopedOperation(ctx context.Context, r Repo, scope domain.Scope, operationID string) (*domain.Operation, error) {
+	op, err := r.GetOperationScoped(ctx, operationID, scope.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if !scope.Sees(op) {
+		return nil, domain.ErrNotFound
+	}
+	return op, nil
 }
 
 // DigestOf is the canonical request digest helper shared by tests and the

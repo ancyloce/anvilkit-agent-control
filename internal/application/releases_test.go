@@ -50,10 +50,10 @@ func TestReleases(t *testing.T) {
 	saved, _, err := ops.Create(ctx, cmd("tenant_a", "prev_saved", "saved"), scopeA, domain.KindPreviewBuild, domain.Subject{ProfileID: "preview-build-v1", SubjectDigest: lineage, SourceRevision: "3", SourceHandle: "hdl_src"}, nil)
 	require.NoError(t, err)
 	rec := domain.PreviewRecord{State: domain.PreviewSaving, SourceDigest: source, BuildProfileID: "b", HostProfileID: "h"}
-	_, _, err = previews.Record(ctx, saved.ID, rec)
+	_, _, err = previews.Record(ctx, cmd("tenant_a", "rec", "rec"), saved.ID, rec)
 	require.NoError(t, err)
 	rec.ExpectedRevision, rec.State, rec.SourceRevision = 1, domain.PreviewBuilding, "4"
-	_, _, err = previews.Record(ctx, saved.ID, rec)
+	_, _, err = previews.Record(ctx, cmd("tenant_a", "rec", "rec"), saved.ID, rec)
 	require.NoError(t, err)
 	baseOnly, _, err := ops.Create(ctx, cmd("tenant_a", "prev_base", "base"), scopeA, domain.KindPreviewBuild, domain.Subject{ProfileID: "preview-build-v1", SubjectDigest: lineage, SourceRevision: "3", SourceHandle: "hdl_src"}, nil)
 	require.NoError(t, err)
@@ -103,13 +103,13 @@ func TestReleases(t *testing.T) {
 	cert := &domain.ReleaseCertification{EvidenceDigest: h("evidence"), Npm: domain.ArtifactDigestRef{Digest: h("npm"), SizeBytes: "3"},
 		Browser: domain.ArtifactDigestRef{Digest: h("browser"), SizeBytes: "7"}, CSS: []domain.ArtifactDigestRef{{Digest: h("css"), SizeBytes: "3"}}}
 	exec(`INSERT INTO attempts (attempt_id, operation_id, tenant_id, step_id, visit_ordinal, attempt_ordinal, profile_id, execution_epoch, command_id, request_digest, state, deadline)
-		VALUES ('att_rel', $1, 'tenant_a', 'certify', 0, 1, 'validator-fixed-dev-v1', 1, 'cmd_att_rel', $2, 'result_accepted', now() + interval '1 hour')`, op.ID, string(source))
+		VALUES ('att_rel', $1, 'tenant_a', 'certify', 0, 1, 'validator-source-v1', 1, 'cmd_att_rel', $2, 'result_accepted', now() + interval '1 hour')`, op.ID, string(source))
 	exec(`INSERT INTO launches (launch_id, attempt_id, operation_id, launch_key, backend, profile_id, image_digest, execution_epoch, launch_epoch, deadline, command_id, request_digest, inventory_state)
-		VALUES ('lch_rel', 'att_rel', $1, 'rel-key', 'kind', 'validator-fixed-dev-v1', $2, 1, 1, now() + interval '1 hour', 'cmd_lch_rel', $2, 'confirmed')`, op.ID, string(source))
+		VALUES ('lch_rel', 'att_rel', $1, 'rel-key', 'kind', 'validator-source-v1', $2, 1, 1, now() + interval '1 hour', 'cmd_lch_rel', $2, 'confirmed')`, op.ID, string(source))
 	exec(`INSERT INTO physical_instances (instance_id, attempt_id, launch_id, launch_key, backend, job_uid, pod_uid, image_digest, launch_epoch, phase, is_current)
 		VALUES ('inst_rel', 'att_rel', 'lch_rel', 'rel-key', 'kind', 'job', 'pod-rel', $1, 1, 'succeeded', true)`, string(source))
 	exec(`INSERT INTO stage_manifests (stage_id, attempt_id, instance_id, operation_id, phase_ordinal, profile_id, verdict, result_digest, result_manifest, observer_identity, command_id, request_digest)
-		VALUES ('stg_rel', 'att_rel', 'inst_rel', $1, 1, 'validator-fixed-dev-v1', 'certified', $2, '{"verdict": "certified", "schemaVersion": 1}', 'observer', 'cmd_stg_rel', $2)`, op.ID, string(source))
+		VALUES ('stg_rel', 'att_rel', 'inst_rel', $1, 1, 'validator-source-v1', 'certified', $2, '{"verdict": "certified", "schemaVersion": 1}', 'observer', 'cmd_stg_rel', $2)`, op.ID, string(source))
 	for class, a := range map[string]domain.ArtifactDigestRef{"evidence": {Digest: cert.EvidenceDigest, SizeBytes: "8"}, "npm": cert.Npm, "browser": cert.Browser, "css": cert.CSS[0]} {
 		transfer(class, "tenant_a", class, a.Digest, 3)
 		exec(`INSERT INTO stage_artifacts (stage_id, transfer_id, handle, class, digest, size_bytes, object_version) VALUES ('stg_rel', $1, $2, $3, $4, $5, 'v1')`,
@@ -127,28 +127,38 @@ func TestReleases(t *testing.T) {
 	require.NoError(t, err)
 	pending := domain.ReleaseTarget{State: domain.TargetPending}
 	deadline := time.Now().Add(24 * time.Hour)
-	_, _, err = releases.Record(ctx, op.ID, domain.ReleaseRecord{State: domain.ReleaseCertifying, Npm: pending, Browser: pending, Activation: pending})
+	_, _, err = releases.Record(ctx, cmd("tenant_a", "rec", "rec"), op.ID, domain.ReleaseRecord{State: domain.ReleaseCertifying, Npm: pending, Browser: pending, Activation: pending})
 	require.NoError(t, err)
-	awaiting := domain.ReleaseRecord{ExpectedRevision: 1, State: domain.ReleaseAwaitingApproval, Subject: subject, ReleaseID: "rel_1", ReviewEffectID: "eff_rev",
-		Approval: &domain.Approval{State: domain.ApprovalPending, SubjectDigest: subject.SubjectDigest}, ApprovalDeadline: &deadline, Npm: pending, Browser: pending, Activation: pending}
-	_, _, err = releases.Record(ctx, op.ID, awaiting)
-	require.NoError(t, err)
-	again, existing, err := releases.Record(ctx, op.ID, awaiting)
-	require.NoError(t, err)
-	require.True(t, existing, "the same transition repeated (nanosecond deadline normalized)")
-	require.Equal(t, uint64(2), again.Revision)
-
 	epoch := uint64(1)
 	effectDeadline := time.Now().Add(time.Hour)
 	prepare := func(kind domain.EffectKind, target, command string) application.Permit {
 		t.Helper()
 		p, err := effects.Prepare(ctx, cmd("tenant_a", command, command), domain.EffectRequest{
-			OperationID: op.ID, Owner: "workflow", Kind: kind, Occurrence: map[string]uint64{"npm": 1, "browser": 2, "activation": 1}[target],
+			OperationID: op.ID, Owner: "workflow", Kind: kind, Occurrence: map[string]uint64{"pub_early": 1, "pub_browser": 2, "pub_npm": 3, "act_early": 1, "act": 2, "review": 1}[command],
 			CanonicalSubject: domain.ReleaseEffectSubject(subject.SubjectDigest, target), ExecutionEpoch: epoch, Deadline: effectDeadline,
 		})
 		require.NoError(t, err)
 		return p
 	}
+	observe := func(effectID string, receipt domain.Digest, ref string) {
+		t.Helper()
+		_, _, err := effects.Observe(ctx, "tenant_a", effectID, "workflow", 1, domain.EffectOutcomeSucceeded, string(receipt), ref, time.Now())
+		require.NoError(t, err)
+	}
+	// The review is registered under its own effect; an approval is
+	// decided under it (B-38).
+	review := prepare(domain.EffectReview, "review", "review")
+	require.True(t, review.Permitted)
+	observe(review.Effect.ID, subject.SubjectDigest, "review:rel_1")
+	awaiting := domain.ReleaseRecord{ExpectedRevision: 1, State: domain.ReleaseAwaitingApproval, Subject: subject, ReleaseID: "rel_1", ReviewEffectID: review.Effect.ID,
+		Approval: &domain.Approval{State: domain.ApprovalPending, SubjectDigest: subject.SubjectDigest}, ApprovalDeadline: &deadline, Npm: pending, Browser: pending, Activation: pending}
+	_, _, err = releases.Record(ctx, cmd("tenant_a", "rec", "rec"), op.ID, awaiting)
+	require.NoError(t, err)
+	again, existing, err := releases.Record(ctx, cmd("tenant_a", "rec", "rec"), op.ID, awaiting)
+	require.NoError(t, err)
+	require.True(t, existing, "the same transition repeated (nanosecond deadline normalized)")
+	require.Equal(t, uint64(2), again.Revision)
+
 	t.Run("no publication permit before an approval of exactly the subject", func(t *testing.T) {
 		p := prepare(domain.EffectPublication, "npm", "pub_early")
 		require.False(t, p.Permitted)
@@ -158,12 +168,13 @@ func TestReleases(t *testing.T) {
 	publishing := awaiting
 	publishing.ExpectedRevision, publishing.State = 2, domain.ReleasePublishing
 	publishing.Approval = &domain.Approval{State: domain.ApprovalApproved, SubjectDigest: subject.SubjectDigest, ApproverID: "maintainer_a"}
-	_, _, err = releases.Record(ctx, op.ID, publishing)
+	_, _, err = releases.Record(ctx, cmd("tenant_a", "rec", "rec"), op.ID, publishing)
 	require.NoError(t, err)
 
+	var npm, browser application.Permit
 	t.Run("publication is permitted once under the approval; activation waits for both receipts", func(t *testing.T) {
-		p := prepare(domain.EffectPublication, "browser", "pub_browser")
-		require.True(t, p.Permitted)
+		browser = prepare(domain.EffectPublication, "browser", "pub_browser")
+		require.True(t, browser.Permitted)
 		again := prepare(domain.EffectPublication, "browser", "pub_browser")
 		require.False(t, again.Permitted, "a permit is issued once")
 		act := prepare(domain.EffectActivation, "activation", "act_early")
@@ -171,10 +182,43 @@ func TestReleases(t *testing.T) {
 		require.Equal(t, domain.DenyReceiptsRequired, act.DenialCode)
 	})
 
+	// B-38 (P0.2 AC3): a succeeded target is accepted only when the
+	// operation's effect ledger holds a succeeded effect whose outcome is
+	// the target's receipt.
+	npm = prepare(domain.EffectPublication, "npm", "pub_npm")
+	require.True(t, npm.Permitted)
+	target := func(effectID, receiptID, destination string) domain.ReleaseTarget {
+		return domain.ReleaseTarget{State: domain.TargetSucceeded, EffectID: effectID, ReceiptID: receiptID, ReceiptDigest: string(h("r")), SubjectDigest: subject.SubjectDigest,
+			Destination: destination, Version: "1.0.0"}
+	}
+	published := publishing
+	published.ExpectedRevision, published.State = 3, domain.ReleasePublished
+	published.Npm = target(npm.Effect.ID, "r_npm", subject.Destinations.NpmRegistry)
+	published.Browser = target(browser.Effect.ID, "r_browser", subject.Destinations.BrowserOrigin)
+	published.Browser.ManifestDigest = string(h("m"))
+	t.Run("a succeeded target without its succeeded effect is refused", func(t *testing.T) {
+		_, _, err := releases.Record(ctx, cmd("tenant_a", "rec", "rec"), op.ID, published)
+		require.ErrorIs(t, err, domain.ErrIntegrity, "neither effect was observed")
+		observe(npm.Effect.ID, h("other receipt"), "receipt:r_npm")
+		_, _, err = releases.Record(ctx, cmd("tenant_a", "rec", "rec"), op.ID, published)
+		require.ErrorIs(t, err, domain.ErrIntegrity, "the npm effect observed another receipt")
+		_, _, err = releases.Record(ctx, cmd("tenant_b", "rec", "rec"), op.ID, published)
+		require.ErrorIs(t, err, domain.ErrNotFound, "another tenant's command")
+	})
+	t.Run("targets the ledger holds publish; activation is permitted from the ledger", func(t *testing.T) {
+		observe(browser.Effect.ID, h("r"), "receipt:r_browser")
+		published.Npm.ReceiptDigest = string(h("other receipt"))
+		got, _, err := releases.Record(ctx, cmd("tenant_a", "rec", "rec"), op.ID, published)
+		require.NoError(t, err)
+		require.True(t, got.Published())
+		act := prepare(domain.EffectActivation, "activation", "act")
+		require.True(t, act.Permitted, act.DenialCode)
+	})
+
 	t.Run("the release is read by its tenant only", func(t *testing.T) {
 		got, err := releases.Get(ctx, "tenant_a", op.ID)
 		require.NoError(t, err)
-		require.Equal(t, domain.ReleasePublishing, got.State)
+		require.Equal(t, domain.ReleasePublished, got.State)
 		require.Equal(t, subject.SubjectDigest, got.Subject.SubjectDigest)
 		require.Equal(t, lineage, got.Lineage)
 		require.Equal(t, "4", got.SourceRevision)

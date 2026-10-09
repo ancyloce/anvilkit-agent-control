@@ -508,7 +508,10 @@ func BindOutputs(ctx context.Context, r Repo, op *domain.Operation, at *domain.A
 // and with the operation not fenced. The capability names the exact
 // object version the transfer was finalized with; the caller verifies the
 // bytes against the digest and size answered. Candidates never see it.
-func (s *Artifacts) Read(ctx context.Context, handle, transferID, operationID, instanceID string) (*domain.Transfer, *UploadCapability, error) {
+//
+// tenantID is the tenant the reader acts for: the artifact and the reading
+// operation must both be of it, otherwise neither is found (P0.2).
+func (s *Artifacts) Read(ctx context.Context, tenantID, handle, transferID, operationID, instanceID string) (*domain.Transfer, *UploadCapability, error) {
 	if err := s.available(); err != nil {
 		return nil, nil, err
 	}
@@ -526,7 +529,10 @@ func (s *Artifacts) Read(ctx context.Context, handle, transferID, operationID, i
 		if err != nil {
 			return err
 		}
-		op, err := r.GetOperationScoped(ctx, operationID, t.TenantID)
+		if t.TenantID != tenantID {
+			return domain.ErrNotFound
+		}
+		op, err := r.GetOperationScoped(ctx, operationID, tenantID)
 		if err != nil {
 			return err
 		}

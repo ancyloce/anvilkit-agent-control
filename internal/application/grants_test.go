@@ -123,7 +123,7 @@ func TestGrantPolicyBarrier(t *testing.T) {
 		lost, err := p.dispatch.Admit(ctx, admitCmd("call-f2", "body"), tool(op, at, "grant-f", "call-f2"))
 		require.NoError(t, err)
 		require.True(t, lost.Allowed)
-		_, _, err = p.dispatch.Observe(ctx, lost.Dispatch.ID, "mcp-a", 1, domain.DispatchOutcomeUnknown, nil, "", time.Now())
+		_, _, err = p.dispatch.Observe(ctx, application.Reader{}, lost.Dispatch.ID, "mcp-a", 1, domain.DispatchOutcomeUnknown, nil, "", time.Now())
 		require.NoError(t, err)
 
 		fenced, existing, err := grants.BeginRevocation(ctx, cmd("tenant_a", "rev-f", "rf"), "grant-f", 1)
@@ -149,7 +149,7 @@ func TestGrantPolicyBarrier(t *testing.T) {
 		status, err := grants.Revocation(ctx, "grant-f", 1)
 		require.NoError(t, err)
 		require.Equal(t, "converging", status.RevocationState, "sent and unknown senders are not quiesced")
-		_, _, err = p.dispatch.Observe(ctx, sent.Dispatch.ID, "mcp-a", 1, domain.DispatchSucceeded, reported(domain.Usage{}), "", time.Now())
+		_, _, err = p.dispatch.Observe(ctx, application.Reader{}, sent.Dispatch.ID, "mcp-a", 1, domain.DispatchSucceeded, reported(domain.Usage{}), "", time.Now())
 		require.NoError(t, err)
 		status, err = grants.Revocation(ctx, "grant-f", 1)
 		require.NoError(t, err)

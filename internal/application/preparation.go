@@ -162,7 +162,7 @@ func (s *Preparations) SubmitAnswer(ctx context.Context, cmd domain.CommandIdent
 		case !errors.Is(err, domain.ErrNotFound):
 			return err
 		}
-		scoped, err := r.GetOperationScoped(ctx, operationID, scope.TenantID)
+		scoped, err := scopedOperation(ctx, r, scope, operationID)
 		if err != nil {
 			return err
 		}

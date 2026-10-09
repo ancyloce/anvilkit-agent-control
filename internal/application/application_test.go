@@ -202,6 +202,26 @@ func TestControl(t *testing.T) {
 		require.ErrorIs(t, err, domain.ErrNotFound)
 	})
 
+	// P0.3 AC3: a user of another project of the same tenant neither reads
+	// nor commands the operation; the operator role crosses projects; a
+	// platform workload's scope names no project and is tenant-wide.
+	t.Run("another project's user finds nothing; an operator and the platform scope do", func(t *testing.T) {
+		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_project", "body"), scopeA, domain.KindLocalCheck, subject, nil)
+		require.NoError(t, err)
+		other := domain.Scope{TenantID: "tenant_a", ProjectID: "proj_other", ActorID: "user_c", Roles: []string{"author"}}
+		_, err = p2.ops.Get(ctx, other, op.ID)
+		require.ErrorIs(t, err, domain.ErrNotFound)
+		_, err = p2.ops.ListEvents(ctx, other, op.ID, 0, 10)
+		require.ErrorIs(t, err, domain.ErrNotFound)
+		_, _, err = p2.ops.SubmitCommand(ctx, cmd("tenant_a", "cmd_project_cancel", "cancel"), other, op.ID, domain.CommandCancel, op.Revision, "")
+		require.ErrorIs(t, err, domain.ErrNotFound)
+		operator := domain.Scope{TenantID: "tenant_a", ProjectID: "proj_ops", ActorID: "operator_a", Roles: []string{domain.RoleOperator}}
+		_, err = p2.ops.Get(ctx, operator, op.ID)
+		require.NoError(t, err)
+		_, err = p2.ops.Get(ctx, domain.Scope{TenantID: "tenant_a", ActorID: "anvilkit-agent-workflow"}, op.ID)
+		require.NoError(t, err)
+	})
+
 	t.Run("unqualified profile is rejected before any record exists", func(t *testing.T) {
 		_, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_badprofile", "body"), scopeA, domain.KindGeneration, domain.Subject{ProfileID: "codegen-v1", SubjectDigest: subject.SubjectDigest}, nil)
 		require.ErrorIs(t, err, domain.ErrProfileUnqualified)
@@ -401,7 +421,7 @@ func TestControl(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, existing, "a lost registration receipt reenters the same instance")
 		require.Equal(t, inst.ID, again.ID)
-		_, err = p1.exec.ObserveInstance(ctx, at.ID, inst.ID, domain.PhaseSucceeded, nil, time.Now())
+		_, err = p1.exec.ObserveInstance(ctx, "tenant_a", at.ID, inst.ID, domain.PhaseSucceeded, nil, time.Now())
 		require.NoError(t, err)
 		var state string
 		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT state FROM attempts WHERE attempt_id = $1", at.ID).Scan(&state))
@@ -712,7 +732,7 @@ func TestControl(t *testing.T) {
 					case <-stop:
 						return
 					default:
-						_, _ = p.exec.ObserveInstance(ctx, at.ID, inst1.ID, domain.PhaseRunning, nil, time.Now())
+						_, _ = p.exec.ObserveInstance(ctx, "tenant_a", at.ID, inst1.ID, domain.PhaseRunning, nil, time.Now())
 						_, _ = p.ops.Get(ctx, scopeA, op.ID)
 					}
 				}

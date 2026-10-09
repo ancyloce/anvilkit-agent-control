@@ -321,8 +321,9 @@ func (s *Execution) RegisterInstance(ctx context.Context, cmd domain.CommandIden
 	return inst, existing, err
 }
 
-// ObserveInstance records a backend observation on the instance row only.
-func (s *Execution) ObserveInstance(ctx context.Context, attemptID, instanceID string, phase domain.InstancePhase, exitCode *int32, observedAt time.Time) (*domain.Instance, error) {
+// ObserveInstance records a backend observation on the instance row only;
+// an instance of another attempt or of another tenant is not found.
+func (s *Execution) ObserveInstance(ctx context.Context, tenantID, attemptID, instanceID string, phase domain.InstancePhase, exitCode *int32, observedAt time.Time) (*domain.Instance, error) {
 	var inst *domain.Instance
 	err := s.store.Tx(ctx, func(r Repo) error {
 		locked, err := r.LockInstance(ctx, instanceID)
@@ -330,6 +331,13 @@ func (s *Execution) ObserveInstance(ctx context.Context, attemptID, instanceID s
 			return err
 		}
 		if locked.AttemptID != attemptID {
+			return domain.ErrNotFound
+		}
+		at, err := r.GetAttempt(ctx, attemptID)
+		if err != nil {
+			return err
+		}
+		if at.TenantID != tenantID {
 			return domain.ErrNotFound
 		}
 		locked.Phase, locked.ExitCode, locked.ObservedAt = phase, exitCode, &observedAt

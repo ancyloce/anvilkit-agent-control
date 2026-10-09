@@ -236,7 +236,7 @@ func TestSettlementRegressions(t *testing.T) {
 		current, _, err = run.SettleOperation(ctx, command, op.ID, domain.OperationCanceled, "", "")
 		require.NoError(t, err)
 		require.Equal(t, domain.LifecycleReconciling, current.Lifecycle)
-		_, _, err = dispatch.Observe(ctx, sent.Dispatch.ID, "proxy", 1, domain.DispatchSucceeded, reported(domain.Usage{}), "receipt", time.Now())
+		_, _, err = dispatch.Observe(ctx, application.Reader{}, sent.Dispatch.ID, "proxy", 1, domain.DispatchSucceeded, reported(domain.Usage{}), "receipt", time.Now())
 		require.NoError(t, err)
 		current, _, err = execution().SettleOperation(ctx, command, op.ID, domain.OperationCanceled, "", "")
 		require.NoError(t, err)

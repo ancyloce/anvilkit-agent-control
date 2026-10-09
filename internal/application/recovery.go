@@ -32,7 +32,6 @@ type Recovery struct {
 	effects   *Effects
 	exec      *Execution
 	profiles  map[string]domain.Profile
-	authority Authority
 	notSent   NotSentEvidence
 	evidence  DispositionEvidence
 	clock     domain.Clock
@@ -40,7 +39,7 @@ type Recovery struct {
 	page      int
 }
 
-func NewRecovery(store Store, inventory Inventory, queries OutcomeQuery, dispatch *Dispatch, effects *Effects, exec *Execution, profiles []domain.Profile, authority Authority, notSent NotSentEvidence, evidence DispositionEvidence, clock domain.Clock, log *slog.Logger, page int) *Recovery {
+func NewRecovery(store Store, inventory Inventory, queries OutcomeQuery, dispatch *Dispatch, effects *Effects, exec *Execution, profiles []domain.Profile, notSent NotSentEvidence, evidence DispositionEvidence, clock domain.Clock, log *slog.Logger, page int) *Recovery {
 	m := make(map[string]domain.Profile, len(profiles))
 	for _, p := range profiles {
 		m[p.ID] = p
@@ -48,26 +47,27 @@ func NewRecovery(store Store, inventory Inventory, queries OutcomeQuery, dispatc
 	if page <= 0 {
 		page = 500
 	}
-	return &Recovery{store: store, inventory: inventory, queries: queries, dispatch: dispatch, effects: effects, exec: exec, profiles: m, authority: authority, notSent: notSent, evidence: evidence, clock: clock, log: log, page: page}
+	return &Recovery{store: store, inventory: inventory, queries: queries, dispatch: dispatch, effects: effects, exec: exec, profiles: m, notSent: notSent, evidence: evidence, clock: clock, log: log, page: page}
 }
 
-// The operator actions the authority port decides.
+// The operator actions (P0.3): decided by the verified roles of the user
+// scope the API carries, never by a caller's assertion or a fixture.
 const (
 	ActionRecovery    = "recovery"
 	ActionDisposition = "disposition"
 )
 
-func (s *Recovery) operator(ctx context.Context, tenantID, actorID, action string) error {
-	decision, err := s.authority.CheckOperator(ctx, domain.Scope{TenantID: tenantID, ActorID: actorID}, action)
-	if err != nil {
-		return fmt.Errorf("operator authority: %w", err)
-	}
-	if !decision.Current(s.clock.Now()) {
-		reason := decision.ReasonCode
-		if reason == "" {
-			reason = "no current authority"
-		}
-		return fmt.Errorf("%w: actor %s may not %s for scope %s: %s", domain.ErrForbidden, actorID, action, tenantID, reason)
+// operator authorizes an operator action: the scope is the command's own
+// tenant and actor and holds the operator role; a platform-wide recovery
+// scope ("*") needs the platform_operator role.
+func operator(scope domain.Scope, cmd domain.CommandIdentity, scopeKey, action string) error {
+	switch {
+	case scope.TenantID != cmd.TenantID || scope.ActorID != cmd.ActorID:
+		return fmt.Errorf("%w: the operator scope is not the command's tenant and actor", domain.ErrForbidden)
+	case scopeKey == domain.ScopeAll && !scope.HasRole(domain.RolePlatformOperator):
+		return fmt.Errorf("%w: actor %s may not %s for every tenant: the %s role is required", domain.ErrForbidden, cmd.ActorID, action, domain.RolePlatformOperator)
+	case !scope.HasRole(domain.RoleOperator) && !scope.HasRole(domain.RolePlatformOperator):
+		return fmt.Errorf("%w: actor %s may not %s for scope %s: the %s role is required", domain.ErrForbidden, cmd.ActorID, action, scopeKey, domain.RoleOperator)
 	}
 	return nil
 }
@@ -77,11 +77,11 @@ func (s *Recovery) operator(ctx context.Context, tenantID, actorID, action strin
 // all in one commit; the run's workflow is then started by the relay. The
 // same command returns the existing run. Admission stays closed until
 // Evaluate reopens it.
-func (s *Recovery) Begin(ctx context.Context, cmd domain.CommandIdentity, scopeKey string, windowStart, windowEnd time.Time, skew time.Duration, reason string) (run *domain.RecoveryRun, existing bool, err error) {
+func (s *Recovery) Begin(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, scopeKey string, windowStart, windowEnd time.Time, skew time.Duration, reason string) (run *domain.RecoveryRun, existing bool, err error) {
 	if scopeKey != domain.ScopeAll && scopeKey != cmd.TenantID {
 		return nil, false, fmt.Errorf("%w: recovery scope %q is not the command tenant", domain.ErrInvalid, scopeKey)
 	}
-	if err := s.operator(ctx, scopeKey, cmd.ActorID, ActionRecovery); err != nil {
+	if err := operator(scope, cmd, scopeKey, ActionRecovery); err != nil {
 		return nil, false, err
 	}
 	now := s.clock.Now()
@@ -619,13 +619,13 @@ func (s *Recovery) restore(ctx context.Context, run *domain.RecoveryRun, f *doma
 		switch ob.Class {
 		case ClassIntake:
 			rec := ob.Intake
-			if err := s.restoreOperation(ctx, r, run, rec.TenantID, rec.OperationID, rec.CommandID, domain.OperationKind(rec.Kind), rec.ProfileID, domain.Digest(rec.SubjectDigest), domain.Digest(rec.RequestDigest), ob.RecordedAt, rec.ExecutionEpoch, version, now); err != nil {
+			if err := s.restoreOperation(ctx, r, run, rec.TenantID, rec.ProjectID, rec.OperationID, rec.CommandID, domain.OperationKind(rec.Kind), rec.ProfileID, domain.Digest(rec.SubjectDigest), domain.Digest(rec.RequestDigest), ob.RecordedAt, rec.ExecutionEpoch, version, now); err != nil {
 				return err
 			}
 			status, outcome = domain.FindingResolved, "restored"
 		case ClassJobLaunch:
 			rec := ob.Launch
-			if err := s.restoreOperation(ctx, r, run, rec.TenantID, rec.OperationID, "", domain.KindLocalCheck, rec.ProfileID, "", "", ob.RecordedAt, rec.ExecutionEpoch, "", now); err != nil {
+			if err := s.restoreOperation(ctx, r, run, rec.TenantID, "", rec.OperationID, "", domain.KindLocalCheck, rec.ProfileID, "", "", ob.RecordedAt, rec.ExecutionEpoch, "", now); err != nil {
 				return err
 			}
 			deadline, _ := time.Parse(time.RFC3339Nano, rec.Deadline)
@@ -647,7 +647,7 @@ func (s *Recovery) restore(ctx context.Context, run *domain.RecoveryRun, f *doma
 			}
 		case ClassModelDispatch, ClassToolDispatch:
 			rec := ob.Dispatch
-			if err := s.restoreOperation(ctx, r, run, rec.TenantID, rec.OperationID, "", domain.KindLocalCheck, "", "", "", ob.RecordedAt, rec.ExecutionEpoch, "", now); err != nil {
+			if err := s.restoreOperation(ctx, r, run, rec.TenantID, "", rec.OperationID, "", domain.KindLocalCheck, "", "", "", ob.RecordedAt, rec.ExecutionEpoch, "", now); err != nil {
 				return err
 			}
 			if err := s.restoreAttempt(ctx, r, rec.TenantID, rec.OperationID, rec.AttemptID, "", rec.ExecutionEpoch, mustTime(rec.Deadline), ob.RecordedAt, now); err != nil {
@@ -711,7 +711,7 @@ func (s *Recovery) restore(ctx context.Context, run *domain.RecoveryRun, f *doma
 			}
 		case ClassBusinessWrite:
 			rec := ob.Effect
-			if err := s.restoreOperation(ctx, r, run, rec.TenantID, rec.OperationID, "", domain.KindLocalCheck, "", "", "", ob.RecordedAt, rec.ExecutionEpoch, "", now); err != nil {
+			if err := s.restoreOperation(ctx, r, run, rec.TenantID, "", rec.OperationID, "", domain.KindLocalCheck, "", "", "", ob.RecordedAt, rec.ExecutionEpoch, "", now); err != nil {
 				return err
 			}
 			if _, err := r.GetEffect(ctx, rec.EffectID); errors.Is(err, domain.ErrNotFound) {
@@ -748,7 +748,7 @@ func mustTime(s string) time.Time {
 // a launch, dispatch or effect record (its intake object outside the
 // window or lost) carries synthetic digests derived from its identity and
 // is marked as such; nothing can be admitted for it under the old epoch.
-func (s *Recovery) restoreOperation(ctx context.Context, r Repo, run *domain.RecoveryRun, tenantID, operationID, commandID string, kind domain.OperationKind, profileID string, subjectDigest, requestDigest domain.Digest, recordedAt time.Time, executionEpoch uint64, intakeVersion string, now time.Time) error {
+func (s *Recovery) restoreOperation(ctx context.Context, r Repo, run *domain.RecoveryRun, tenantID, projectID, operationID, commandID string, kind domain.OperationKind, profileID string, subjectDigest, requestDigest domain.Digest, recordedAt time.Time, executionEpoch uint64, intakeVersion string, now time.Time) error {
 	if _, err := r.GetOperationScoped(ctx, operationID, tenantID); err == nil {
 		return nil
 	} else if !errors.Is(err, domain.ErrNotFound) {
@@ -771,7 +771,7 @@ func (s *Recovery) restoreOperation(ctx context.Context, r Repo, run *domain.Rec
 		deadline = recordedAt.Add(p.OperationDeadline)
 	}
 	op := &domain.Operation{
-		ID: operationID, TenantID: tenantID, ActorID: "recovery", CommandID: commandID, Kind: kind, Subject: domain.Subject{ProfileID: profileID, SubjectDigest: subjectDigest},
+		ID: operationID, TenantID: tenantID, ProjectID: projectID, ActorID: "recovery", CommandID: commandID, Kind: kind, Subject: domain.Subject{ProfileID: profileID, SubjectDigest: subjectDigest},
 		SemanticDigest: requestDigest, Lifecycle: domain.LifecycleReconciling, Phase: "recovered", Control: domain.ControlNone, Cleanup: domain.CleanupUnknown,
 		Finance: domain.FinanceExposureUnknown, FailureCode: "RECOVERED_FROM_INVENTORY", Revision: 0, NextEventSeq: 1, ExecutionEpoch: executionEpoch + 1,
 		RecoveryEpoch: run.RecoveryEpoch, Deadline: deadline, Intake: domain.IntakeConfirmed, IntakeVersion: intakeVersion, Relay: domain.RelaySettled,
@@ -854,7 +854,7 @@ func (s *Recovery) queryDispatch(ctx context.Context, f *domain.RecoveryFinding)
 	if !report.Known {
 		return s.settleFinding(ctx, f.ID, domain.FindingUnresolved, "", "", "no upstream record of the original identity; exposure retained")
 	}
-	observed, _, err := s.dispatch.Observe(ctx, d.ID, report.Source, report.Sequence, report.Outcome, report.Usage, report.NativeReference, report.ObservedAt)
+	observed, _, err := s.dispatch.Observe(ctx, Reader{TenantID: f.TenantID}, d.ID, report.Source, report.Sequence, report.Outcome, report.Usage, report.NativeReference, report.ObservedAt)
 	if err != nil {
 		return s.settleFinding(ctx, f.ID, domain.FindingUnresolved, "", "", "upstream outcome could not be recorded: "+err.Error())
 	}
@@ -999,7 +999,7 @@ func (s *Recovery) RecordOutcome(ctx context.Context, runID, findingID string, o
 		if err != nil {
 			return s.settleFinding(ctx, f.ID, domain.FindingUnresolved, f.Outcome, f.EvidenceRef, "observed pod not registered: "+err.Error())
 		}
-		if _, err := s.exec.ObserveInstance(ctx, l.AttemptID, inst.ID, pod.Phase, pod.ExitCode, pod.ObservedAt); err != nil {
+		if _, err := s.exec.ObserveInstance(ctx, f.TenantID, l.AttemptID, inst.ID, pod.Phase, pod.ExitCode, pod.ObservedAt); err != nil {
 			return s.settleFinding(ctx, f.ID, domain.FindingUnresolved, f.Outcome, f.EvidenceRef, "observed pod state not recorded: "+err.Error())
 		}
 	}
@@ -1103,7 +1103,7 @@ type DispositionRequest struct {
 // the attested outcome, a retained exposure changes the obligation not at
 // all. The same command returns the original disposition; there is no
 // bulk form.
-func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, req DispositionRequest) (d *domain.Disposition, existing bool, err error) {
+func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, req DispositionRequest) (d *domain.Disposition, existing bool, err error) {
 	if err := validClass(req.Class); err != nil {
 		return nil, false, err
 	}
@@ -1196,7 +1196,7 @@ func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, req 
 	} else if run.RecoveryEpoch != req.RecoveryEpoch {
 		return nil, false, fmt.Errorf("%w: disposition names recovery epoch %d, run %s is at epoch %d", domain.ErrStaleExecution, req.RecoveryEpoch, run.ID, run.RecoveryEpoch)
 	}
-	if err := s.operator(ctx, cmd.TenantID, cmd.ActorID, ActionDisposition); err != nil {
+	if err := operator(scope, cmd, cmd.TenantID, ActionDisposition); err != nil {
 		return nil, false, err
 	}
 	if dispatch != nil && req.Decision == domain.DisposeConfirmNotSent {
@@ -1297,7 +1297,7 @@ func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, req 
 		return nil
 	})
 	if errors.Is(err, ErrDuplicateKey) {
-		return s.Dispose(ctx, cmd, req)
+		return s.Dispose(ctx, cmd, scope, req)
 	}
 	return d, false, err
 }

@@ -71,6 +71,11 @@ func effectContext(ctx context.Context, r Repo, operationID, attemptID, tenantID
 			return domain.EffectContext{}, err
 		}
 		c.Release = rel
+		if rel != nil {
+			if c.ReleaseEffects, err = releaseEffects(ctx, r, rel.ReviewEffectID, rel.Npm.EffectID, rel.Browser.EffectID, rel.Activation.EffectID); err != nil {
+				return domain.EffectContext{}, err
+			}
+		}
 	}
 	c.Now = clock.Now()
 	return c, nil

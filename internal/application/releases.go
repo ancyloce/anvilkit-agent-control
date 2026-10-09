@@ -34,9 +34,12 @@ func micro(t *time.Time) *time.Time {
 	return &u
 }
 
-// Record applies one transition; the same transition repeated answers the
-// recorded projection (existing).
-func (s *Releases) Record(ctx context.Context, operationID string, rec domain.ReleaseRecord) (p *domain.Release, existing bool, err error) {
+// Record applies one transition of the command's tenant (an operation of
+// another tenant is not found); the same transition repeated answers the
+// recorded projection (existing). The effect rows the record names are
+// read in the same transaction: an approval and every succeeded target
+// must be backed by them (B-38).
+func (s *Releases) Record(ctx context.Context, cmd domain.CommandIdentity, operationID string, rec domain.ReleaseRecord) (p *domain.Release, existing bool, err error) {
 	rec.ApprovalDeadline = micro(rec.ApprovalDeadline)
 	if rec.Approval != nil {
 		a := *rec.Approval
@@ -47,6 +50,9 @@ func (s *Releases) Record(ctx context.Context, operationID string, rec domain.Re
 		op, err := r.LockOperation(ctx, operationID)
 		if err != nil {
 			return err
+		}
+		if op.TenantID != cmd.TenantID {
+			return domain.ErrNotFound
 		}
 		cur, err := r.LockRelease(ctx, operationID)
 		if errors.Is(err, domain.ErrNotFound) {
@@ -61,7 +67,11 @@ func (s *Releases) Record(ctx context.Context, operationID string, rec domain.Re
 				return err
 			}
 		}
-		next, same, err := domain.ApplyRelease(op, cur, rec, cert, s.clock.Now())
+		effects, err := releaseEffects(ctx, r, rec.ReviewEffectID, rec.Npm.EffectID, rec.Browser.EffectID, rec.Activation.EffectID)
+		if err != nil {
+			return err
+		}
+		next, same, err := domain.ApplyRelease(op, cur, rec, cert, effects, s.clock.Now())
 		if err != nil {
 			return err
 		}
@@ -82,6 +92,27 @@ func (s *Releases) Record(ctx context.Context, operationID string, rec domain.Re
 		return nil, false, fmt.Errorf("%w: release of %s was recorded concurrently", domain.ErrRevisionConflict, operationID)
 	}
 	return p, existing, err
+}
+
+// releaseEffects reads the ledger rows of the named effects (empty ids and
+// ids without a row are left out); effects rank after the release, and a
+// read takes no lock.
+func releaseEffects(ctx context.Context, r Repo, ids ...string) (domain.ReleaseEffects, error) {
+	out := domain.ReleaseEffects{}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		e, err := r.GetEffect(ctx, id)
+		if errors.Is(err, domain.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[id] = e
+	}
+	return out, nil
 }
 
 // certificationOf reads the operation's latest accepted certified stage.

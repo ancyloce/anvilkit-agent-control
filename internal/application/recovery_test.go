@@ -30,12 +30,22 @@ type p07Process struct {
 	recovery *application.Recovery
 }
 
+// opScope is the verified user scope of a command's actor (P0.3): the
+// operator actor holds the operator role, every other actor none.
+func opScope(cmd domain.CommandIdentity) domain.Scope {
+	s := domain.Scope{TenantID: cmd.TenantID, ActorID: cmd.ActorID}
+	if cmd.ActorID == operatorActor {
+		s.Roles = []string{domain.RoleOperator}
+	}
+	return s
+}
+
 func newP07Process(t *testing.T, inst *testdb.Instance, inv *hookedInventory, auth *authorityDouble, prices application.PriceBook) *p07Process {
 	base := newDispatchProcess(t, inst, inv, auth, prices)
 	store := postgres.NewStore(base.pool)
 	queries := development.NewOutcomeQuery(inv, []string{issuer})
 	effects := application.NewEffects(store, inv, queries, domain.SystemClock{}, testLog)
-	recovery := application.NewRecovery(store, inv, queries, base.dispatch, effects, base.exec, []domain.Profile{profile}, auth,
+	recovery := application.NewRecovery(store, inv, queries, base.dispatch, effects, base.exec, []domain.Profile{profile},
 		development.NewNotSentEvidence(inv, []string{issuer}), development.NewDispositionEvidence(inv, []string{issuer}), domain.SystemClock{}, testLog, 2)
 	return &p07Process{dispatchProcess: base, effects: effects, recovery: recovery}
 }
@@ -372,7 +382,7 @@ func TestDisposeIsOneCommit(t *testing.T) {
 	queries := development.NewOutcomeQuery(inv, []string{issuer})
 	effects := application.NewEffects(store, inv, queries, domain.SystemClock{}, testLog)
 	evidence := &hookedDisposition{inner: development.NewDispositionEvidence(inv, []string{issuer})}
-	recovery := application.NewRecovery(store, inv, queries, base.dispatch, effects, base.exec, []domain.Profile{profile}, auth,
+	recovery := application.NewRecovery(store, inv, queries, base.dispatch, effects, base.exec, []domain.Profile{profile},
 		development.NewNotSentEvidence(inv, []string{issuer}), evidence, domain.SystemClock{}, testLog, 2)
 	ctx := context.Background()
 	pools(t, base.pool, "onecommit", [3]int64{1_000_000_000, 100_000_000, 10_000_000})
@@ -391,10 +401,10 @@ func TestDisposeIsOneCommit(t *testing.T) {
 	sent, err := base.dispatch.Admit(ctx, admitCmd("one_s", "m"), modelRequest(opS, atS, "one_s", "proxy-1", 10_000))
 	require.NoError(t, err)
 	require.True(t, sent.Allowed)
-	_, _, err = base.dispatch.Observe(ctx, sent.Dispatch.ID, "proxy-1", 1, domain.DispatchOutcomeUnknown, nil, "", time.Now())
+	_, _, err = base.dispatch.Observe(ctx, application.Reader{}, sent.Dispatch.ID, "proxy-1", 1, domain.DispatchOutcomeUnknown, nil, "", time.Now())
 	require.NoError(t, err)
 
-	run, _, err := recovery.Begin(ctx, opCmd("one_begin"), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "one commit")
+	run, _, err := recovery.Begin(ctx, opCmd("one_begin"), opScope(opCmd("one_begin")), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "one commit")
 	require.NoError(t, err)
 	for _, class := range application.ObligationClasses {
 		for {
@@ -425,10 +435,10 @@ func TestDisposeIsOneCommit(t *testing.T) {
 	// Between the evidence verification and the commit a second run moves
 	// the operation to a new recovery epoch.
 	evidence.hook = func() {
-		_, _, err := recovery.Begin(ctx, opCmd("one_begin_2"), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "second run")
+		_, _, err := recovery.Begin(ctx, opCmd("one_begin_2"), opScope(opCmd("one_begin_2")), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "second run")
 		require.NoError(t, err)
 	}
-	_, _, err = recovery.Dispose(ctx, opCmd("one_race"), req)
+	_, _, err = recovery.Dispose(ctx, opCmd("one_race"), opScope(opCmd("one_race")), req)
 	require.ErrorIs(t, err, domain.ErrStaleExecution)
 	unchanged, err := effects.Get(ctx, "tenant_a", eff.ID, "", "", 0)
 	require.NoError(t, err)
@@ -445,7 +455,7 @@ func TestDisposeIsOneCommit(t *testing.T) {
 
 	// Under the current epoch the same decision applies once, atomically.
 	req.RecoveryEpoch = moved.RecoveryEpoch
-	d, existing, err := recovery.Dispose(ctx, opCmd("one_ok"), req)
+	d, existing, err := recovery.Dispose(ctx, opCmd("one_ok"), opScope(opCmd("one_ok")), req)
 	require.NoError(t, err)
 	require.False(t, existing)
 	resolved, err := effects.Get(ctx, "tenant_a", eff.ID, "", "", 0)
@@ -454,7 +464,7 @@ func TestDisposeIsOneCommit(t *testing.T) {
 	require.NoError(t, base.pool.QueryRow(ctx, "SELECT count(*) FROM obligation_dispositions WHERE disposition_id = $1", d.ID).Scan(&dispositions))
 	require.Equal(t, 1, dispositions)
 	require.Equal(t, domain.FindingDisposed, findingOf("business-write", eff.ID).Status)
-	same, existing, err := recovery.Dispose(ctx, opCmd("one_ok"), req)
+	same, existing, err := recovery.Dispose(ctx, opCmd("one_ok"), opScope(opCmd("one_ok")), req)
 	require.NoError(t, err)
 	require.True(t, existing)
 	require.Equal(t, d.ID, same.ID, "the repeated command returns the original disposition")
@@ -462,17 +472,17 @@ func TestDisposeIsOneCommit(t *testing.T) {
 	// A not-sent confirmation under a stale epoch refuses before the
 	// dispatch changes: the exposure stays reserved and the state unknown.
 	ref, notSent := attestation(t, inv, sent.Dispatch, issuer)
-	_, _, err = recovery.Dispose(ctx, opCmd("one_ns_stale"), application.DispositionRequest{Class: "model-dispatch", ObligationID: sent.Dispatch.ID, Decision: domain.DisposeConfirmNotSent, EvidenceRef: ref, EvidenceDigest: notSent, RecoveryEpoch: run.RecoveryEpoch, RunID: run.ID})
+	_, _, err = recovery.Dispose(ctx, opCmd("one_ns_stale"), opScope(opCmd("one_ns_stale")), application.DispositionRequest{Class: "model-dispatch", ObligationID: sent.Dispatch.ID, Decision: domain.DisposeConfirmNotSent, EvidenceRef: ref, EvidenceDigest: notSent, RecoveryEpoch: run.RecoveryEpoch, RunID: run.ID})
 	require.ErrorIs(t, err, domain.ErrStaleExecution)
-	still, err := base.dispatch.Get(ctx, sent.Dispatch.ID, "", "")
+	still, err := base.dispatch.Get(ctx, application.Reader{}, sent.Dispatch.ID, "", "")
 	require.NoError(t, err)
 	require.Equal(t, domain.DispatchUnknown, still.State)
 	require.Equal(t, int64(10_000), still.Reserved.Amount)
 	movedS, err := base.ops.Get(ctx, scopeA, opS.ID)
 	require.NoError(t, err)
-	_, _, err = recovery.Dispose(ctx, opCmd("one_ns"), application.DispositionRequest{Class: "model-dispatch", ObligationID: sent.Dispatch.ID, Decision: domain.DisposeConfirmNotSent, EvidenceRef: ref, EvidenceDigest: notSent, RecoveryEpoch: movedS.RecoveryEpoch, RunID: run.ID})
+	_, _, err = recovery.Dispose(ctx, opCmd("one_ns"), opScope(opCmd("one_ns")), application.DispositionRequest{Class: "model-dispatch", ObligationID: sent.Dispatch.ID, Decision: domain.DisposeConfirmNotSent, EvidenceRef: ref, EvidenceDigest: notSent, RecoveryEpoch: movedS.RecoveryEpoch, RunID: run.ID})
 	require.NoError(t, err)
-	released, err := base.dispatch.Get(ctx, sent.Dispatch.ID, "", "")
+	released, err := base.dispatch.Get(ctx, application.Reader{}, sent.Dispatch.ID, "", "")
 	require.NoError(t, err)
 	require.Equal(t, domain.DispatchConfirmedNotSent, released.State)
 	require.Equal(t, domain.FindingDisposed, findingOf("model-dispatch", sent.Dispatch.ID).Status)
@@ -490,7 +500,7 @@ func TestFindingsPagination(t *testing.T) {
 	p := newP07Process(t, inst, inv, auth, newPriceSource(fixturePrices(t, "fx-model-p", 1)))
 	ctx := context.Background()
 	operator := domain.CommandIdentity{TenantID: "tenant_a", CommandID: "page_begin", ActorID: operatorActor, RequestDigest: application.DigestOf([]byte("page"))}
-	run, _, err := p.recovery.Begin(ctx, operator, "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 0, "pagination")
+	run, _, err := p.recovery.Begin(ctx, operator, opScope(operator), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 0, "pagination")
 	require.NoError(t, err)
 	const total = 1050
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -600,7 +610,7 @@ func TestRecovery(t *testing.T) {
 	g, err := p1.dispatch.Admit(ctx, admitCmd("rec_g", "m"), modelRequest(opG, atG, "rec_g", "proxy-1", 10_000))
 	require.NoError(t, err)
 	require.True(t, g.Allowed)
-	_, _, err = p1.dispatch.Observe(ctx, g.Dispatch.ID, "proxy-1", 1, domain.DispatchOutcomeUnknown, nil, "", time.Now())
+	_, _, err = p1.dispatch.Observe(ctx, application.Reader{}, g.Dispatch.ID, "proxy-1", 1, domain.DispatchOutcomeUnknown, nil, "", time.Now())
 	require.NoError(t, err, "G's send has an unknown outcome and stays present in the database")
 	opOther, _, err := p1.ops.Create(ctx, cmd("tenant_b", "rec_other", "body"), scopeB, domain.KindLocalCheck, subject, nil)
 	require.NoError(t, err)
@@ -637,15 +647,15 @@ func TestRecovery(t *testing.T) {
 
 	var run *domain.RecoveryRun
 	t.Run("begin closes admission, fences active identities and establishes the epoch in one commit", func(t *testing.T) {
-		_, _, err := p1.recovery.Begin(ctx, domain.CommandIdentity{TenantID: "tenant_a", CommandID: "rec_nope", ActorID: "user_a", RequestDigest: operator.RequestDigest}, "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "test")
+		_, _, err := p1.recovery.Begin(ctx, domain.CommandIdentity{TenantID: "tenant_a", CommandID: "rec_nope", ActorID: "user_a", RequestDigest: operator.RequestDigest}, opScope(domain.CommandIdentity{TenantID: "tenant_a", CommandID: "rec_nope", ActorID: "user_a", RequestDigest: operator.RequestDigest}), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "test")
 		require.ErrorIs(t, err, domain.ErrForbidden, "only an authorized operator begins a run")
 		var existing bool
-		run, existing, err = p1.recovery.Begin(ctx, operator, "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "PITR drill")
+		run, existing, err = p1.recovery.Begin(ctx, operator, opScope(operator), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "PITR drill")
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Equal(t, domain.RecoveryFenced, run.Phase)
 		require.Equal(t, uint64(1), run.RecoveryEpoch)
-		again, existing, err := p2.recovery.Begin(ctx, operator, "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "PITR drill")
+		again, existing, err := p2.recovery.Begin(ctx, operator, opScope(operator), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "PITR drill")
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, run.ID, again.ID)
@@ -814,9 +824,9 @@ func TestRecovery(t *testing.T) {
 		key := development.DispositionKey("intake", malformedID)
 		digest := publish(t, inv, key, development.DispositionAttestation{Class: "disposition", ObligationClass: "intake", ObligationID: malformedID, Decision: "retain_exposure", Issuer: issuer, SealedAt: time.Now().UTC().Format(time.RFC3339)})
 		opCmd := domain.CommandIdentity{TenantID: "tenant_a", CommandID: "dsp_malformed", ActorID: operatorActor, RequestDigest: application.DigestOf([]byte("m"))}
-		_, _, err = p1.recovery.Dispose(ctx, opCmd, application.DispositionRequest{Class: "intake", ObligationID: malformedID, Decision: domain.DisposeRetainExposure, EvidenceRef: key, EvidenceDigest: digest, RecoveryEpoch: run.RecoveryEpoch, Reason: "unreadable object"})
+		_, _, err = p1.recovery.Dispose(ctx, opCmd, opScope(opCmd), application.DispositionRequest{Class: "intake", ObligationID: malformedID, Decision: domain.DisposeRetainExposure, EvidenceRef: key, EvidenceDigest: digest, RecoveryEpoch: run.RecoveryEpoch, Reason: "unreadable object"})
 		require.ErrorIs(t, err, domain.ErrNotFound, "without the run there is nothing to bind the decision to")
-		d, _, err := p2.recovery.Dispose(ctx, opCmd, application.DispositionRequest{Class: "intake", ObligationID: malformedID, Decision: domain.DisposeRetainExposure, EvidenceRef: key, EvidenceDigest: digest, RecoveryEpoch: run.RecoveryEpoch, RunID: run.ID, Reason: "unreadable object"})
+		d, _, err := p2.recovery.Dispose(ctx, opCmd, opScope(opCmd), application.DispositionRequest{Class: "intake", ObligationID: malformedID, Decision: domain.DisposeRetainExposure, EvidenceRef: key, EvidenceDigest: digest, RecoveryEpoch: run.RecoveryEpoch, RunID: run.ID, Reason: "unreadable object"})
 		require.NoError(t, err)
 		require.Equal(t, domain.DisposeRetainExposure, d.Decision)
 		require.Equal(t, domain.FindingDisposed, findingOf("intake", malformedID).Status)
@@ -826,7 +836,7 @@ func TestRecovery(t *testing.T) {
 		f, err := p2.recovery.Reconcile(ctx, run.ID, findingOf("model-dispatch", dispatchA.ID).ID)
 		require.NoError(t, err)
 		require.Equal(t, domain.FindingUnresolved, f.Status, "no upstream record yet")
-		restored, err := p1.dispatch.Get(ctx, dispatchA.ID, "", "")
+		restored, err := p1.dispatch.Get(ctx, application.Reader{}, dispatchA.ID, "", "")
 		require.NoError(t, err)
 		require.Equal(t, domain.DispatchUnknown, restored.State)
 		require.Equal(t, dispatchA.CallID, restored.CallID)
@@ -849,7 +859,7 @@ func TestRecovery(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, domain.FindingResolved, f.Status)
 		require.Equal(t, "succeeded", f.Outcome)
-		observed, err := p2.dispatch.Get(ctx, dispatchA.ID, "", "")
+		observed, err := p2.dispatch.Get(ctx, application.Reader{}, dispatchA.ID, "", "")
 		require.NoError(t, err)
 		require.Equal(t, domain.DispatchObserved, observed.State)
 		kinds, total := entries(t, p1.pool, dispatchA.ID)
@@ -956,34 +966,34 @@ func TestRecovery(t *testing.T) {
 		opCmd := func(id string) domain.CommandIdentity {
 			return domain.CommandIdentity{TenantID: "tenant_a", CommandID: id, ActorID: operatorActor, RequestDigest: application.DigestOf([]byte(id))}
 		}
-		_, _, err = p1.recovery.Dispose(ctx, domain.CommandIdentity{TenantID: "tenant_a", CommandID: "dsp_user", ActorID: "user_a", RequestDigest: application.DigestOf([]byte("x"))}, req)
+		_, _, err = p1.recovery.Dispose(ctx, domain.CommandIdentity{TenantID: "tenant_a", CommandID: "dsp_user", ActorID: "user_a", RequestDigest: application.DigestOf([]byte("x"))}, opScope(domain.CommandIdentity{TenantID: "tenant_a", CommandID: "dsp_user", ActorID: "user_a", RequestDigest: application.DigestOf([]byte("x"))}), req)
 		require.ErrorIs(t, err, domain.ErrForbidden)
 		wrongEpoch := req
 		wrongEpoch.RecoveryEpoch = run.RecoveryEpoch + 1
-		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_epoch"), wrongEpoch)
+		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_epoch"), opScope(opCmd("dsp_epoch")), wrongEpoch)
 		require.ErrorIs(t, err, domain.ErrStaleExecution)
 		wrongDigest := req
 		wrongDigest.EvidenceDigest = application.DigestOf([]byte("forged"))
-		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_digest"), wrongDigest)
+		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_digest"), opScope(opCmd("dsp_digest")), wrongDigest)
 		require.ErrorIs(t, err, domain.ErrEvidenceInsufficient)
-		_, _, err = p1.recovery.Dispose(ctx, domain.CommandIdentity{TenantID: "tenant_b", CommandID: "dsp_tenant", ActorID: operatorActor, RequestDigest: application.DigestOf([]byte("x"))}, req)
+		_, _, err = p1.recovery.Dispose(ctx, domain.CommandIdentity{TenantID: "tenant_b", CommandID: "dsp_tenant", ActorID: operatorActor, RequestDigest: application.DigestOf([]byte("x"))}, opScope(domain.CommandIdentity{TenantID: "tenant_b", CommandID: "dsp_tenant", ActorID: operatorActor, RequestDigest: application.DigestOf([]byte("x"))}), req)
 		require.ErrorIs(t, err, domain.ErrNotFound, "another tenant's obligation is not visible")
 		wrongDecision := req
 		wrongDecision.Decision = domain.DisposeResolveSucceeded
-		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_decision"), wrongDecision)
+		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_decision"), opScope(opCmd("dsp_decision")), wrongDecision)
 		require.ErrorIs(t, err, domain.ErrInvalid, "no decision turns an unknown send into a success")
 
-		d, existing, err := p2.recovery.Dispose(ctx, opCmd("dsp_ok"), req)
+		d, existing, err := p2.recovery.Dispose(ctx, opCmd("dsp_ok"), opScope(opCmd("dsp_ok")), req)
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Equal(t, domain.DisposeRetainExposure, d.Decision)
-		same, existing, err := p1.recovery.Dispose(ctx, opCmd("dsp_ok"), req)
+		same, existing, err := p1.recovery.Dispose(ctx, opCmd("dsp_ok"), opScope(opCmd("dsp_ok")), req)
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, d.ID, same.ID)
-		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_twice"), req)
+		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_twice"), opScope(opCmd("dsp_twice")), req)
 		require.ErrorIs(t, err, domain.ErrIdempotencyConflict, "one disposition per obligation")
-		retained, err := p1.dispatch.Get(ctx, g.Dispatch.ID, "", "")
+		retained, err := p1.dispatch.Get(ctx, application.Reader{}, g.Dispatch.ID, "", "")
 		require.NoError(t, err)
 		require.Equal(t, domain.DispatchUnknown, retained.State, "the obligation keeps its identity and exposure")
 		require.Equal(t, domain.FindingDisposed, findingOf("model-dispatch", g.Dispatch.ID).Status)
@@ -1014,7 +1024,7 @@ func TestRecovery(t *testing.T) {
 		_, err = db.Exec(ctx, "DELETE FROM dispatches WHERE dispatch_id = $1", h.Dispatch.ID)
 		require.NoError(t, err)
 		second := domain.CommandIdentity{TenantID: "tenant_a", CommandID: "rec_begin_2", ActorID: operatorActor, RequestDigest: application.DigestOf([]byte("begin2"))}
-		run2, _, err := p2.recovery.Begin(ctx, second, "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "second drill")
+		run2, _, err := p2.recovery.Begin(ctx, second, opScope(second), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "second drill")
 		require.NoError(t, err)
 		require.Equal(t, run.RecoveryEpoch+1, run2.RecoveryEpoch, "every run establishes a new epoch")
 		for _, class := range application.ObligationClasses {
@@ -1042,7 +1052,7 @@ func TestRecovery(t *testing.T) {
 		require.Equal(t, uint64(1), unsettled)
 		_, _, err = p2.ops.Create(ctx, cmd("tenant_a", "rec_still_closed", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.ErrorIs(t, err, domain.ErrStaleExecution, "an unresolved outcome keeps the scope restricted")
-		restored, err := p1.dispatch.Get(ctx, h.Dispatch.ID, "", "")
+		restored, err := p1.dispatch.Get(ctx, application.Reader{}, h.Dispatch.ID, "", "")
 		require.NoError(t, err)
 		require.Equal(t, domain.DispatchUnknown, restored.State)
 		require.Equal(t, int64(10_000), restored.Reserved.Amount, "unknown cost is never settled as zero")

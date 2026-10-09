@@ -80,7 +80,7 @@ func lifecycleProfiles() []domain.Profile {
 		{
 			ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: 2 * time.Hour, StepID: "codegen", MultiStep: true,
 			Funding: &genFunding, QueuePool: "generation", ActiveWindow: time.Hour, Definitions: []string{"generation-v1:def-1", "generation-v1:def-2"}, SupportsControl: true,
-			MaxRepairs: 1, CodegenProfileID: "codegen-team-dev-v1", ValidatorProfileID: "validator-fixed-dev-v1", JobProfileID: "codegen-team-dev-v1",
+			MaxRepairs: 1, CodegenProfileID: "codegen-team-dev-v1", ValidatorProfileID: "validator-source-v1", JobProfileID: "codegen-team-dev-v1",
 		},
 	}
 }
@@ -188,11 +188,15 @@ func TestLifecycle(t *testing.T) {
 		require.NotNil(t, again.Preparation)
 		require.Equal(t, "brand_1", again.Preparation.BrandReferences[0].SourceID)
 		// The Workflow reads the prompt under the operation's relationship; a stranger transfer is no input.
-		_, cap, err := p2.artifacts.Read(ctx, "", promptTransfer.ID, prep.ID, "")
+		_, cap, err := p2.artifacts.Read(ctx, "tenant_a", "", promptTransfer.ID, prep.ID, "")
 		require.NoError(t, err)
 		require.Equal(t, "GET", cap.Method)
+		// P0.2 AC4: a reader acting for another tenant finds neither the
+		// artifact nor the operation.
+		_, _, err = p2.artifacts.Read(ctx, "tenant_b", "", promptTransfer.ID, prep.ID, "")
+		require.ErrorIs(t, err, domain.ErrNotFound)
 		stranger := finalizedArtifact(t, ctx, p1.artifacts, "tenant_a", "stranger", "prompt", "", []byte("other prompt"), deadline)
-		_, _, err = p2.artifacts.Read(ctx, "", stranger.ID, prep.ID, "")
+		_, _, err = p2.artifacts.Read(ctx, "tenant_a", "", stranger.ID, prep.ID, "")
 		require.ErrorIs(t, err, domain.ErrStaleExecution)
 	})
 
@@ -242,7 +246,7 @@ func TestLifecycle(t *testing.T) {
 		got, err := p2.preparations.GetAnswer(ctx, "tenant_a", prep.ID, "", qs.ID)
 		require.NoError(t, err)
 		require.Equal(t, answer.ID, got.ID)
-		_, _, err = p2.artifacts.Read(ctx, "", tr.ID, prep.ID, "")
+		_, _, err = p2.artifacts.Read(ctx, "tenant_a", "", tr.ID, prep.ID, "")
 		require.NoError(t, err, "an accepted answer is an input of the preparation")
 		view, err := p1.ops.Get(ctx, scopeA, prep.ID)
 		require.NoError(t, err)
