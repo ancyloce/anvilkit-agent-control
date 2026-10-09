@@ -1,5 +1,25 @@
 {{- include "anvilkit-agent-control.require" . -}}
 {{- if .Values.migration.enabled }}
+{{- if eq .Values.secrets.provider "csi" }}
+{{- $name := printf "%s-migration" (include "anvilkit-agent-control.fullname" .) }}
+{{- $hook := dict "helm.sh/hook" "pre-install,pre-upgrade" "helm.sh/hook-weight" "-5" "helm.sh/hook-delete-policy" "before-hook-creation" }}
+# P0.6: the migration Job's own identity and credential (a hook like the Job,
+# so both exist before it runs): a ServiceAccount whose OpenBao role reads
+# only the migrator DSN.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "anvilkit-agent-control.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+automountServiceAccountToken: false
+---
+{{ include "anvilkit-agent-control.secretProviderClass" (dict "root" . "name" $name "annotations" $hook "role" (default $name .Values.secrets.csi.migrationRole) "path" (required "secrets.csi.migrationPath is required under secrets.provider csi" .Values.secrets.csi.migrationPath) "keys" (list "migration-dsn")) }}
+---
+{{- end }}
 # The migration Job: the same image's anvilkit-migration applies the
 # service-owned migrations (internal/migrate/sql) with the migrator role
 # before the release's Pods roll. A failed Job stays for inspection until the
@@ -29,6 +49,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       restartPolicy: Never
+      {{- if eq .Values.secrets.provider "csi" }}
+      serviceAccountName: {{ include "anvilkit-agent-control.fullname" . }}-migration
+      {{- end }}
       automountServiceAccountToken: false
       enableServiceLinks: false
       securityContext:
@@ -41,13 +64,53 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           env:
+            {{- if eq .Values.secrets.provider "csi" }}
+            - name: ANVILKIT_MIGRATION_DSN_FILE
+              value: /var/run/secrets/anvilkit/csi/migration-dsn
+            {{- else }}
             - name: ANVILKIT_MIGRATION_DSN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.migration.secret.name }}
                   key: {{ .Values.migration.secret.key }}
+            {{- end }}
+            {{- if .Values.development.enabled }}
+            # DEVELOPMENT_ONLY: admits a DSN without sslmode=verify-full.
+            - name: ANVILKIT_MIGRATION_DEVELOPMENT
+              value: "true"
+            {{- end }}
           resources:
             {{- toYaml .Values.migration.resources | nindent 12 }}
+          {{- if or (eq .Values.secrets.provider "csi") .Values.trust.configMap }}
+          volumeMounts:
+            {{- if eq .Values.secrets.provider "csi" }}
+            - name: credentials
+              mountPath: /var/run/secrets/anvilkit/csi
+              readOnly: true
+            {{- end }}
+            {{- if .Values.trust.configMap }}
+            - name: trust
+              mountPath: /etc/anvilkit/trust
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if or (eq .Values.secrets.provider "csi") .Values.trust.configMap }}
+      volumes:
+        {{- if eq .Values.secrets.provider "csi" }}
+        - name: credentials
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "anvilkit-agent-control.fullname" . }}-migration
+        {{- end }}
+        {{- if .Values.trust.configMap }}
+        - name: trust
+          configMap:
+            name: {{ .Values.trust.configMap }}
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

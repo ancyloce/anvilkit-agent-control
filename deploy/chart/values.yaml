@@ -75,8 +75,42 @@ identity:
 development:
   enabled: false
 
+# Credential delivery (P0.6). kubernetes reads the existing Secrets named
+# below (database.secret, the S3 secrets, migration.secret): the development
+# foundation's path. csi mounts the credentials from OpenBao through the
+# Secrets Store CSI driver (provider openbao, Kubernetes auth with the Pod's
+# ServiceAccount token of audience csi.audience; the driver syncs no
+# Kubernetes Secret) read-only at /var/run/secrets/anvilkit/csi, and the
+# process reads each through its *_FILE variable. The service's KV v2 path
+# holds the keys database-url, inventory-access-key-id,
+# inventory-secret-access-key, artifacts-access-key-id and
+# artifacts-secret-access-key under the role csi.role; the migration Job has
+# its own ServiceAccount, role (csi.migrationRole) and path
+# (csi.migrationPath, key migration-dsn), so neither reads the other's
+# credential.
+secrets:
+  provider: kubernetes
+  csi:
+    address: ""
+    caCertPath: ""
+    audience: openbao
+    role: ""
+    path: ""
+    migrationRole: ""
+    migrationPath: ""
+
+# P0.6: the data plane's CA bundle: a ConfigMap (key ca.crt) in this
+# namespace, e.g. the anvilkit-trust map deploy/qualification/bootstrap.py
+# maintains. Mounted at /etc/anvilkit/trust in the service and the migration
+# Job (the DSNs' sslrootcert names /etc/anvilkit/trust/ca.crt) and added to
+# the process roots (SSL_CERT_DIR) for the object stores' HTTPS. Empty: the
+# image's roots only.
+trust:
+  configMap: ""
+
 # The application-role connection (ANVILKIT_CONTROL_DATABASE_URL): a secret,
-# read from an existing Secret that this chart never creates. Required.
+# read from an existing Secret that this chart never creates. Required under
+# secrets.provider kubernetes.
 database:
   secret:
     name: ""

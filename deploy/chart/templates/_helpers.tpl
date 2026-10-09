@@ -46,19 +46,29 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/* Required environment values, checked once for every template. */}}
 {{- define "anvilkit-agent-control.require" -}}
-{{- if not .Values.database.secret.name }}
+{{- $kube := eq .Values.secrets.provider "kubernetes" -}}
+{{- if not (has .Values.secrets.provider (list "kubernetes" "csi")) }}
+{{- fail "secrets.provider must be kubernetes or csi" }}
+{{- end }}
+{{- if and (not $kube) (or (not .Values.secrets.csi.address) (not .Values.secrets.csi.path)) }}
+{{- fail "secrets.csi.address and secrets.csi.path are required under secrets.provider csi (the OpenBao address and the service's KV v2 data path)" }}
+{{- end }}
+{{- if and (not $kube) .Values.migration.enabled (not .Values.secrets.csi.migrationPath) }}
+{{- fail "secrets.csi.migrationPath is required under secrets.provider csi while migration.enabled is true" }}
+{{- end }}
+{{- if and $kube (not .Values.database.secret.name) }}
 {{- fail "database.secret.name is required: an existing Secret holding the application-role URL (ANVILKIT_CONTROL_DATABASE_URL), never created by this chart" }}
 {{- end }}
 {{- if not .Values.temporal.address }}
 {{- fail "temporal.address is required: the Temporal frontend (ANVILKIT_CONTROL_TEMPORAL_ADDRESS)" }}
 {{- end }}
-{{- if or (not .Values.inventory.s3.endpoint) (not .Values.inventory.s3.bucket) (not .Values.inventory.s3.secret.name) }}
+{{- if or (not .Values.inventory.s3.endpoint) (not .Values.inventory.s3.bucket) (and $kube (not .Values.inventory.s3.secret.name)) }}
 {{- fail "inventory.s3.endpoint, inventory.s3.bucket and inventory.s3.secret.name are required: the shared obligation inventory every replica uses (ANVILKIT_CONTROL_INVENTORY_S3_*)" }}
 {{- end }}
-{{- if and .Values.artifacts.enabled (or (not .Values.artifacts.s3.endpoint) (not .Values.artifacts.s3.bucket) (not .Values.artifacts.s3.secret.name)) }}
+{{- if and .Values.artifacts.enabled (or (not .Values.artifacts.s3.endpoint) (not .Values.artifacts.s3.bucket) (and $kube (not .Values.artifacts.s3.secret.name))) }}
 {{- fail "artifacts.s3.endpoint, artifacts.s3.bucket and artifacts.s3.secret.name are required while artifacts.enabled is true (ANVILKIT_CONTROL_ARTIFACTS_S3_*)" }}
 {{- end }}
-{{- if and .Values.migration.enabled (not .Values.migration.secret.name) }}
+{{- if and $kube .Values.migration.enabled (not .Values.migration.secret.name) }}
 {{- fail "migration.secret.name is required while migration.enabled is true: an existing Secret holding the migrator-role URL" }}
 {{- end }}
 {{- if not (has .Values.identity.mode (list "mtls" "development")) }}
@@ -150,4 +160,46 @@ wired to the loader's keys. */}}
 {{- $_ = set $cfg "telemetry" (merge (dict "otlp_tls" $ot) (default (dict) $cfg.telemetry)) -}}
 {{- end -}}
 {{- toYaml $cfg -}}
+{{- end -}}
+
+{{/* P0.6: the CSI SecretProviderClass of one workload role: provider
+openbao, the role's Kubernetes-auth role, and one file per key of its KV v2
+path (world-readable inside the Pod's own volume: the containers run as
+non-root users). */}}
+{{- define "anvilkit-agent-control.secretProviderClass" -}}
+{{- $c := .root.Values.secrets.csi -}}
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "anvilkit-agent-control.labels" .root | nindent 4 }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  provider: openbao
+  parameters:
+    baoAddress: {{ required "secrets.csi.address is required under secrets.provider csi (https://<openbao>:8200)" $c.address | quote }}
+    {{- with $c.caCertPath }}
+    baoCACertPath: {{ . | quote }}
+    {{- end }}
+    roleName: {{ .role | quote }}
+    audience: {{ $c.audience | quote }}
+    objects: |
+      {{- range .keys }}
+      - objectName: {{ . | quote }}
+        secretPath: {{ $.path | quote }}
+        secretKey: {{ . | quote }}
+        filePermission: 0444
+      {{- end }}
+{{- end -}}
+
+{{- define "anvilkit-agent-control.csiKeys" -}}
+{{- $keys := list "database-url" "inventory-access-key-id" "inventory-secret-access-key" -}}
+{{- if .Values.artifacts.enabled -}}
+{{- $keys = concat $keys (list "artifacts-access-key-id" "artifacts-secret-access-key") -}}
+{{- end -}}
+{{- toJson $keys -}}
 {{- end -}}

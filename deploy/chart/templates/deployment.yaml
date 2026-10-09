@@ -61,6 +61,10 @@ spec:
               value: {{ printf "0.0.0.0:%d" (int .Values.health.port) | quote }}
             - name: ANVILKIT_CONTROL_TEMPORAL_ADDRESS
               value: {{ .Values.temporal.address | quote }}
+            {{- if .Values.trust.configMap }}
+            - name: SSL_CERT_DIR
+              value: /etc/ssl/certs:/etc/anvilkit/trust
+            {{- end }}
             {{- if .Values.telemetry.otlpEndpoint }}
             - name: ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT
               value: {{ .Values.telemetry.otlpEndpoint | quote }}
@@ -69,15 +73,27 @@ spec:
             - name: ANVILKIT_CONTROL_TELEMETRY_METRICS_LISTEN
               value: {{ printf "0.0.0.0:%d" (int .Values.telemetry.metricsPort) | quote }}
             {{- end }}
+            {{- $csi := eq .Values.secrets.provider "csi" }}
+            {{- if $csi }}
+            - name: ANVILKIT_CONTROL_DATABASE_URL_FILE
+              value: /var/run/secrets/anvilkit/csi/database-url
+            {{- else }}
             - name: ANVILKIT_CONTROL_DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.database.secret.name }}
                   key: {{ .Values.database.secret.key }}
+            {{- end }}
             - name: ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT
               value: {{ .Values.inventory.s3.endpoint | quote }}
             - name: ANVILKIT_CONTROL_INVENTORY_S3_BUCKET
               value: {{ .Values.inventory.s3.bucket | quote }}
+            {{- if $csi }}
+            - name: ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID_FILE
+              value: /var/run/secrets/anvilkit/csi/inventory-access-key-id
+            - name: ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY_FILE
+              value: /var/run/secrets/anvilkit/csi/inventory-secret-access-key
+            {{- else }}
             - name: ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -88,11 +104,18 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.inventory.s3.secret.name }}
                   key: {{ .Values.inventory.s3.secret.secretAccessKeyKey }}
+            {{- end }}
             {{- if .Values.artifacts.enabled }}
             - name: ANVILKIT_CONTROL_ARTIFACTS_S3_ENDPOINT
               value: {{ .Values.artifacts.s3.endpoint | quote }}
             - name: ANVILKIT_CONTROL_ARTIFACTS_S3_BUCKET
               value: {{ .Values.artifacts.s3.bucket | quote }}
+            {{- if $csi }}
+            - name: ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID_FILE
+              value: /var/run/secrets/anvilkit/csi/artifacts-access-key-id
+            - name: ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY_FILE
+              value: /var/run/secrets/anvilkit/csi/artifacts-secret-access-key
+            {{- else }}
             - name: ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -103,6 +126,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.artifacts.s3.secret.name }}
                   key: {{ .Values.artifacts.s3.secret.secretAccessKeyKey }}
+            {{- end }}
             {{- end }}
           ports:
             - name: grpc
@@ -164,6 +188,16 @@ spec:
               mountPath: /etc/anvilkit/otlp-ca
               readOnly: true
             {{- end }}
+            {{- if eq .Values.secrets.provider "csi" }}
+            - name: credentials
+              mountPath: /var/run/secrets/anvilkit/csi
+              readOnly: true
+            {{- end }}
+            {{- if .Values.trust.configMap }}
+            - name: trust
+              mountPath: /etc/anvilkit/trust
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -189,6 +223,20 @@ spec:
             items:
               - key: {{ .Values.telemetry.otlpTls.caSecret.key }}
                 path: ca.crt
+        {{- end }}
+        {{- if .Values.trust.configMap }}
+        - name: trust
+          configMap:
+            name: {{ .Values.trust.configMap }}
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- end }}
+        {{- if eq .Values.secrets.provider "csi" }}
+        - name: credentials
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "anvilkit-agent-control.fullname" . }}
         {{- end }}
       {{- with .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
