@@ -221,8 +221,10 @@ func verifySourceArtifact(ctx context.Context, r Repo, scope domain.Scope, subje
 // source operation of the caller's tenant must be of the same lineage and
 // must hold a revision the source authority named for its bytes (a
 // preview's saved revision, a registered candidate's revision) equal to
-// the requested one. The answer is the source artifact's handle, which the
-// release binds; a revision that was only a base of an edit is refused.
+// the requested one, and the lineage must have an allocated component
+// identity (P0.8; IDENTITY_UNALLOCATED otherwise). The answer is the source
+// artifact's handle, which the release binds; a revision that was only a
+// base of an edit is refused.
 func releaseSource(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) (string, error) {
 	src, err := scopedOperation(ctx, r, scope, subject.SourceOperationID)
 	if errors.Is(err, domain.ErrNotFound) {
@@ -245,6 +247,11 @@ func releaseSource(ctx context.Context, r Repo, scope domain.Scope, subject doma
 		return "", fmt.Errorf("%w: source operation %s holds no saved or registered revision", domain.ErrInvalid, src.ID)
 	case out.Revision != subject.SourceRevision:
 		return "", fmt.Errorf("%w: source operation %s holds revision %s, the release names %s", domain.ErrInvalid, src.ID, out.Revision, subject.SourceRevision)
+	}
+	if _, err := r.GetLineageIdentity(ctx, scope.TenantID, subject.SubjectDigest); errors.Is(err, domain.ErrNotFound) {
+		return "", fmt.Errorf("%w: %s: the lineage %s has no allocated component identity", domain.ErrInvalid, domain.IdentityUnallocated, subject.SubjectDigest)
+	} else if err != nil {
+		return "", err
 	}
 	return out.Source.Handle, nil
 }
@@ -345,6 +352,28 @@ func (s *Operations) Get(ctx context.Context, scope domain.Scope, operationID st
 		return err
 	})
 	return op, err
+}
+
+// LineageIdentity resolves the component identity allocated to the lineage
+// (the subject digest) of a preview build or a release (P0.8); nil for
+// another kind and for a lineage without one.
+func (s *Operations) LineageIdentity(ctx context.Context, op *domain.Operation) (*domain.ComponentIdentity, error) {
+	if op.Kind != domain.KindPreviewBuild && op.Kind != domain.KindRelease {
+		return nil, nil
+	}
+	var id *domain.ComponentIdentity
+	err := s.store.Read(ctx, func(r Repo) error {
+		l, err := r.GetLineageIdentity(ctx, op.TenantID, op.Subject.SubjectDigest)
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		id = &l.Identity
+		return nil
+	})
+	return id, err
 }
 
 // EventPage is one page of durable events with the projection's covered

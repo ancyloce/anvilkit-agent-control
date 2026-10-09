@@ -81,6 +81,36 @@ func effectContext(ctx context.Context, r Repo, operationID, attemptID, tenantID
 	return c, nil
 }
 
+// bindLineage binds the component identity a Generation's frozen brief
+// allocates to the Generation's lineage when the effect is its candidate
+// registration (P0.8), in the transaction that records the effect: the
+// first registration on the lineage records the identity, the same identity
+// again changes nothing, another identity is a denial the caller records
+// instead of the effect. The insert keeps a row another registration
+// committed first, so the row read back decides. A brief without an
+// identity (frozen before P0.8) binds nothing.
+func bindLineage(ctx context.Context, r Repo, c domain.EffectContext, req domain.EffectRequest) error {
+	op := c.Operation
+	if !op.BindsLineage(req) {
+		return nil
+	}
+	b, err := r.GetBrief(ctx, op.Subject.BriefID)
+	if err != nil || b.Component == nil {
+		return err
+	}
+	inserted, err := r.InsertLineageIdentity(ctx, &domain.LineageIdentity{
+		TenantID: op.TenantID, Lineage: op.Subject.SubjectDigest, Identity: *b.Component, OperationID: op.ID, BriefID: b.ID, RecordedAt: c.Now,
+	})
+	if err != nil || inserted {
+		return err
+	}
+	recorded, err := r.GetLineageIdentity(ctx, op.TenantID, op.Subject.SubjectDigest)
+	if err != nil {
+		return err
+	}
+	return domain.CheckLineageIdentity(recorded, *b.Component)
+}
+
 // Prepare is the guarded-mutation admission (DD-06 §3, the sequence of
 // DD-02 §4 for a business write).
 //
@@ -89,7 +119,9 @@ func effectContext(ctx context.Context, r Repo, operationID, attemptID, tenantID
 //     lease; the same command returns the existing record (no permit), a
 //     changed binding conflicts, a second command for the same
 //     (operation, kind, occurrence) conflicts, a refusal is recorded as
-//     denied, and the first eligible request records PREPARED.
+//     denied, a Generation's candidate registration binds its lineage
+//     identity (bindLineage), and the first eligible request records
+//     PREPARED.
 //  2. Outside the transaction the immutable obligation is written; an
 //     uncertain write is recorded and grants nothing.
 //  3. A second transaction reacquires the locks of the persisted effect's
@@ -141,7 +173,11 @@ func (s *Effects) Prepare(ctx context.Context, cmd domain.CommandIdentity, req d
 			} else if !errors.Is(err, domain.ErrNotFound) {
 				return err
 			}
-			if err := domain.CheckEffect(req, c); err != nil {
+			err = domain.CheckEffect(req, c)
+			if err == nil {
+				err = bindLineage(ctx, r, c, req)
+			}
+			if err != nil {
 				var denial *domain.Denial
 				if !errors.As(err, &denial) {
 					return err

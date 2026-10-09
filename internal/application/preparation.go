@@ -275,8 +275,9 @@ func (s *Preparations) RecordAnswerRelay(ctx context.Context, tenantID, answerID
 // RecordBrief freezes the brief of a preparation under a durable command:
 // the same command returns the original brief; a new brief supersedes the
 // operation's current one. The brief artifact must be a finalized brief
-// transfer bound to the operation.
-func (s *Preparations) RecordBrief(ctx context.Context, cmd domain.CommandIdentity, operationID string, binding domain.ArtifactBinding, requirements domain.Digest, sources []domain.SourceReference, brands, assets []domain.ContentDigest) (b *domain.Brief, existing bool, err error) {
+// transfer bound to the operation; the component identity the brief
+// allocates (P0.8), when given, is frozen with it.
+func (s *Preparations) RecordBrief(ctx context.Context, cmd domain.CommandIdentity, operationID string, binding domain.ArtifactBinding, requirements domain.Digest, sources []domain.SourceReference, brands, assets []domain.ContentDigest, component *domain.ComponentIdentity) (b *domain.Brief, existing bool, err error) {
 	err = s.store.Tx(ctx, func(r Repo) error {
 		op, err := r.LockOperation(ctx, operationID)
 		if err != nil {
@@ -308,7 +309,7 @@ func (s *Preparations) RecordBrief(ctx context.Context, cmd domain.CommandIdenti
 			return err
 		}
 		now := s.clock.Now()
-		fresh, err := domain.NewBrief(op, t, cmd, n+1, binding, requirements, sources, brands, assets, now)
+		fresh, err := domain.NewBrief(op, t, cmd, n+1, binding, requirements, sources, brands, assets, component, now)
 		if err != nil {
 			return err
 		}
@@ -332,7 +333,7 @@ func (s *Preparations) RecordBrief(ctx context.Context, cmd domain.CommandIdenti
 		return nil
 	})
 	if errors.Is(err, ErrDuplicateKey) {
-		return s.RecordBrief(ctx, cmd, operationID, binding, requirements, sources, brands, assets)
+		return s.RecordBrief(ctx, cmd, operationID, binding, requirements, sources, brands, assets, component)
 	}
 	return b, existing, err
 }

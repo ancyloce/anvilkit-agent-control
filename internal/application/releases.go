@@ -66,6 +66,16 @@ func (s *Releases) Record(ctx context.Context, cmd domain.CommandIdentity, opera
 			if cert, err = certificationOf(ctx, r, operationID); err != nil {
 				return err
 			}
+			// P0.8: the subject names the identity allocated to the lineage,
+			// whatever the certified source declared for itself.
+			if cert != nil {
+				switch l, err := r.GetLineageIdentity(ctx, op.TenantID, op.Subject.SubjectDigest); {
+				case err == nil:
+					cert.Allocated = &l.Identity
+				case !errors.Is(err, domain.ErrNotFound):
+					return err
+				}
+			}
 		}
 		effects, err := releaseEffects(ctx, r, rec.ReviewEffectID, rec.Npm.EffectID, rec.Browser.EffectID, rec.Activation.EffectID)
 		if err != nil {

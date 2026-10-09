@@ -286,27 +286,41 @@ func TestLifecycle(t *testing.T) {
 		tr := finalizedArtifact(t, ctx, p1.artifacts, "tenant_a", "brief1", "brief", prep.ID, body, clock.Now().Add(time.Hour))
 		binding := domain.ArtifactBinding{TransferID: tr.ID, Digest: tr.ActualDigest}
 		requirements := application.DigestOf([]byte("requirements"))
-		_, _, err := p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief", "b"), prep.ID, binding, requirements, nil, nil, nil)
+		identity := &domain.ComponentIdentity{ComponentID: "cmp_1", PuckType: "Hero", PackageName: "@acme/hero"}
+		_, _, err := p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief", "b"), prep.ID, binding, requirements, nil, nil, nil, identity)
 		require.ErrorIs(t, err, domain.ErrInvalid, "the intake's brand reference must be frozen with a digest")
 		brands := []domain.ContentDigest{{SourceID: "brand_1", Revision: 3, Digest: application.DigestOf([]byte("brand"))}}
+		// P0.8: the identity the brief allocates must satisfy the contract's rules.
+		for name, bad := range map[string]domain.ComponentIdentity{
+			"lowercase Puck type":   {ComponentID: "cmp_1", PuckType: "hero", PackageName: "@acme/hero"},
+			"component id with a /": {ComponentID: "cmp/1", PuckType: "Hero", PackageName: "@acme/hero"},
+			"no package name":       {ComponentID: "cmp_1", PuckType: "Hero"},
+		} {
+			_, _, err := p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief-bad-"+name, "b"), prep.ID, binding, requirements, nil, brands, nil, &bad)
+			require.ErrorIs(t, err, domain.ErrInvalid, name)
+		}
 		var err2 error
-		brief, _, err2 = p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief", "b"), prep.ID, binding, requirements, nil, brands, nil)
+		brief, _, err2 = p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief", "b"), prep.ID, binding, requirements, nil, brands, nil, identity)
 		require.NoError(t, err2)
-		again, existing, err := p2.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief", "b"), prep.ID, binding, requirements, nil, brands, nil)
+		require.Equal(t, identity, brief.Component)
+		again, existing, err := p2.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief", "b"), prep.ID, binding, requirements, nil, brands, nil, identity)
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, brief.ID, again.ID)
+		require.Equal(t, identity, again.Component, "the brief reads back with the identity it allocates")
 		genSubject := domain.Subject{ProfileID: "generation-v1", SubjectDigest: application.DigestOf([]byte("gen-subject")), BriefID: brief.ID}
 		_, _, err = p1.ops.Create(ctx, cmd("tenant_a", "gen_early", "body"), scopeA, domain.KindGeneration, genSubject, nil)
 		require.ErrorIs(t, err, domain.ErrStaleExecution, "the preparation has not succeeded")
 		// A second brief (a re-analysis before the preparation settles) supersedes the first.
 		body2 := append(append([]byte(nil), body...), '\n')
 		tr2 := finalizedArtifact(t, ctx, p1.artifacts, "tenant_a", "brief2", "brief", prep.ID, body2, clock.Now().Add(time.Hour))
-		brief2, _, err := p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief2", "b"), prep.ID, domain.ArtifactBinding{TransferID: tr2.ID, Digest: tr2.ActualDigest}, requirements, nil, brands, nil)
+		brief2, _, err := p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief2", "b"), prep.ID, domain.ArtifactBinding{TransferID: tr2.ID, Digest: tr2.ActualDigest}, requirements, nil, brands, nil, nil)
 		require.NoError(t, err)
 		superseded, err := p2.preparations.GetBrief(ctx, "tenant_a", brief.ID)
 		require.NoError(t, err)
 		require.Equal(t, domain.BriefSuperseded, superseded.State)
+		require.Equal(t, identity, superseded.Component)
+		require.Nil(t, brief2.Component, "a brief that allocates no identity stores none")
 		// Settle the preparation: the analysis attempt closes first, then the business outcome.
 		var attempts []string
 		rows, err := conn.Query(ctx, "SELECT attempt_id FROM attempts WHERE operation_id = $1", prep.ID)
@@ -331,7 +345,7 @@ func TestLifecycle(t *testing.T) {
 		require.Equal(t, domain.LifecycleSucceeded, settled.Lifecycle)
 		_, _, err = p1.ops.Create(ctx, cmd("tenant_a", "gen_stale", "body"), scopeA, domain.KindGeneration, genSubject, nil)
 		require.ErrorIs(t, err, domain.ErrStaleExecution, "a superseded brief starts no generation")
-		_, _, err = p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief3", "b"), prep.ID, domain.ArtifactBinding{TransferID: tr2.ID, Digest: tr2.ActualDigest}, requirements, nil, brands, nil)
+		_, _, err = p1.preparations.RecordBrief(ctx, cmd("tenant_a", prep.ID+":brief3", "b"), prep.ID, domain.ArtifactBinding{TransferID: tr2.ID, Digest: tr2.ActualDigest}, requirements, nil, brands, nil, nil)
 		require.ErrorIs(t, err, domain.ErrStaleExecution, "a settled preparation freezes nothing more")
 		brief = brief2
 	})

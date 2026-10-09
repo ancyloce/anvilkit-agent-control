@@ -129,6 +129,11 @@ type Repo interface {
 	LockRelease(ctx context.Context, operationID string) (*domain.Release, error)
 	InsertRelease(ctx context.Context, p *domain.Release) error
 	UpdateRelease(ctx context.Context, p *domain.Release, expected uint64) (bool, error)
+	// Lineage identities (P0.8): recorded once per (tenant, lineage);
+	// InsertLineageIdentity keeps an existing row and reports whether it
+	// inserted.
+	GetLineageIdentity(ctx context.Context, tenantID string, lineage domain.Digest) (*domain.LineageIdentity, error)
+	InsertLineageIdentity(ctx context.Context, l *domain.LineageIdentity) (bool, error)
 	LockTransfer(ctx context.Context, transferID string) (*domain.Transfer, error)
 	InsertTransfer(ctx context.Context, t *domain.Transfer) error
 	UpdateTransfer(ctx context.Context, t *domain.Transfer) error
