@@ -25,8 +25,17 @@ development:
   enabled: true
 grpc:
   listen: 127.0.0.1:9101
+  # Three bounded pools (P1.4): control (commands, queries, recovery;
+  # command_reserve slots of it only SubmitCommand may take), execution
+  # (attempts, admission, effects, artifacts) and streams (event streams,
+  # at most stream_per_tenant per tenant). The health service takes no
+  # slot. A unary RPC without a caller deadline is bounded by default_deadline.
   control_capacity: 32
   execution_capacity: 64
+  stream_capacity: 256
+  stream_per_tenant: 32
+  command_reserve: 4
+  default_deadline: 30s
   shutdown_timeout: 20s
   # identity: the listener's workload identity (P0.1). mtls serves TLS 1.3
   # with required, verified client certificates and authorizes every RPC by
@@ -43,11 +52,18 @@ grpc:
 # business endpoint (ANVILKIT_CONTROL_HEALTH_LISTEN).
 health:
   listen: 127.0.0.1:9113
+  # Readiness pings the database every check_interval (bounded by
+  # check_timeout) and checks the schema version at start (P1.4).
+  check_interval: 5s
+  check_timeout: 2s
 # database: the app-role pool; max_conns is the exact per-replica bound the
 # deployment lock budgets (the URL is a secret from the environment or the
 # mounted file database.url_file names).
 database:
   max_conns: 8
+  connect_timeout: 5s
+  statement_timeout: 30s
+  idle_in_transaction_timeout: 30s
 # inventory: the external-obligation inventory (DD-02 §5). backend is
 # filesystem (DEVELOPMENT_ONLY; inventory.dir comes from
 # ANVILKIT_CONTROL_INVENTORY_DIR) or s3 (an S3-compatible backend through the
@@ -69,6 +85,9 @@ inventory:
 artifacts:
   backend: s3
   max_object_bytes: 67108864
+  # Finalizations holding object bytes at once (archive checks); every other
+  # class is verified as a stream (P1.5).
+  finalize_concurrency: 2
   max_window: 24h
   capability_ttl: 15m
   s3:
@@ -88,6 +107,9 @@ temporal:
     mode: development
 relay:
   interval: 500ms
+  # One tracked Update waits at most this long; an accepted Update still
+  # running is settled by a later tick under the same id (P1.4).
+  update_timeout: 5s
 profiles:
   local_check_deadline: 15m
   # generation: the validator profile of a generation's certification (P0.8):
@@ -128,6 +150,13 @@ model_proxy:
     mode: development
 dispatch:
   authority_freshness: 30s
+  # Unresolved dispatches (permission consumed or uncertain) admitted longer
+  # ago than reconcile_age are asked about at their senders' original
+  # identities every reconcile_interval, outside any recovery run (P1.5).
+  # At the same interval the stored settlement intent of an operation kept
+  # reconciling is re-applied once its last obligation resolved (P1.6).
+  reconcile_interval: 30s
+  reconcile_age: 10m
   # development: DEVELOPMENT_ONLY prices, route authorizations and trusted
   # not-sent issuers for the admission chain (delivery.md P06). With
   # enabled: false every paid route is denied; real prices/caps (ENV-06) and
