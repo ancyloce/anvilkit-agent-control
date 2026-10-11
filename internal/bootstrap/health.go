@@ -3,15 +3,19 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/config"
+	"github.com/ancyloce/anvilkit-agent-control/internal/migrate"
 	grpctransport "github.com/ancyloce/anvilkit-agent-control/internal/transport/grpc"
 )
 
@@ -26,21 +30,114 @@ type health struct {
 	listen   string
 	ready    func() bool
 	stopping atomic.Bool
+	// P1.4 (CTL-INF-05): readiness also needs the database (pinged every
+	// interval) and a schema at the binary's version (checked at start);
+	// liveness (/healthz) stays the process alone.
+	ping         func(context.Context) error
+	interval     time.Duration
+	timeout      time.Duration
+	schema       func(context.Context) error
+	mu           sync.Mutex
+	reasons      map[string]string
+	cancelChecks context.CancelFunc
 }
 
-func newHealth(cfg config.Config, grpcServer *grpctransport.Server) *health {
-	h := &health{listen: cfg.Health.Listen, ready: grpcServer.Ready}
+// pinger is what readiness pings (the store's pool).
+type pinger interface{ Ping(context.Context) error }
+
+func newHealth(cfg config.Config, grpcServer *grpctransport.Server, pool *pgxpool.Pool, log *slog.Logger) *health {
+	h := &health{listen: cfg.Health.Listen, ready: grpcServer.Ready, ping: pool.Ping, interval: cfg.Health.CheckInterval, timeout: cfg.Health.CheckTimeout, reasons: map[string]string{}}
+	h.schema = func(ctx context.Context) error { return checkSchema(ctx, pool) }
+	h.install(log)
+	return h
+}
+
+func (h *health) install(log *slog.Logger) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if h.stopping.Load() || !h.ready() {
+		if reason := h.notReady(); reason != "" {
 			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(reason))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	})
 	h.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	return h
+	_ = log
+}
+
+// notReady names the first reason readiness is withheld, or "".
+func (h *health) notReady() string {
+	if h.stopping.Load() {
+		return "stopping"
+	}
+	if h.ready != nil && !h.ready() {
+		return "listener not serving"
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, k := range []string{"schema", "database"} {
+		if r := h.reasons[k]; r != "" {
+			return k + ": " + r
+		}
+	}
+	return ""
+}
+
+func (h *health) setReason(key, reason string) {
+	h.mu.Lock()
+	h.reasons[key] = reason
+	h.mu.Unlock()
+}
+
+// checks runs the start-time schema check and the periodic database ping
+// until ctx ends; a failed ping withdraws readiness, the next success
+// restores it.
+func (h *health) checks(ctx context.Context, log *slog.Logger) {
+	if h.schema != nil {
+		if err := h.schema(ctx); err != nil {
+			h.setReason("schema", err.Error())
+			log.Error("schema check failed; the replica stays not ready", "error", err)
+		}
+	}
+	if h.ping == nil || h.interval <= 0 {
+		return
+	}
+	t := time.NewTicker(h.interval)
+	defer t.Stop()
+	for {
+		pctx, cancel := context.WithTimeout(ctx, h.timeout)
+		err := h.ping(pctx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			h.setReason("database", err.Error())
+			log.Warn("database ping failed; readiness withdrawn", "error", err)
+		} else if err == nil {
+			h.setReason("database", "")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// checkSchema compares the applied migration version with the binary's.
+func checkSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	expected, err := migrate.ExpectedVersion()
+	if err != nil {
+		return err
+	}
+	var applied int64
+	if err := pool.QueryRow(ctx, "SELECT coalesce(max(version_id), 0) FROM goose_db_version WHERE is_applied").Scan(&applied); err != nil {
+		return fmt.Errorf("schema version unreadable: %w", err)
+	}
+	if applied != expected {
+		return fmt.Errorf("schema at version %d, the binary expects %d", applied, expected)
+	}
+	return nil
 }
 
 // register binds the listener first and shuts it down last (Fx runs stop
@@ -52,6 +149,9 @@ func (h *health) register(lc fx.Lifecycle, log *slog.Logger) {
 			if err != nil {
 				return err
 			}
+			checks, cancel := context.WithCancel(context.Background())
+			h.cancelChecks = cancel
+			go h.checks(checks, log)
 			go func() {
 				if err := h.srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					log.Error("health listener stopped", "error", err)
@@ -60,7 +160,12 @@ func (h *health) register(lc fx.Lifecycle, log *slog.Logger) {
 			log.Info("health listener up", "listen", l.Addr().String())
 			return nil
 		},
-		OnStop: func(ctx context.Context) error { return h.srv.Shutdown(ctx) },
+		OnStop: func(ctx context.Context) error {
+			if h.cancelChecks != nil {
+				h.cancelChecks()
+			}
+			return h.srv.Shutdown(ctx)
+		},
 	})
 }
 

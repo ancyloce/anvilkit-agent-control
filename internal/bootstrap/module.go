@@ -120,7 +120,7 @@ func Module() fx.Option {
 			newInventory,
 			newArtifactStore,
 			func(cfg config.Config, store application.Store, objects application.ArtifactStore, clock domain.Clock, log *slog.Logger) *application.Artifacts {
-				return application.NewArtifacts(store, objects, application.ArtifactLimits{MaxObjectBytes: cfg.Artifacts.MaxObjectBytes, MaxWindow: cfg.Artifacts.MaxWindow, CapabilityTTL: cfg.Artifacts.CapabilityTTL}, clock, log)
+				return application.NewArtifacts(store, objects, application.ArtifactLimits{MaxObjectBytes: cfg.Artifacts.MaxObjectBytes, MaxWindow: cfg.Artifacts.MaxWindow, CapabilityTTL: cfg.Artifacts.CapabilityTTL, FinalizeConcurrency: cfg.Artifacts.FinalizeConcurrency}, clock, log)
 			},
 			func() application.ManifestValidator { return jobs.Contract{} },
 			func(cfg config.Config, log *slog.Logger) (client.Client, error) {
@@ -188,8 +188,8 @@ func Module() fx.Option {
 			func(cfg config.Config, inv application.Inventory) application.DispositionEvidence {
 				return development.NewDispositionEvidence(inv, cfg.Dispatch.Development.NotSentIssuers)
 			},
-			func(store application.Store, inv application.Inventory, queries application.OutcomeQuery, clock domain.Clock, log *slog.Logger) *application.Effects {
-				return application.NewEffects(store, inv, queries, clock, log)
+			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, clock domain.Clock, log *slog.Logger) *application.Effects {
+				return application.NewEffects(store, inv, queries, clock, log).WithProfiles(Profiles(cfg))
 			},
 			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, dispatch *application.Dispatch, effects *application.Effects, exec *application.Execution, ev application.NotSentEvidence, de application.DispositionEvidence, clock domain.Clock, log *slog.Logger) *application.Recovery {
 				return application.NewRecovery(store, inv, queries, dispatch, effects, exec, Profiles(cfg), ev, de, clock, log, cfg.Recovery.EnumerationPage)
@@ -200,8 +200,13 @@ func Module() fx.Option {
 			func(cfg config.Config, store application.Store, inv application.Inventory, prices application.PriceBook, auth application.Authority, ev application.NotSentEvidence, clock domain.Clock, log *slog.Logger) *application.Dispatch {
 				return application.NewDispatch(store, inv, prices, auth, ev, clock, log).WithProfiles(Profiles(cfg))
 			},
-			func(cfg config.Config, store application.Store, wf application.WorkflowRelay, ops *application.Operations, recovery *application.Recovery, preparations *application.Preparations, generations *application.Generations, clock domain.Clock, log *slog.Logger) *application.Relay {
-				return application.NewRelay(store, wf, ops, recovery, preparations, generations, clock, log, cfg.Relay.Interval)
+			func(cfg config.Config, store application.Store, wf application.WorkflowRelay, ops *application.Operations, recovery *application.Recovery, preparations *application.Preparations, generations *application.Generations, dispatch *application.Dispatch, exec *application.Execution, queries application.OutcomeQuery, clock domain.Clock, log *slog.Logger) *application.Relay {
+				// P1.6: stored settlement intents are re-applied at the
+				// dispatch reconciliation interval once the last obligation
+				// of a reconciling operation resolved.
+				return application.NewRelay(store, wf, ops, recovery, preparations, generations, clock, log, cfg.Relay.Interval).WithUpdateTimeout(cfg.Relay.UpdateTimeout).
+					WithDispatchReconciler(dispatch, queries, cfg.Dispatch.ReconcileInterval, cfg.Dispatch.ReconcileAge, 100).
+					WithSettlementReconciler(exec, cfg.Dispatch.ReconcileInterval, 100)
 			},
 			func(store application.Store, clock domain.Clock, log *slog.Logger) *application.GrantPolicies {
 				return application.NewGrantPolicies(store, clock, log)
@@ -214,7 +219,7 @@ func Module() fx.Option {
 			},
 			newTracer,
 			newMetrics,
-			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, _ trace.Tracer, reg *prometheus.Registry) (*grpctransport.Server, error) {
+			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, _ trace.Tracer, reg *prometheus.Registry, notifier *postgres.Notifier) (*grpctransport.Server, error) {
 				id, reloader, err := serverIdentity(cfg, log)
 				if err != nil {
 					return nil, err
@@ -222,7 +227,30 @@ func Module() fx.Option {
 				if reloader != nil {
 					lc.Append(fx.Hook{OnStart: func(context.Context) error { reloader.Start(); return nil }, OnStop: func(context.Context) error { reloader.Stop(); return nil }})
 				}
-				return grpctransport.NewServerWithIdentity(cfg.GRPC.Listen, id, cfg.GRPC.ControlCapacity, cfg.GRPC.ExecutionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases, grpctransport.Observability(reg)...)
+				return grpctransport.NewServerWithIdentity(cfg.GRPC.Listen, id,
+					grpctransport.Capacity{Control: cfg.GRPC.ControlCapacity, Execution: cfg.GRPC.ExecutionCapacity, Streams: cfg.GRPC.StreamCapacity, StreamPerTenant: cfg.GRPC.StreamPerTenant, CommandReserve: cfg.GRPC.CommandReserve},
+					grpctransport.Dependencies{Ops: ops, Exec: exec, Dispatch: dispatch, Effects: effects, Recovery: recovery, Artifacts: artifacts, Preparations: preparations, Generations: generations, Grants: grants, Previews: previews, Releases: releases,
+						Notifier: notifier, DefaultDeadline: cfg.GRPC.DefaultDeadline, MaxConnectionAge: cfg.GRPC.Identity.MaxConnectionAge},
+					grpctransport.Observability(reg)...)
+			},
+			// The event notifier (P1.4): one LISTEN connection per replica wakes
+			// the event streams at commit; it runs for the process lifetime.
+			func(lc fx.Lifecycle, pool *pgxpool.Pool, log *slog.Logger) *postgres.Notifier {
+				n := postgres.NewNotifier(pool, log)
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				lc.Append(fx.Hook{
+					OnStart: func(context.Context) error { go func() { n.Run(ctx); close(done) }(); return nil },
+					OnStop: func(stop context.Context) error {
+						cancel()
+						select {
+						case <-done:
+						case <-stop.Done():
+						}
+						return nil
+					},
+				})
+				return n
 			},
 			newHealth,
 		),
@@ -301,6 +329,20 @@ func newPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	poolCfg.MaxConns = cfg.Database.MaxConns
+	// Bounds of every connection (P1.4): connect, statement and
+	// idle-in-transaction; no transaction outlives them.
+	if cfg.Database.ConnectTimeout > 0 {
+		poolCfg.ConnConfig.ConnectTimeout = cfg.Database.ConnectTimeout
+	}
+	if poolCfg.ConnConfig.RuntimeParams == nil {
+		poolCfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	if cfg.Database.StatementTimeout > 0 {
+		poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprint(cfg.Database.StatementTimeout.Milliseconds())
+	}
+	if cfg.Database.IdleInTransactionTimeout > 0 {
+		poolCfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = fmt.Sprint(cfg.Database.IdleInTransactionTimeout.Milliseconds())
+	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		return nil, err
