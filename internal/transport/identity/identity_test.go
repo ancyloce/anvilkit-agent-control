@@ -339,7 +339,10 @@ func TestHTTPTransportFollowsRotation(t *testing.T) {
 			if err != nil {
 				return
 			}
-			go func() { _, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")); c.Close() }()
+			go func() {
+				_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+				c.Close()
+			}()
 		}
 	}()
 	t.Cleanup(func() { ln.Close() })
