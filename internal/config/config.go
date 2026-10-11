@@ -36,10 +36,19 @@ const (
 
 // GRPC is the internal listener and its reserved capacity pools (DD-02 §2).
 type GRPC struct {
-	Listen            string        `koanf:"listen"`
-	ControlCapacity   int           `koanf:"control_capacity"`
-	ExecutionCapacity int           `koanf:"execution_capacity"`
-	ShutdownTimeout   time.Duration `koanf:"shutdown_timeout"`
+	Listen            string `koanf:"listen"`
+	ControlCapacity   int    `koanf:"control_capacity"`
+	ExecutionCapacity int    `koanf:"execution_capacity"`
+	// StreamCapacity bounds the long-lived event streams of a replica and
+	// StreamPerTenant the streams one tenant may hold (P1.4): streams never
+	// take a slot of the control or execution pools.
+	StreamCapacity  int `koanf:"stream_capacity"`
+	StreamPerTenant int `koanf:"stream_per_tenant"`
+	// CommandReserve is the number of control slots only SubmitCommand may take.
+	CommandReserve int `koanf:"command_reserve"`
+	// DefaultDeadline bounds a unary RPC whose caller set no deadline.
+	DefaultDeadline time.Duration `koanf:"default_deadline"`
+	ShutdownTimeout time.Duration `koanf:"shutdown_timeout"`
 	// Identity is the listener's workload identity (P0.1): mtls serves TLS
 	// 1.3 with required, verified client certificates and authorizes every
 	// RPC by the peer's SPIFFE URI SAN; development is plaintext and
@@ -90,6 +99,11 @@ type Development struct {
 // business endpoint; inside a Pod it binds the Pod IP for the kubelet.
 type Health struct {
 	Listen string `koanf:"listen"`
+	// CheckInterval and CheckTimeout drive the readiness ping of the
+	// database (P1.4): readiness drops when a ping fails and returns with
+	// the next successful one; liveness stays process-only.
+	CheckInterval time.Duration `koanf:"check_interval"`
+	CheckTimeout  time.Duration `koanf:"check_timeout"`
 }
 
 // Database holds the app-role connection: URL (env-only) or URLFile, a
@@ -100,6 +114,10 @@ type Database struct {
 	URL      string `koanf:"url"`
 	URLFile  string `koanf:"url_file"`
 	MaxConns int32  `koanf:"max_conns"`
+	// Connection, statement and idle-in-transaction bounds of the pool (P1.4).
+	ConnectTimeout           time.Duration `koanf:"connect_timeout"`
+	StatementTimeout         time.Duration `koanf:"statement_timeout"`
+	IdleInTransactionTimeout time.Duration `koanf:"idle_in_transaction_timeout"`
 }
 
 // Inventory selects the obligation inventory backend (DD-02 §5): the
@@ -147,7 +165,10 @@ type Artifacts struct {
 	MaxObjectBytes int64         `koanf:"max_object_bytes"`
 	MaxWindow      time.Duration `koanf:"max_window"`
 	CapabilityTTL  time.Duration `koanf:"capability_ttl"`
-	S3             InventoryS3   `koanf:"s3"`
+	// FinalizeConcurrency bounds the finalizations that hold object bytes
+	// (archive checks) at once (P1.5): sized to the memory limit.
+	FinalizeConcurrency int         `koanf:"finalize_concurrency"`
+	S3                  InventoryS3 `koanf:"s3"`
 }
 
 const (
@@ -164,6 +185,10 @@ type Temporal struct {
 
 type Relay struct {
 	Interval time.Duration `koanf:"interval"`
+	// UpdateTimeout bounds one tracked Update call of the answer and command
+	// relays (P1.4): an accepted Update still running at the bound stays sent
+	// and is settled by a later tick under the same update id.
+	UpdateTimeout time.Duration `koanf:"update_timeout"`
 }
 
 // ModelProxy is the Model Proxy placement of the original-identity query of
@@ -264,6 +289,12 @@ type MoneyValue struct {
 type Dispatch struct {
 	AuthorityFreshness time.Duration       `koanf:"authority_freshness"`
 	Development        DispatchDevelopment `koanf:"development"`
+	// ReconcileInterval and ReconcileAge drive the original-identity
+	// reconciliation of AUTHORIZED and UNKNOWN dispatches outside recovery
+	// runs (P1.5, CTL-APP-05): a dispatch admitted longer ago than the age
+	// is asked about every interval until its outcome is known.
+	ReconcileInterval time.Duration `koanf:"reconcile_interval"`
+	ReconcileAge      time.Duration `koanf:"reconcile_age"`
 }
 
 // DispatchDevelopment is the DEVELOPMENT_ONLY source of prices, route
@@ -340,12 +371,21 @@ var defaults = map[string]any{
 	"grpc.listen":                           "127.0.0.1:9101",
 	"grpc.control_capacity":                 32,
 	"grpc.execution_capacity":               64,
+	"grpc.stream_capacity":                  256,
+	"grpc.stream_per_tenant":                32,
+	"grpc.command_reserve":                  4,
+	"grpc.default_deadline":                 "30s",
 	"grpc.shutdown_timeout":                 "20s",
 	"grpc.identity.mode":                    "mtls",
 	"grpc.identity.max_connection_age":      "1h",
 	"grpc.identity.reload_interval":         "5s",
 	"development.enabled":                   false,
 	"health.listen":                         "127.0.0.1:9113",
+	"health.check_interval":                 "5s",
+	"health.check_timeout":                  "2s",
+	"database.connect_timeout":              "5s",
+	"database.statement_timeout":            "30s",
+	"database.idle_in_transaction_timeout":  "30s",
 	"temporal.tls.mode":                     "tls",
 	"telemetry.otlp_tls.mode":               "tls",
 	"database.max_conns":                    8,
@@ -353,6 +393,7 @@ var defaults = map[string]any{
 	"temporal.namespace":                    "anvilkit",
 	"temporal.task_queue":                   "anvilkit-workflow",
 	"relay.interval":                        "500ms",
+	"relay.update_timeout":                  "5s",
 	"profiles.local_check_deadline":         "15m",
 	"profiles.preparation.deadline":         "360h",
 	"profiles.preparation.max_rounds":       2,
@@ -371,6 +412,9 @@ var defaults = map[string]any{
 	"profiles.release.deadline":             "720h",
 	"profiles.release.attempt_window":       "1h",
 	"dispatch.authority_freshness":          "30s",
+	"dispatch.reconcile_interval":           "30s",
+	"dispatch.reconcile_age":                "10m",
+	"artifacts.finalize_concurrency":        2,
 	"dispatch.development.enabled":          false,
 	"inventory.backend":                     InventoryFilesystem,
 	"inventory.s3.path_style":               true,
@@ -613,6 +657,41 @@ func (c Config) validate() error {
 	}
 	if c.GRPC.ShutdownTimeout < time.Second || c.GRPC.ShutdownTimeout > 5*time.Minute {
 		errs = append(errs, fmt.Errorf("grpc.shutdown_timeout %s outside [1s, 5m]", c.GRPC.ShutdownTimeout))
+	}
+	if c.GRPC.StreamCapacity < 1 || c.GRPC.StreamCapacity > 65536 {
+		errs = append(errs, fmt.Errorf("grpc.stream_capacity %d outside [1, 65536]", c.GRPC.StreamCapacity))
+	}
+	if c.GRPC.StreamPerTenant < 1 || c.GRPC.StreamPerTenant > c.GRPC.StreamCapacity {
+		errs = append(errs, fmt.Errorf("grpc.stream_per_tenant %d outside [1, grpc.stream_capacity]", c.GRPC.StreamPerTenant))
+	}
+	if c.GRPC.CommandReserve < 0 || c.GRPC.CommandReserve >= c.GRPC.ControlCapacity {
+		errs = append(errs, fmt.Errorf("grpc.command_reserve %d outside [0, grpc.control_capacity)", c.GRPC.CommandReserve))
+	}
+	if c.GRPC.DefaultDeadline < time.Second || c.GRPC.DefaultDeadline > 10*time.Minute {
+		errs = append(errs, fmt.Errorf("grpc.default_deadline %s outside [1s, 10m]", c.GRPC.DefaultDeadline))
+	}
+	if c.Health.CheckInterval < time.Second || c.Health.CheckInterval > time.Minute {
+		errs = append(errs, fmt.Errorf("health.check_interval %s outside [1s, 1m]", c.Health.CheckInterval))
+	}
+	if c.Health.CheckTimeout < 100*time.Millisecond || c.Health.CheckTimeout > c.Health.CheckInterval {
+		errs = append(errs, fmt.Errorf("health.check_timeout %s outside [100ms, health.check_interval]", c.Health.CheckTimeout))
+	}
+	for name, d := range map[string]time.Duration{"database.connect_timeout": c.Database.ConnectTimeout, "database.statement_timeout": c.Database.StatementTimeout, "database.idle_in_transaction_timeout": c.Database.IdleInTransactionTimeout} {
+		if d < time.Second || d > 10*time.Minute {
+			errs = append(errs, fmt.Errorf("%s %s outside [1s, 10m]", name, d))
+		}
+	}
+	if c.Dispatch.ReconcileInterval < time.Second || c.Dispatch.ReconcileInterval > time.Hour {
+		errs = append(errs, fmt.Errorf("dispatch.reconcile_interval %s outside [1s, 1h]", c.Dispatch.ReconcileInterval))
+	}
+	if c.Dispatch.ReconcileAge < time.Minute || c.Dispatch.ReconcileAge > 24*time.Hour {
+		errs = append(errs, fmt.Errorf("dispatch.reconcile_age %s outside [1m, 24h]", c.Dispatch.ReconcileAge))
+	}
+	if c.Artifacts.FinalizeConcurrency < 1 || c.Artifacts.FinalizeConcurrency > 64 {
+		errs = append(errs, fmt.Errorf("artifacts.finalize_concurrency %d outside [1, 64]", c.Artifacts.FinalizeConcurrency))
+	}
+	if c.Relay.UpdateTimeout < time.Second || c.Relay.UpdateTimeout > time.Minute {
+		errs = append(errs, fmt.Errorf("relay.update_timeout %s outside [1s, 1m]", c.Relay.UpdateTimeout))
 	}
 	if c.Relay.Interval < 100*time.Millisecond || c.Relay.Interval > time.Minute {
 		errs = append(errs, fmt.Errorf("relay.interval %s outside [100ms, 1m]", c.Relay.Interval))
