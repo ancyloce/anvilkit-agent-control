@@ -16,11 +16,17 @@ type operationServer struct {
 	controlv1.UnimplementedOperationServiceServer
 	ops          *application.Operations
 	preparations *application.Preparations
+	// streams bounds the open event streams per tenant (P1.4).
+	streams *tenantStreams
+	// notifier wakes a stream when an event of its operation commits on any
+	// replica; the poll below is the fallback.
+	notifier application.EventNotifier
 }
 
-// streamPoll bounds how long a stream waits before re-reading events; it
-// is a transport detail, not a business clock.
-const streamPoll = 250 * time.Millisecond
+// streamPoll bounds how long a stream waits before re-reading events when
+// no notification arrives (P1.4: the notifier wakes it earlier); it is a
+// transport detail, not a business clock.
+const streamPoll = 2 * time.Second
 
 func commandIdentity(c *controlv1.CommandIdentity) (domain.CommandIdentity, error) {
 	d, err := domain.ParseDigest(c.GetRequestDigest())
@@ -276,6 +282,19 @@ func (s *operationServer) StreamOperationEvents(req *controlv1.StreamOperationEv
 	if err != nil {
 		return toStatus(err)
 	}
+	if s.streams != nil {
+		release, err := s.streams.acquire(req.GetScope().GetTenantId())
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	var wake <-chan struct{}
+	if s.notifier != nil {
+		var cancel func()
+		wake, cancel = s.notifier.Subscribe(req.GetOperationId())
+		defer cancel()
+	}
 	for {
 		page, err := s.ops.ListEvents(ctx, scope(ctx, req.GetScope()), req.GetOperationId(), after, 200)
 		if err != nil {
@@ -293,10 +312,14 @@ func (s *operationServer) StreamOperationEvents(req *controlv1.StreamOperationEv
 		if page.Terminal && after >= page.CoveredEventSeq {
 			return nil
 		}
+		poll := time.NewTimer(streamPoll)
 		select {
 		case <-ctx.Done():
+			poll.Stop()
 			return toStatus(ctx.Err())
-		case <-time.After(streamPoll):
+		case <-wake:
+			poll.Stop()
+		case <-poll.C:
 		}
 	}
 }

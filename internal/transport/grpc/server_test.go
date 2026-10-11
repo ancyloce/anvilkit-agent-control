@@ -329,7 +329,7 @@ func TestPolicyCoversEveryRegisteredMethod(t *testing.T) {
 	r, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
 	require.NoError(t, err)
 	build := func(p identity.Policy) error {
-		_, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: "anvilkit.local", Policy: p}, 4, 4, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		_, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: "anvilkit.local", Policy: p}, grpctransport.Capacity{Control: 4, Execution: 4}, grpctransport.Dependencies{})
 		return err
 	}
 	require.NoError(t, build(grpctransport.Policy()), "the reviewed policy covers every registered method")
@@ -359,7 +359,7 @@ func TestWorkloadAuthorizationBeforeHandlers(t *testing.T) {
 	cert, key, caFile := identitytest.Files(srvDir)
 	r, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
 	require.NoError(t, err)
-	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: td, Policy: grpctransport.Policy()}, 4, 4, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: td, Policy: grpctransport.Policy()}, grpctransport.Capacity{Control: 4, Execution: 4}, grpctransport.Dependencies{})
 	require.NoError(t, err)
 	addr, err := srv.Start()
 	require.NoError(t, err)

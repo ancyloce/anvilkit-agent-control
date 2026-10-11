@@ -56,10 +56,10 @@ func TestAuthorityFromWorkloadIdentity(t *testing.T) {
 	cert, key, caFile := identitytest.Files(mount("anvilkit-apps", "anvilkit-agent-control"))
 	r, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
 	require.NoError(t, err)
-	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: td, Policy: grpctransport.Policy()}, 4, 4,
-		ops, exec, dispatch, effects, recovery, application.NewArtifacts(store, nil, application.ArtifactLimits{}, domain.SystemClock{}, log),
-		application.NewPreparations(store, profiles, domain.SystemClock{}, log), application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}, log),
-		application.NewGrantPolicies(store, domain.SystemClock{}, log), application.NewPreviews(store, domain.SystemClock{}), application.NewReleases(store, domain.SystemClock{}))
+	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: td, Policy: grpctransport.Policy()}, grpctransport.Capacity{Control: 4, Execution: 4, Streams: 4, StreamPerTenant: 4},
+		grpctransport.Dependencies{Ops: ops, Exec: exec, Dispatch: dispatch, Effects: effects, Recovery: recovery, Artifacts: application.NewArtifacts(store, nil, application.ArtifactLimits{}, domain.SystemClock{}, log),
+			Preparations: application.NewPreparations(store, profiles, domain.SystemClock{}, log), Generations: application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}, log),
+			Grants: application.NewGrantPolicies(store, domain.SystemClock{}, log), Previews: application.NewPreviews(store, domain.SystemClock{}), Releases: application.NewReleases(store, domain.SystemClock{})})
 	require.NoError(t, err)
 	addr, err := srv.Start()
 	require.NoError(t, err)

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -63,24 +65,84 @@ func toStatus(err error) error {
 	}
 }
 
-// capacity reserves control capacity so cancel/query are never starved by
-// execution traffic (DD-02 §2): two independent bounded pools selected by
-// method (A14 explicit concurrency limits).
+// Capacity bounds the server (P1.4): three independent pools (control,
+// execution, streams), a reserve of control slots only SubmitCommand may
+// take, and a per-tenant bound on event streams. The gRPC health service
+// takes no slot.
+type Capacity struct {
+	Control         int
+	Execution       int
+	Streams         int
+	StreamPerTenant int
+	CommandReserve  int
+}
+
+type pool struct {
+	mu      sync.Mutex
+	limit   int
+	reserve int
+	held    int
+}
+
+func (p *pool) acquire(privileged bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	bound := p.limit
+	if !privileged {
+		bound -= p.reserve
+	}
+	if p.held >= bound {
+		return false
+	}
+	p.held++
+	return true
+}
+
+func (p *pool) release() {
+	p.mu.Lock()
+	p.held--
+	p.mu.Unlock()
+}
+
 type capacity struct {
-	control   chan struct{}
-	execution chan struct{}
+	control   *pool
+	execution *pool
+	streams   *pool
+	tenants   *tenantStreams
 }
 
-func newCapacity(control, execution int) *capacity {
-	return &capacity{control: make(chan struct{}, control), execution: make(chan struct{}, execution)}
+func newCapacity(c Capacity) *capacity {
+	if c.Streams <= 0 {
+		c.Streams = 256
+	}
+	if c.StreamPerTenant <= 0 {
+		c.StreamPerTenant = c.Streams
+	}
+	return &capacity{
+		control:   &pool{limit: c.Control, reserve: c.CommandReserve},
+		execution: &pool{limit: c.Execution},
+		streams:   &pool{limit: c.Streams},
+		tenants:   &tenantStreams{limit: c.StreamPerTenant, held: map[string]int{}},
+	}
 }
 
-// pool routes execution-side traffic (attempts, launches, results, the
-// per-call dispatch admission and business-write permits) to the execution
-// pool so operator commands, queries and recovery keep their reserved
-// capacity.
-func (c *capacity) pool(method string) chan struct{} {
-	for _, prefix := range []string{"/anvilkit.control.v1.ExecutionService/", "/anvilkit.control.v1.DispatchService/", "/anvilkit.control.v1.EffectService/", "/anvilkit.control.v1.ArtifactService/", "/anvilkit.control.v1.GenerationService/"} {
+const (
+	healthService   = "/grpc.health.v1.Health/"
+	submitCommand   = "/anvilkit.control.v1.OperationService/SubmitCommand"
+	streamEventsRPC = "/anvilkit.control.v1.OperationService/StreamOperationEvents"
+)
+
+var executionPrefixes = []string{"/anvilkit.control.v1.ExecutionService/", "/anvilkit.control.v1.DispatchService/", "/anvilkit.control.v1.EffectService/", "/anvilkit.control.v1.ArtifactService/", "/anvilkit.control.v1.GenerationService/"}
+
+// pool routes a method to its pool; nil for the exempt health service.
+func (c *capacity) pool(method string) *pool {
+	if strings.HasPrefix(method, healthService) {
+		return nil
+	}
+	if method == streamEventsRPC {
+		return c.streams
+	}
+	for _, prefix := range executionPrefixes {
 		if strings.HasPrefix(method, prefix) {
 			return c.execution
 		}
@@ -88,19 +150,20 @@ func (c *capacity) pool(method string) chan struct{} {
 	return c.control
 }
 
-func (c *capacity) acquire(ctx context.Context, method string) (func(), error) {
+func (c *capacity) acquire(method string) (func(), error) {
 	p := c.pool(method)
-	select {
-	case p <- struct{}{}:
-		return func() { <-p }, nil
-	default:
+	if p == nil {
+		return func() {}, nil
+	}
+	if !p.acquire(method == submitCommand) {
 		return nil, status.Error(codes.ResourceExhausted, "CAPACITY_EXHAUSTED")
 	}
+	return p.release, nil
 }
 
 func (c *capacity) unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		release, err := c.acquire(ctx, info.FullMethod)
+		release, err := c.acquire(info.FullMethod)
 		if err != nil {
 			return nil, err
 		}
@@ -111,11 +174,49 @@ func (c *capacity) unary() grpc.UnaryServerInterceptor {
 
 func (c *capacity) stream() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		release, err := c.acquire(ss.Context(), info.FullMethod)
+		release, err := c.acquire(info.FullMethod)
 		if err != nil {
 			return err
 		}
 		defer release()
 		return handler(srv, ss)
+	}
+}
+
+// tenantStreams bounds the open event streams per tenant; the handler
+// acquires it once it knows the tenant of the request.
+type tenantStreams struct {
+	mu    sync.Mutex
+	limit int
+	held  map[string]int
+}
+
+func (t *tenantStreams) acquire(tenant string) (func(), error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.held[tenant] >= t.limit {
+		return nil, status.Error(codes.ResourceExhausted, "CAPACITY_EXHAUSTED: streams of the tenant")
+	}
+	t.held[tenant]++
+	return func() {
+		t.mu.Lock()
+		t.held[tenant]--
+		if t.held[tenant] == 0 {
+			delete(t.held, tenant)
+		}
+		t.mu.Unlock()
+	}, nil
+}
+
+// defaultDeadline bounds a unary RPC whose caller set no deadline (P1.4);
+// a caller's own deadline is kept as it is.
+func defaultDeadline(d time.Duration) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if _, ok := ctx.Deadline(); !ok && d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+		return handler(ctx, req)
 	}
 }

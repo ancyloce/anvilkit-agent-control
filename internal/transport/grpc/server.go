@@ -43,19 +43,44 @@ type Identity struct {
 	MaxConnectionAge time.Duration
 }
 
+// Dependencies are the use cases and transport collaborators of the server.
+type Dependencies struct {
+	Ops          *application.Operations
+	Exec         *application.Execution
+	Dispatch     *application.Dispatch
+	Effects      *application.Effects
+	Recovery     *application.Recovery
+	Artifacts    *application.Artifacts
+	Preparations *application.Preparations
+	Generations  *application.Generations
+	Grants       *application.GrantPolicies
+	Previews     *application.Previews
+	Releases     *application.Releases
+	// Notifier wakes event streams when an event of their operation commits
+	// (P1.4); nil means the streams poll at the fallback interval only.
+	Notifier application.EventNotifier
+	// DefaultDeadline bounds unary RPCs without a caller deadline; zero disables it.
+	DefaultDeadline time.Duration
+	// MaxConnectionAge makes clients re-balance across replicas (zero: 1h).
+	MaxConnectionAge time.Duration
+}
+
+// NewServer builds the plaintext development listener (tests).
 func NewServer(listen string, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, extra ...grpc.ServerOption) (*Server, error) {
-	return NewServerWithIdentity(listen, nil, controlCapacity, executionCapacity, ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases, extra...)
+	return NewServerWithIdentity(listen, nil, Capacity{Control: controlCapacity, Execution: executionCapacity, Streams: 256, StreamPerTenant: 32},
+		Dependencies{Ops: ops, Exec: exec, Dispatch: dispatch, Effects: effects, Recovery: recovery, Artifacts: artifacts, Preparations: preparations, Generations: generations, Grants: grants, Previews: previews, Releases: releases}, extra...)
 }
 
 // NewServerWithIdentity is NewServer with the listener identity; id nil is
 // the plaintext development listener.
-func NewServerWithIdentity(listen string, id *Identity, controlCapacity, executionCapacity int, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, extra ...grpc.ServerOption) (*Server, error) {
+func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps Dependencies, extra ...grpc.ServerOption) (*Server, error) {
 	validator, err := protovalidate.New()
 	if err != nil {
 		return nil, err
 	}
-	cap := newCapacity(controlCapacity, executionCapacity)
-	unary := []grpc.UnaryServerInterceptor{cap.unary(), validateUnary(validator)}
+	ops, exec, dispatch, effects, recovery, artifacts, preparations, generations, grants, previews, releases := deps.Ops, deps.Exec, deps.Dispatch, deps.Effects, deps.Recovery, deps.Artifacts, deps.Preparations, deps.Generations, deps.Grants, deps.Previews, deps.Releases
+	cap := newCapacity(capacity)
+	unary := []grpc.UnaryServerInterceptor{cap.unary(), defaultDeadline(deps.DefaultDeadline), validateUnary(validator)}
 	stream := []grpc.StreamServerInterceptor{cap.stream()}
 	var authz *identity.Authorizer
 	var opts []grpc.ServerOption
@@ -71,17 +96,26 @@ func NewServerWithIdentity(listen string, id *Identity, controlCapacity, executi
 		// capacity pools or validation.
 		unary = append([]grpc.UnaryServerInterceptor{authz.Unary()}, unary...)
 		stream = append([]grpc.StreamServerInterceptor{authz.Stream()}, stream...)
-		age := id.MaxConnectionAge
-		if age <= 0 {
-			age = time.Hour
+		opts = append(opts, grpc.Creds(identity.NewServerCredentials(id.Reloader)))
+		if deps.MaxConnectionAge <= 0 {
+			deps.MaxConnectionAge = id.MaxConnectionAge
 		}
-		opts = append(opts, grpc.Creds(identity.NewServerCredentials(id.Reloader)), grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: age, MaxConnectionAgeGrace: 30 * time.Second}))
 	}
+	// Connections age out on every listener so clients re-balance across
+	// replicas behind the ClusterIP (P1.4).
+	age := deps.MaxConnectionAge
+	if age <= 0 {
+		age = time.Hour
+	}
+	opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: age, MaxConnectionAgeGrace: 30 * time.Second}))
 	opts = append(opts, grpc.ChainUnaryInterceptor(unary...), grpc.ChainStreamInterceptor(stream...))
-	s := grpc.NewServer(append(opts, extra...)...)
+	// The extra options (observability) register their interceptors first,
+	// so metrics and spans are outermost and count a refusal by the
+	// capacity pools or the authorizer as well (P1.5, CTL-INF-13).
+	s := grpc.NewServer(append(append([]grpc.ServerOption(nil), extra...), opts...)...)
 	h := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(s, h)
-	controlv1.RegisterOperationServiceServer(s, &operationServer{ops: ops, preparations: preparations})
+	controlv1.RegisterOperationServiceServer(s, &operationServer{ops: ops, preparations: preparations, streams: cap.tenants, notifier: deps.Notifier})
 	controlv1.RegisterPreparationServiceServer(s, &preparationServer{preparations: preparations})
 	controlv1.RegisterGenerationServiceServer(s, &generationServer{generations: generations})
 	controlv1.RegisterExecutionServiceServer(s, &executionServer{exec: exec})
