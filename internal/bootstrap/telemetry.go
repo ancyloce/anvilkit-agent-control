@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/fx"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/config"
 )
@@ -36,11 +37,11 @@ func newTracer(lc fx.Lifecycle, cfg config.Config) (trace.Tracer, error) {
 	if cfg.Telemetry.OTLPEndpoint == "" {
 		return noop.NewTracerProvider().Tracer(serviceName), nil
 	}
-	transport, err := clientTransport("telemetry.otlp_tls", cfg.Telemetry.OTLPTLS, cfg.Development.Enabled, slog.Default())
+	creds, err := clientCredentials("telemetry.otlp_tls", cfg.Telemetry.OTLPTLS, cfg.Development.Enabled, slog.Default())
 	if err != nil {
 		return nil, err
 	}
-	exporter, err := otlptracegrpc.New(context.Background(), otlptracegrpc.WithEndpoint(cfg.Telemetry.OTLPEndpoint), otlptracegrpc.WithDialOption(transport))
+	exporter, err := otlptracegrpc.New(context.Background(), otlptracegrpc.WithEndpoint(cfg.Telemetry.OTLPEndpoint), otlpCredentials(creds))
 	if err != nil {
 		return nil, err
 	}
@@ -85,4 +86,14 @@ func newMetrics(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) *prometheu
 		OnStop: func(ctx context.Context) error { return srv.Shutdown(ctx) },
 	})
 	return reg
+}
+
+// otlpCredentials hands the transport to the OTLP exporter itself: a dial
+// option alone loses to the exporter's default (TLS with the host's roots),
+// which dialed a development collector over TLS and a TLS one without its CA.
+func otlpCredentials(c credentials.TransportCredentials) otlptracegrpc.Option {
+	if c.Info().SecurityProtocol == "insecure" {
+		return otlptracegrpc.WithInsecure()
+	}
+	return otlptracegrpc.WithTLSCredentials(c)
 }

@@ -34,23 +34,23 @@ func serverIdentity(cfg config.Config, log *slog.Logger) (*grpctransport.Identit
 	return &grpctransport.Identity{Reloader: r, TrustDomain: cfg.TrustDomain(), Policy: grpctransport.Policy(), MaxConnectionAge: id.MaxConnectionAge}, r, nil
 }
 
-// clientTransport is the gRPC transport credential of an outbound
+// clientCredentials is the gRPC transport credential of an outbound
 // connection (Temporal, OTLP) under a ClientTLS section. The mtls form
 // rotates with its own files; tls verifies against the bundle read once.
-func clientTransport(name string, t config.ClientTLS, development bool, log *slog.Logger) (grpc.DialOption, error) {
+func clientCredentials(name string, t config.ClientTLS, development bool, log *slog.Logger) (credentials.TransportCredentials, error) {
 	switch t.Mode {
 	case "development":
 		if !development {
 			return nil, fmt.Errorf("%s: development mode without development.enabled", name)
 		}
 		log.Warn("DEVELOPMENT_ONLY plaintext transport", "connection", name)
-		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
+		return insecure.NewCredentials(), nil
 	case "tls":
 		pool, err := caPool(t.CAFile)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		return grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: t.ServerName, MinVersion: tls.VersionTLS13})), nil
+		return credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: t.ServerName, MinVersion: tls.VersionTLS13}), nil
 	case "mtls":
 		r, err := identity.New(identity.Files{CertFile: t.CertFile, KeyFile: t.KeyFile, CAFile: t.CAFile}, 0, log)
 		if err != nil {
@@ -61,9 +61,18 @@ func clientTransport(name string, t config.ClientTLS, development bool, log *slo
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		return grpc.WithTransportCredentials(creds), nil
+		return creds, nil
 	}
 	return nil, fmt.Errorf("%s: unknown mode %q", name, t.Mode)
+}
+
+// clientTransport is clientCredentials as a dial option (Temporal).
+func clientTransport(name string, t config.ClientTLS, development bool, log *slog.Logger) (grpc.DialOption, error) {
+	c, err := clientCredentials(name, t, development, log)
+	if err != nil {
+		return nil, err
+	}
+	return grpc.WithTransportCredentials(c), nil
 }
 
 func caPool(path string) (*x509.CertPool, error) {
