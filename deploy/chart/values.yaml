@@ -236,6 +236,12 @@ resources:
     cpu: 1000m
     memory: 256Mi
 
+# The Go runtime's soft memory limit (GOMEMLIMIT), below the container
+# limit so garbage is collected before the cgroup kills the process; the
+# finalize slots (artifacts.finalize_concurrency) bound the live object
+# bytes under it (P1.5, CTL-INF-07). Empty leaves the runtime default.
+goMemLimit: 200MiB
+
 # The gRPC health service: SERVING once the listener is up and the relay
 # runs, NOT_SERVING while the server drains.
 probes:

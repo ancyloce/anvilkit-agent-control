@@ -61,6 +61,10 @@ spec:
               value: {{ printf "0.0.0.0:%d" (int .Values.health.port) | quote }}
             - name: ANVILKIT_CONTROL_TEMPORAL_ADDRESS
               value: {{ .Values.temporal.address | quote }}
+            {{- with .Values.goMemLimit }}
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.trust.configMap }}
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/etc/anvilkit/trust
