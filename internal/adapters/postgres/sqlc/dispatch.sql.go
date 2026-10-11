@@ -30,7 +30,7 @@ func (q *Queries) ChargedCost(ctx context.Context, dispatchID *string) (ChargedC
 
 const countGrantSenders = `-- name: CountGrantSenders :one
 SELECT count(*) FILTER (WHERE state = 'authorized')::bigint AS in_flight, count(*) FILTER (WHERE state = 'unknown')::bigint AS unknown
-FROM dispatches WHERE grant_id = $1 AND grant_revision = $2
+FROM dispatches WHERE grant_id = $1 AND grant_revision = $2 AND state IN ('authorized', 'unknown')
 `
 
 type CountGrantSendersParams struct {
@@ -43,6 +43,7 @@ type CountGrantSendersRow struct {
 	Unknown  int64
 }
 
+// The state predicate matches the partial index dispatches_grant_open_idx (P1.5).
 func (q *Queries) CountGrantSenders(ctx context.Context, arg CountGrantSendersParams) (CountGrantSendersRow, error) {
 	row := q.db.QueryRow(ctx, countGrantSenders, arg.GrantID, arg.GrantRevision)
 	var i CountGrantSendersRow
@@ -682,6 +683,123 @@ func (q *Queries) ListCurrentPools(ctx context.Context, arg ListCurrentPoolsPara
 			&i.CapAmount,
 			&i.Allocated,
 			&i.Revision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPreparedDispatchesByAttempt = `-- name: ListPreparedDispatchesByAttempt :many
+SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code, argument_digest, side_effecting FROM dispatches WHERE attempt_id = $1 AND state = 'prepared' ORDER BY admitted_at FOR UPDATE
+`
+
+// Dispatches still PREPARED when their attempt closes (P1.5): denied under the attempt's close.
+func (q *Queries) ListPreparedDispatchesByAttempt(ctx context.Context, attemptID string) ([]Dispatch, error) {
+	rows, err := q.db.Query(ctx, listPreparedDispatchesByAttempt, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Dispatch{}
+	for rows.Next() {
+		var i Dispatch
+		if err := rows.Scan(
+			&i.DispatchID,
+			&i.Kind,
+			&i.TenantID,
+			&i.OperationID,
+			&i.AttemptID,
+			&i.InstanceID,
+			&i.CallID,
+			&i.Owner,
+			&i.RequestDigest,
+			&i.RouteID,
+			&i.GrantID,
+			&i.GrantRevision,
+			&i.ExecutionEpoch,
+			&i.State,
+			&i.Outcome,
+			&i.ReservedCurrency,
+			&i.ReservedAmount,
+			&i.MeterRevision,
+			&i.SupersedesCallID,
+			&i.EvidenceRef,
+			&i.InventoryState,
+			&i.InventoryVersion,
+			&i.Deadline,
+			&i.AdmittedAt,
+			&i.ObservedAt,
+			&i.DenialCode,
+			&i.ArgumentDigest,
+			&i.SideEffecting,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnresolvedDispatches = `-- name: ListUnresolvedDispatches :many
+SELECT dispatch_id, kind, tenant_id, operation_id, attempt_id, instance_id, call_id, owner, request_digest, route_id, grant_id, grant_revision, execution_epoch, state, outcome, reserved_currency, reserved_amount, meter_revision, supersedes_call_id, evidence_ref, inventory_state, inventory_version, deadline, admitted_at, observed_at, denial_code, argument_digest, side_effecting FROM dispatches
+WHERE state IN ('authorized', 'unknown') AND admitted_at < now() - make_interval(secs => $2::float8)
+ORDER BY admitted_at LIMIT $1
+`
+
+type ListUnresolvedDispatchesParams struct {
+	Limit      int32
+	AgeSeconds float64
+}
+
+// Dispatches whose permission was consumed or is uncertain and that have
+// waited since admission (P1.5): the reconciler asks the sender's original
+// identity about them outside any recovery run.
+func (q *Queries) ListUnresolvedDispatches(ctx context.Context, arg ListUnresolvedDispatchesParams) ([]Dispatch, error) {
+	rows, err := q.db.Query(ctx, listUnresolvedDispatches, arg.Limit, arg.AgeSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Dispatch{}
+	for rows.Next() {
+		var i Dispatch
+		if err := rows.Scan(
+			&i.DispatchID,
+			&i.Kind,
+			&i.TenantID,
+			&i.OperationID,
+			&i.AttemptID,
+			&i.InstanceID,
+			&i.CallID,
+			&i.Owner,
+			&i.RequestDigest,
+			&i.RouteID,
+			&i.GrantID,
+			&i.GrantRevision,
+			&i.ExecutionEpoch,
+			&i.State,
+			&i.Outcome,
+			&i.ReservedCurrency,
+			&i.ReservedAmount,
+			&i.MeterRevision,
+			&i.SupersedesCallID,
+			&i.EvidenceRef,
+			&i.InventoryState,
+			&i.InventoryVersion,
+			&i.Deadline,
+			&i.AdmittedAt,
+			&i.ObservedAt,
+			&i.DenialCode,
+			&i.ArgumentDigest,
+			&i.SideEffecting,
 		); err != nil {
 			return nil, err
 		}

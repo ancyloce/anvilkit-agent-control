@@ -149,15 +149,17 @@ func (r *Relay) UpdateCommand(ctx context.Context, operationID string, c *domain
 	})
 }
 
-// update issues one tracked Update and waits for its completion. The same
-// update id reaches the same Update: a repeated call after a lost receipt
-// receives the original outcome. A validator rejection is the handler's
-// answer (rejected with its reason); a run that cannot take the Update
-// (closed, never started) is ErrRelayClosed; anything else is a transport
-// failure the relay retries.
+// update issues one tracked Update, waits for its acceptance and then for
+// its completion within the caller's bound (P1.4). The same update id
+// reaches the same Update: a repeated call after a lost receipt, or after
+// the bound elapsed on an accepted Update, receives the original outcome.
+// A validator rejection is the handler's answer (rejected with its
+// reason); a run that cannot take the Update (closed, never started) is
+// ErrRelayClosed; an Update accepted but still running at the bound is
+// ErrRelayPending; anything else is a transport failure the relay retries.
 func (r *Relay) update(ctx context.Context, workflowID, updateID, name string, arg any) (application.RelayOutcome, error) {
 	handle, err := r.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-		WorkflowID: workflowID, UpdateID: updateID, UpdateName: name, Args: []any{arg}, WaitForStage: client.WorkflowUpdateStageCompleted,
+		WorkflowID: workflowID, UpdateID: updateID, UpdateName: name, Args: []any{arg}, WaitForStage: client.WorkflowUpdateStageAccepted,
 	})
 	if err != nil {
 		return application.RelayOutcome{}, classify(err)
@@ -169,6 +171,9 @@ func (r *Relay) update(ctx context.Context, workflowID, updateID, name string, a
 			// The handler or its validator refused the Update: a business
 			// answer under the same identity, never something to reissue.
 			return application.RelayOutcome{Outcome: domain.OutcomeRejected, ReasonCode: reason(app)}, nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return application.RelayOutcome{}, fmt.Errorf("%w: %v", application.ErrRelayPending, err)
 		}
 		return application.RelayOutcome{}, classify(err)
 	}

@@ -128,5 +128,18 @@ UPDATE grant_policies SET revocation_state = $3, fenced_at = $4, converged_at = 
 WHERE grant_id = $1 AND grant_revision = $2;
 
 -- name: CountGrantSenders :one
+-- The state predicate matches the partial index dispatches_grant_open_idx (P1.5).
 SELECT count(*) FILTER (WHERE state = 'authorized')::bigint AS in_flight, count(*) FILTER (WHERE state = 'unknown')::bigint AS unknown
-FROM dispatches WHERE grant_id = $1 AND grant_revision = $2;
+FROM dispatches WHERE grant_id = $1 AND grant_revision = $2 AND state IN ('authorized', 'unknown');
+
+-- name: ListPreparedDispatchesByAttempt :many
+-- Dispatches still PREPARED when their attempt closes (P1.5): denied under the attempt's close.
+SELECT * FROM dispatches WHERE attempt_id = $1 AND state = 'prepared' ORDER BY admitted_at FOR UPDATE;
+
+-- name: ListUnresolvedDispatches :many
+-- Dispatches whose permission was consumed or is uncertain and that have
+-- waited since admission (P1.5): the reconciler asks the sender's original
+-- identity about them outside any recovery run.
+SELECT * FROM dispatches
+WHERE state IN ('authorized', 'unknown') AND admitted_at < now() - make_interval(secs => sqlc.arg(age_seconds)::float8)
+ORDER BY admitted_at LIMIT $1;

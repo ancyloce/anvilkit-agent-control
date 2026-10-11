@@ -44,3 +44,13 @@ SELECT * FROM operation_settlements WHERE operation_id = $1;
 -- name: InsertOperationSettlement :exec
 INSERT INTO operation_settlements (operation_id, command_id, request_digest, outcome, failure_code, phase)
 VALUES ($1, $2, $3, $4, $5, $6);
+
+-- name: ListReconcilingSettlements :many
+-- Operations Control keeps reconciling under a stored settlement intent
+-- (P1.6): the settlement reconciler re-applies the intent once their last
+-- obligation resolved, whether or not a Workflow still polls.
+SELECT o.operation_id FROM operations o
+JOIN operation_settlements s ON s.operation_id = o.operation_id
+WHERE o.lifecycle = 'reconciling'
+ORDER BY o.updated_at, o.operation_id
+LIMIT $1;

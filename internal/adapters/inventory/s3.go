@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,9 @@ type S3 struct {
 	prefix string
 }
 
+// s3RequestTimeout bounds one request to the S3 backend.
+const s3RequestTimeout = 60 * time.Second
+
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	if cfg.Bucket == "" || cfg.Endpoint == "" || cfg.Region == "" {
 		return nil, fmt.Errorf("%w: inventory s3 needs an endpoint, a region and a bucket", domain.ErrInvalid)
@@ -81,6 +85,9 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(cfg.Endpoint)
 		o.UsePathStyle = cfg.PathStyle
+		// Every request to the backend is bounded (P1.4): a hung store
+		// never holds a Control transaction's caller open.
+		o.HTTPClient = &http.Client{Timeout: s3RequestTimeout}
 	})
 	prefix := strings.Trim(cfg.Prefix, "/")
 	if prefix != "" {

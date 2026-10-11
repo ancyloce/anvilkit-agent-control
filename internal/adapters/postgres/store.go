@@ -30,20 +30,27 @@ func (s *Store) Tx(ctx context.Context, fn func(application.Repo) error) error {
 		return mapErr(err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
-	if err := fn(&repo{q: sqlc.New(tx)}); err != nil {
+	if err := fn(&repo{q: sqlc.New(tx), db: tx}); err != nil {
 		return mapErr(err)
 	}
 	return mapErr(tx.Commit(ctx))
 }
 
 func (s *Store) Read(ctx context.Context, fn func(application.Repo) error) error {
-	return mapErr(fn(&repo{q: sqlc.New(s.pool)}))
+	return mapErr(fn(&repo{q: sqlc.New(s.pool), db: s.pool}))
 }
+
+// Pool exposes the connection pool to adapters that need a dedicated
+// connection (the notifier).
+func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
 // Ping is used by readiness.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
-type repo struct{ q *sqlc.Queries }
+type repo struct {
+	q  *sqlc.Queries
+	db sqlc.DBTX
+}
 
 func mapErr(err error) error {
 	if err == nil {
@@ -231,10 +238,16 @@ func (r *repo) InsertEvent(ctx context.Context, ev domain.Event) error {
 	if err != nil {
 		return err
 	}
-	return r.q.InsertOperationEvent(ctx, sqlc.InsertOperationEventParams{
+	if err := r.q.InsertOperationEvent(ctx, sqlc.InsertOperationEventParams{
 		OperationID: ev.OperationID, EventSeq: int64(ev.EventSeq), TransitionID: ev.TransitionID, EventType: ev.EventType,
 		Revision: int64(ev.Revision), Payload: payload, OccurredAt: ts(ev.OccurredAt),
-	})
+	}); err != nil {
+		return err
+	}
+	// Delivered at commit to every replica's listener (P1.4): streams wake
+	// without polling. The payload is the operation id alone.
+	_, err = r.db.Exec(ctx, "SELECT pg_notify($1, $2)", EventChannel, ev.OperationID)
+	return err
 }
 
 func (r *repo) ListEvents(ctx context.Context, operationID string, afterSeq uint64, limit int) ([]domain.Event, error) {

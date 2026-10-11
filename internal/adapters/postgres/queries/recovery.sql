@@ -15,6 +15,10 @@ SELECT * FROM recovery_runs WHERE run_id = $1 FOR UPDATE;
 -- name: MaxRecoveryEpoch :one
 SELECT coalesce(max(recovery_epoch), 0)::bigint FROM recovery_runs;
 
+-- name: NextRecoveryEpoch :one
+-- The epoch comes from a sequence (P1.5): two concurrent runs never share one.
+SELECT nextval('recovery_epoch_seq')::bigint;
+
 -- name: InsertRecoveryRun :exec
 INSERT INTO recovery_runs (
     run_id, scope_key, tenant_id, command_id, actor_id, request_digest, recovery_epoch, phase, window_start, window_end,
@@ -82,6 +86,10 @@ ON CONFLICT (scope_key) DO UPDATE SET run_id = EXCLUDED.run_id, closed_at = EXCL
 
 -- name: ReopenAdmission :exec
 UPDATE admission_closures SET reopened_at = $3 WHERE scope_key = $1 AND run_id = $2 AND reopened_at IS NULL;
+
+-- name: AnyAdmissionClosed :one
+-- A run over every scope may begin only while no closure of any scope is open (P1.5).
+SELECT EXISTS (SELECT 1 FROM admission_closures WHERE reopened_at IS NULL);
 
 -- name: HasOpenRecoveryFor :one
 SELECT EXISTS (SELECT 1 FROM admission_closures WHERE scope_key = $1 AND reopened_at IS NULL);

@@ -235,6 +235,37 @@ func (q *Queries) InsertPermit(ctx context.Context, arg InsertPermitParams) erro
 	return err
 }
 
+const listReconcilingSettlements = `-- name: ListReconcilingSettlements :many
+SELECT o.operation_id FROM operations o
+JOIN operation_settlements s ON s.operation_id = o.operation_id
+WHERE o.lifecycle = 'reconciling'
+ORDER BY o.updated_at, o.operation_id
+LIMIT $1
+`
+
+// Operations Control keeps reconciling under a stored settlement intent
+// (P1.6): the settlement reconciler re-applies the intent once their last
+// obligation resolved, whether or not a Workflow still polls.
+func (q *Queries) ListReconcilingSettlements(ctx context.Context, limit int32) ([]string, error) {
+	rows, err := q.db.Query(ctx, listReconcilingSettlements, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var operation_id string
+		if err := rows.Scan(&operation_id); err != nil {
+			return nil, err
+		}
+		items = append(items, operation_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStagesByOperation = `-- name: ListStagesByOperation :many
 SELECT stage_id, attempt_id, instance_id, operation_id, phase_ordinal, profile_id, verdict, failure_code, result_digest, result_manifest, observer_identity, command_id, request_digest, accepted_at, result_manifest_bytes, execution_epoch, recovery_epoch FROM stage_manifests WHERE operation_id = $1 ORDER BY accepted_at
 `

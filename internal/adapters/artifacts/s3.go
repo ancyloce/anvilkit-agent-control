@@ -56,6 +56,9 @@ type S3 struct {
 	prefix  string
 }
 
+// s3RequestTimeout bounds one request to the S3 backend.
+const s3RequestTimeout = 60 * time.Second
+
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	if cfg.Bucket == "" || cfg.Endpoint == "" || cfg.Region == "" {
 		return nil, fmt.Errorf("%w: artifacts s3 needs an endpoint, a region and a bucket", domain.ErrInvalid)
@@ -76,6 +79,9 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(cfg.Endpoint)
 		o.UsePathStyle = cfg.PathStyle
+		// Every request to the backend is bounded (P1.4): a hung store
+		// never holds a Control transaction's caller open.
+		o.HTTPClient = &http.Client{Timeout: s3RequestTimeout}
 	})
 	prefix := strings.Trim(cfg.Prefix, "/")
 	if prefix != "" {
@@ -223,6 +229,45 @@ func (s *S3) DownloadCapability(ctx context.Context, key, version string, expire
 // exist is domain.ErrNotFound; an object longer than limit is
 // domain.ErrInvalid (the bytes are not returned); any other failure is
 // domain.ErrUnavailable.
+// Verify streams the exact object version through SHA-256 and the size
+// check without holding its bytes (P1.5, CTL-INF-07).
+func (s *S3) Verify(ctx context.Context, key, version string, limit int64) (domain.ObjectFacts, error) {
+	if err := validKey(key); err != nil {
+		return domain.ObjectFacts{}, err
+	}
+	if version == "" {
+		return domain.ObjectFacts{}, fmt.Errorf("%w: object version is required", domain.ErrInvalid)
+	}
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.prefix + key), VersionId: aws.String(version)})
+	if err != nil {
+		var noKey *types.NoSuchKey
+		var api smithy.APIError
+		if errors.As(err, &noKey) || (errors.As(err, &api) && (api.ErrorCode() == "NoSuchKey" || api.ErrorCode() == "NotFound" || api.ErrorCode() == "NoSuchVersion" || api.ErrorCode() == "InvalidArgument")) {
+			return domain.ObjectFacts{}, fmt.Errorf("%w: %s version %q", domain.ErrNotFound, describe(key), version)
+		}
+		return domain.ObjectFacts{}, failure("read", key, err)
+	}
+	defer out.Body.Close()
+	h := sha256.New()
+	head := &bytes.Buffer{}
+	headTee := io.TeeReader(io.LimitReader(out.Body, domain.ArchiveHeadBytes), head)
+	n, err := io.Copy(h, io.LimitReader(io.MultiReader(headTee, out.Body), limit+1))
+	if err != nil {
+		return domain.ObjectFacts{}, failure("read", key, err)
+	}
+	if n > limit {
+		return domain.ObjectFacts{}, fmt.Errorf("%w: %s version %q holds more than the declared %d bytes", domain.ErrInvalid, describe(key), version, limit)
+	}
+	actual := aws.ToString(out.VersionId)
+	if actual == "" || actual == "null" {
+		return domain.ObjectFacts{}, fmt.Errorf("%w: %s: the backend assigns no object versions (bucket versioning is off)", domain.ErrUnavailable, describe(key))
+	}
+	if actual != version {
+		return domain.ObjectFacts{}, fmt.Errorf("%w: %s: read version %q for the requested %q", domain.ErrUnavailable, describe(key), actual, version)
+	}
+	return domain.ObjectFacts{Size: n, Digest: domain.Digest("sha256:" + hex.EncodeToString(h.Sum(nil))), Version: actual, Head: head.Bytes()}, nil
+}
+
 func (s *S3) Read(ctx context.Context, key, version string, limit int64) ([]byte, domain.ObjectFacts, error) {
 	if err := validKey(key); err != nil {
 		return nil, domain.ObjectFacts{}, err
@@ -240,10 +285,15 @@ func (s *S3) Read(ctx context.Context, key, version string, limit int64) ([]byte
 		return nil, domain.ObjectFacts{}, failure("read", key, err)
 	}
 	defer out.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(out.Body, limit+1))
-	if err != nil {
+	// One allocation of the declared size plus the overflow byte: a growing
+	// buffer would hold up to twice the object while it doubles (P1.5,
+	// CTL-INF-07: finalize memory is bounded by the slots times the size).
+	buf := make([]byte, limit+1)
+	n, err := io.ReadFull(out.Body, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, domain.ObjectFacts{}, failure("read", key, err)
 	}
+	body := buf[:n]
 	if int64(len(body)) > limit {
 		return nil, domain.ObjectFacts{}, fmt.Errorf("%w: %s version %q holds more than the declared %d bytes", domain.ErrInvalid, describe(key), version, limit)
 	}

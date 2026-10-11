@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const anyAdmissionClosed = `-- name: AnyAdmissionClosed :one
+SELECT EXISTS (SELECT 1 FROM admission_closures WHERE reopened_at IS NULL)
+`
+
+// A run over every scope may begin only while no closure of any scope is open (P1.5).
+func (q *Queries) AnyAdmissionClosed(ctx context.Context) (bool, error) {
+	row := q.db.QueryRow(ctx, anyAdmissionClosed)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const countUnsettledFindings = `-- name: CountUnsettledFindings :one
 SELECT count(*) FROM recovery_findings WHERE run_id = $1 AND status NOT IN ('present', 'resolved', 'disposed', 'outside_scope')
 `
@@ -556,6 +568,18 @@ SELECT coalesce(max(recovery_epoch), 0)::bigint FROM recovery_runs
 
 func (q *Queries) MaxRecoveryEpoch(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, maxRecoveryEpoch)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const nextRecoveryEpoch = `-- name: NextRecoveryEpoch :one
+SELECT nextval('recovery_epoch_seq')::bigint
+`
+
+// The epoch comes from a sequence (P1.5): two concurrent runs never share one.
+func (q *Queries) NextRecoveryEpoch(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, nextRecoveryEpoch)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
