@@ -251,3 +251,13 @@ func checkTar(r io.Reader, limits ArchiveLimits) error {
 		}
 	}
 }
+
+// NeedsArchiveCheck reports whether a finalized object of the class and
+// declared media type is checked as an archive (and therefore read into
+// memory); every other object is verified as a stream (P1.5).
+func NeedsArchiveCheck(class ArtifactClass, mediaType string) bool {
+	if class == ArtifactSource {
+		return true
+	}
+	return ArchiveMediaTypes[strings.ToLower(strings.TrimSpace(strings.Split(mediaType, ";")[0]))] != ""
+}

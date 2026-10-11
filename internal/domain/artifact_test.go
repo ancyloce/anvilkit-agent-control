@@ -2,7 +2,10 @@ package domain
 
 import (
 	"errors"
+	"github.com/stretchr/testify/require"
+	"strings"
 	"testing"
+	"time"
 )
 
 // The fixed result of a qualification fixture profile: what a certified
@@ -67,4 +70,33 @@ func TestFixtureManifestDeliversItsFixedResult(t *testing.T) {
 	if err := candidate.EmbeddedOutput(result, VerdictCertified); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a candidate-code profile embeds: %v", err)
 	}
+}
+
+// P1.5 (CTL-APP-03): a transfer is bounded by the operation's effective
+// deadline — the active deadline the first permit set — not by the queue
+// deadline: a Generation granted its permit late in the queue window can
+// still transfer in the tail of its execution window.
+func TestTransferBoundByTheEffectiveDeadline(t *testing.T) {
+	start := time.Now().UTC().Truncate(time.Microsecond)
+	active := start.Add(25 * time.Hour) // the permit came 23h into a 24h queue window, with a 2h active window
+	op := &Operation{ID: "op_g", TenantID: "tenant_a", Lifecycle: LifecycleRunning, Control: ControlNone, ExecutionEpoch: 1, RecoveryEpoch: 1,
+		Deadline: start.Add(24 * time.Hour), ActiveDeadline: &active}
+	now := start.Add(24*time.Hour + 30*time.Minute)
+	req := TransferRequest{Class: ArtifactSource, MediaType: "application/zip", ExpectedDigest: Digest("sha256:" + strings.Repeat("0", 64)), ExpectedSize: 10,
+		OperationID: op.ID, Deadline: now.Add(15 * time.Minute)}
+	tr, err := NewTransfer(CommandIdentity{TenantID: "tenant_a", CommandID: "x", RequestDigest: Digest("sha256:" + strings.Repeat("1", 64))}, Scope{TenantID: "tenant_a", ActorID: "u"}, req,
+		TransferContext{Now: now, Operation: op, Limits: TransferLimits{MaxObjectBytes: 1 << 20, MaxWindow: time.Hour}})
+	require.NoError(t, err, "a transfer at hour 24.5 is admitted under the active deadline of hour 25")
+	require.Equal(t, now.Add(15*time.Minute), tr.Deadline)
+	// The active deadline still bounds it.
+	req.Deadline = active.Add(time.Hour)
+	tr, err = NewTransfer(CommandIdentity{TenantID: "tenant_a", CommandID: "y", RequestDigest: Digest("sha256:" + strings.Repeat("1", 64))}, Scope{TenantID: "tenant_a", ActorID: "u"}, req,
+		TransferContext{Now: now, Operation: op, Limits: TransferLimits{MaxObjectBytes: 1 << 20, MaxWindow: 2 * time.Hour}})
+	require.NoError(t, err)
+	require.Equal(t, active, tr.Deadline, "the transfer never outlives the effective deadline")
+	// Without a permit the queue deadline is the bound, as before.
+	op.ActiveDeadline = nil
+	_, err = NewTransfer(CommandIdentity{TenantID: "tenant_a", CommandID: "z", RequestDigest: Digest("sha256:" + strings.Repeat("1", 64))}, Scope{TenantID: "tenant_a", ActorID: "u"}, req,
+		TransferContext{Now: now, Operation: op, Limits: TransferLimits{MaxObjectBytes: 1 << 20, MaxWindow: 2 * time.Hour}})
+	require.ErrorIs(t, err, ErrStaleExecution)
 }

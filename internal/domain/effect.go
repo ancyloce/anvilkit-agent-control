@@ -119,6 +119,10 @@ type EffectContext struct {
 	Operation       *Operation
 	Attempt         *Attempt // nil when the request names no attempt
 	AdmissionClosed bool     // the tenant's scope is closed by a recovery run
+	// LeaseRequired is true for lease-protected profiles (P1.5, CTL-APP-06):
+	// a business write then needs the operation's confirmed lease to be
+	// valid now and the request to name that lease and fence.
+	LeaseRequired bool
 	// Release is the recorded projection of a release operation (P21);
 	// publication and activation permits are checked against it and
 	// against ReleaseEffects, the ledger rows it names.
@@ -191,6 +195,15 @@ func CheckEffect(req EffectRequest, c EffectContext) error {
 	}
 	if req.LeaseID != "" && !req.LeaseExpiresAt.IsZero() && !req.LeaseExpiresAt.After(c.Now) {
 		return deny(DenyStaleExecution, "lease %s (fence %d) expired at %s", req.LeaseID, req.LeaseFence, req.LeaseExpiresAt.UTC().Format(time.RFC3339))
+	}
+	if c.LeaseRequired && req.Kind == EffectBusinessWrite {
+		// The operation's confirmed lease is the authority, never the request's word.
+		if !op.Lease.Valid(c.Now) {
+			return deny(DenyStaleExecution, "operation %s holds no valid lease (%s)", op.ID, op.Lease.State)
+		}
+		if req.LeaseID != op.Lease.LeaseID || req.LeaseFence != op.Lease.Fence {
+			return deny(DenyStaleExecution, "lease %s (fence %d) is not the operation's confirmed lease %s (fence %d)", req.LeaseID, req.LeaseFence, op.Lease.LeaseID, op.Lease.Fence)
+		}
 	}
 	return nil
 }

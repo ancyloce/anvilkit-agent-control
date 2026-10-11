@@ -171,8 +171,11 @@ func NewTransfer(cmd CommandIdentity, scope Scope, req TransferRequest, c Transf
 		if op.FencedForNewDispatch() {
 			return nil, fmt.Errorf("%w: operation %s is fenced (%s/%s)", ErrStaleExecution, op.ID, op.Lifecycle, op.Control)
 		}
-		if deadline.After(op.Deadline) {
-			deadline = op.Deadline
+		// The bound is the operation's effective deadline (P1.5, CTL-APP-03):
+		// the active deadline the first permit set, else the queue deadline;
+		// a transfer in the tail of the execution window is admitted.
+		if bound := op.EffectiveDeadline(); deadline.After(bound) {
+			deadline = bound
 		}
 		t.ExecutionEpoch, t.RecoveryEpoch = op.ExecutionEpoch, op.RecoveryEpoch
 		if req.AttemptID != "" {
@@ -320,7 +323,15 @@ type ObjectFacts struct {
 	Version string
 	Size    int64
 	Digest  Digest
+	// Head holds the object's first bytes (at most ArchiveHeadBytes) when
+	// the facts were established as a stream, so the caller can tell an
+	// archive that was declared as something else (P1.5).
+	Head []byte
 }
+
+// ArchiveHeadBytes is how many leading bytes DetectArchive needs: one tar
+// header block.
+const ArchiveHeadBytes = 512
 
 // Finalizable decides, under the transfer lock, whether a finalize may
 // commit: the transfer is still begun, inside its deadline, and its scope
