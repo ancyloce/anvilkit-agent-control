@@ -518,8 +518,8 @@ func (s *Operations) SubmitCommand(ctx context.Context, cmd domain.CommandIdenti
 		}
 		return r.InsertCommand(ctx, c)
 	})
-	if errors.Is(err, ErrDuplicateKey) {
-		return s.SubmitCommand(ctx, cmd, scope, operationID, kind, expected, targetActivation)
+	if errors.Is(err, ErrDuplicateKey) && depthOf(ctx) < duplicateRetries {
+		return s.SubmitCommand(deeper(ctx), cmd, scope, operationID, kind, expected, targetActivation)
 	}
 	return c, existing, err
 }

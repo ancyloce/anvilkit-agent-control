@@ -432,10 +432,15 @@ func TestDisposeIsOneCommit(t *testing.T) {
 	key := development.DispositionKey("business-write", eff.ID)
 	digest := publish(t, inv, key, development.DispositionAttestation{Class: "disposition", ObligationClass: "business-write", ObligationID: eff.ID, Decision: "resolve_succeeded", Issuer: issuer, SealedAt: time.Now().UTC().Format(time.RFC3339)})
 	req := application.DispositionRequest{Class: "business-write", ObligationID: eff.ID, Decision: domain.DisposeResolveSucceeded, EvidenceRef: key, EvidenceDigest: digest, RecoveryEpoch: run.RecoveryEpoch, RunID: run.ID, Reason: "upstream console shows the write"}
-	// Between the evidence verification and the commit a second run moves
-	// the operation to a new recovery epoch.
+	// Between the evidence verification and the commit the operation moves
+	// to a new recovery epoch (a later run's fence; a second run cannot begin
+	// while this one holds the scope's closure, P1.5, so the fence is applied
+	// to the row directly).
 	evidence.hook = func() {
 		_, _, err := recovery.Begin(ctx, opCmd("one_begin_2"), opScope(opCmd("one_begin_2")), "tenant_a", time.Now().Add(-time.Hour), time.Now().Add(time.Minute), 5*time.Second, "second run")
+		require.ErrorIs(t, err, domain.ErrStaleExecution, "a second run on the open scope is refused")
+		require.ErrorContains(t, err, "RECOVERY_IN_PROGRESS")
+		_, err = base.pool.Exec(ctx, "UPDATE operations SET recovery_epoch = recovery_epoch + 1, execution_epoch = execution_epoch + 1 WHERE operation_id = ANY($1)", []string{eff.OperationID, opS.ID})
 		require.NoError(t, err)
 	}
 	_, _, err = recovery.Dispose(ctx, opCmd("one_race"), opScope(opCmd("one_race")), req)

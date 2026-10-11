@@ -23,10 +23,23 @@ type Effects struct {
 	queries   OutcomeQuery
 	clock     domain.Clock
 	log       *slog.Logger
+	// leaseProtected names the profiles whose business writes need the
+	// operation's confirmed lease (P1.5, CTL-APP-06): the queue-pooled ones.
+	leaseProtected map[string]bool
 }
 
 func NewEffects(store Store, inventory Inventory, queries OutcomeQuery, clock domain.Clock, log *slog.Logger) *Effects {
-	return &Effects{store: store, inventory: inventory, queries: queries, clock: clock, log: log}
+	return &Effects{store: store, inventory: inventory, queries: queries, clock: clock, log: log, leaseProtected: map[string]bool{}}
+}
+
+// WithProfiles names the reviewed profiles; the queue-pooled ones are lease-protected.
+func (s *Effects) WithProfiles(profiles []domain.Profile) *Effects {
+	for _, p := range profiles {
+		if p.QueuePool != "" {
+			s.leaseProtected[p.ID] = true
+		}
+	}
+	return s
 }
 
 // Permit is the answer to one prepare request: the effect record, whether
@@ -44,7 +57,7 @@ type Permit struct {
 // the same transaction. The clock is read only after the locks are held,
 // so a deadline or lease checked under lock contention is checked against
 // the time the decision is made, not a time sampled while waiting.
-func effectContext(ctx context.Context, r Repo, operationID, attemptID, tenantID string, clock domain.Clock) (domain.EffectContext, error) {
+func effectContext(ctx context.Context, r Repo, operationID, attemptID, tenantID string, clock domain.Clock, leaseProtected map[string]bool) (domain.EffectContext, error) {
 	op, err := r.LockOperation(ctx, operationID)
 	if err != nil {
 		return domain.EffectContext{}, err
@@ -52,7 +65,7 @@ func effectContext(ctx context.Context, r Repo, operationID, attemptID, tenantID
 	if op.TenantID != tenantID {
 		return domain.EffectContext{}, domain.ErrNotFound
 	}
-	c := domain.EffectContext{Operation: op}
+	c := domain.EffectContext{Operation: op, LeaseRequired: leaseProtected[op.Subject.ProfileID]}
 	if attemptID != "" {
 		at, err := r.LockAttempt(ctx, attemptID)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -155,7 +168,7 @@ func (s *Effects) Prepare(ctx context.Context, cmd domain.CommandIdentity, req d
 			case !errors.Is(err, domain.ErrNotFound):
 				return err
 			}
-			c, err := effectContext(ctx, r, req.OperationID, req.AttemptID, cmd.TenantID, s.clock)
+			c, err := effectContext(ctx, r, req.OperationID, req.AttemptID, cmd.TenantID, s.clock, s.leaseProtected)
 			if err != nil {
 				return err
 			}
@@ -225,7 +238,7 @@ func (s *Effects) Prepare(ctx context.Context, cmd domain.CommandIdentity, req d
 
 	permitted := false
 	err = s.store.Tx(ctx, func(r Repo) error {
-		c, err := effectContext(ctx, r, e.OperationID, e.AttemptID, cmd.TenantID, s.clock)
+		c, err := effectContext(ctx, r, e.OperationID, e.AttemptID, cmd.TenantID, s.clock, s.leaseProtected)
 		if err != nil {
 			return err
 		}

@@ -98,11 +98,24 @@ func (s *Recovery) Begin(ctx context.Context, cmd domain.CommandIdentity, scope 
 			case !errors.Is(err, domain.ErrNotFound):
 				return err
 			}
-			epoch, err := r.MaxRecoveryEpoch(ctx)
+			// One run at a time per scope (P1.5, CTL-APP-08): an open closure of
+			// this scope or of every scope refuses a second run until the first
+			// reopens admission.
+			open, err := r.IsAdmissionClosed(ctx, scopeKey)
+			if err == nil && scopeKey == domain.ScopeAll && !open {
+				open, err = r.AnyAdmissionClosed(ctx)
+			}
 			if err != nil {
 				return err
 			}
-			fresh, err := domain.NewRecoveryRun(cmd, scopeKey, epoch+1, windowStart, windowEnd, skew, reason, now)
+			if open {
+				return fmt.Errorf("%w: RECOVERY_IN_PROGRESS: a recovery run holds the admission closure of scope %s", domain.ErrStaleExecution, scopeKey)
+			}
+			epoch, err := r.NextRecoveryEpoch(ctx)
+			if err != nil {
+				return err
+			}
+			fresh, err := domain.NewRecoveryRun(cmd, scopeKey, epoch, windowStart, windowEnd, skew, reason, now)
 			if err != nil {
 				return err
 			}
@@ -1296,8 +1309,8 @@ func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, scop
 		}
 		return nil
 	})
-	if errors.Is(err, ErrDuplicateKey) {
-		return s.Dispose(ctx, cmd, scope, req)
+	if errors.Is(err, ErrDuplicateKey) && depthOf(ctx) < duplicateRetries {
+		return s.Dispose(deeper(ctx), cmd, scope, req)
 	}
 	return d, false, err
 }

@@ -713,3 +713,48 @@ func (s *Dispatch) ConfirmNotSentLocked(ctx context.Context, r Repo, operationID
 	}
 	return locked, false, s.settleFinance(ctx, r, op, locked, true, now)
 }
+
+// ReconcileUnresolved asks the senders' original identities about the
+// AUTHORIZED and UNKNOWN dispatches that have waited since admission for at
+// least age (P1.5, CTL-APP-05), outside any recovery run: a known outcome
+// is recorded as the dispatch's observation under the source and sequence
+// the query names, exactly as recovery records it; an unknown one keeps
+// the exposure retained and is asked again later. It returns how many
+// dispatches it settled. A nil queries port reconciles nothing.
+func (s *Dispatch) ReconcileUnresolved(ctx context.Context, queries OutcomeQuery, age time.Duration, limit int) (int, error) {
+	if queries == nil {
+		return 0, nil
+	}
+	var pending []*domain.Dispatch
+	if err := s.store.Read(ctx, func(r Repo) error {
+		var err error
+		pending, err = r.ListUnresolvedDispatches(ctx, age, limit)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	settled := 0
+	for _, d := range pending {
+		if ctx.Err() != nil {
+			return settled, ctx.Err()
+		}
+		report, err := queries.QueryDispatch(ctx, d)
+		if err != nil {
+			s.log.Warn("original-identity query failed; the dispatch stays unresolved", "dispatchId", d.ID, "error", err)
+			continue
+		}
+		if !report.Known {
+			continue
+		}
+		observed, _, err := s.Observe(ctx, Reader{TenantID: d.TenantID}, d.ID, report.Source, report.Sequence, report.Outcome, report.Usage, report.NativeReference, report.ObservedAt)
+		if err != nil {
+			s.log.Warn("original-identity outcome not recorded", "dispatchId", d.ID, "error", err)
+			continue
+		}
+		if observed.State == domain.DispatchObserved {
+			settled++
+			s.log.Info("unresolved dispatch settled from its original identity", "dispatchId", d.ID, "operationId", d.OperationID, "outcome", observed.Outcome)
+		}
+	}
+	return settled, nil
+}

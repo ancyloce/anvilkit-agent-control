@@ -2,8 +2,10 @@ package application_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +48,9 @@ type relayDouble struct {
 	commands map[string]int
 	loseOnce map[string]bool
 	outcome  application.RelayOutcome
+	// block, when set, holds every command Update until it is closed or the
+	// relay's bound elapses (a handler awaiting a quiescent step, P1.4).
+	block chan struct{}
 }
 
 func (r *relayDouble) UpdateAnswer(_ context.Context, _ string, a *domain.Answer) (application.RelayOutcome, error) {
@@ -59,11 +64,45 @@ func (r *relayDouble) UpdateAnswer(_ context.Context, _ string, a *domain.Answer
 	return r.outcome, nil
 }
 
-func (r *relayDouble) UpdateCommand(_ context.Context, _ string, c *domain.Command) (application.RelayOutcome, error) {
+func (r *relayDouble) UpdateCommand(ctx context.Context, _ string, c *domain.Command) (application.RelayOutcome, error) {
+	r.mu.Lock()
+	r.commands[c.CommandID]++
+	block, outcome := r.block, r.outcome
+	r.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return application.RelayOutcome{}, fmt.Errorf("%w: %v", application.ErrRelayPending, ctx.Err())
+		}
+	}
+	return outcome, nil
+}
+
+func (r *relayDouble) setBlock(ch chan struct{}) {
+	r.mu.Lock()
+	r.block = ch
+	r.mu.Unlock()
+}
+
+// commandCount reads the relay double's own ledger under its own lock; the
+// embedded fake's starts and cancels live under the fake's lock.
+func (r *relayDouble) commandCount(id string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.commands[c.CommandID]++
-	return r.outcome, nil
+	return r.commands[id]
+}
+
+func (f *fakeWorkflows) startCount(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.starts[id]
+}
+
+func (f *fakeWorkflows) cancelCount(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cancels[id]
 }
 
 // lifecycleProfiles are the reviewed profiles of this test: short waits so
@@ -512,6 +551,111 @@ func TestLifecycle(t *testing.T) {
 		require.Equal(t, domain.OutcomeRejected, pc.Outcome)
 		require.Equal(t, "UNSUPPORTED_BY_PROFILE", pc.ReasonCode, "the preparation profile supports cancellation only")
 	})
+
+	t.Run("P1.5 AC2: held, resumed, pool full: every permit poll answers queued without recursion in at most two transactions", func(t *testing.T) {
+		genQ, _, err := p1.ops.Create(ctx, cmd("tenant_a", "gen_q", "body"), scopeA, domain.KindGeneration, genSubject, nil)
+		require.NoError(t, err)
+		require.NoError(t, p1.relay.TickStarts(ctx))
+		counting := &countingStore{Store: postgres.NewStore(inst.Pool(t))}
+		gens := application.NewGenerations(counting, p1.dispatch, lifecycleProfiles(), []domain.ResourcePool{{ID: "generation", Class: "generation", Capacity: 1}}, clock, testLog)
+		poll := func() application.PermitAnswer {
+			t.Helper()
+			before := counting.txs.Load()
+			a, err := gens.RequestExecutionPermit(ctx, cmd("tenant_a", genQ.ID+":permit", "p"), genQ.ID)
+			require.NoError(t, err)
+			require.False(t, a.Granted, "the pool is full")
+			require.LessOrEqual(t, counting.txs.Load()-before, int64(2), "a poll is bounded in transactions")
+			return a
+		}
+		poll()
+		v, err := p1.ops.Get(ctx, scopeA, genQ.ID)
+		require.NoError(t, err)
+		require.Equal(t, "queued", v.Phase)
+		_, _, err = p1.ops.SubmitCommand(ctx, cmd("tenant_a", "hold_q", "h"), scopeA, genQ.ID, domain.CommandHold, v.Revision, "")
+		require.NoError(t, err)
+		require.NoError(t, p1.relay.Tick(ctx))
+		v, err = p1.ops.Get(ctx, scopeA, genQ.ID)
+		require.NoError(t, err)
+		require.Equal(t, domain.LifecycleSuspended, v.Lifecycle)
+		_, _, err = p1.ops.SubmitCommand(ctx, cmd("tenant_a", "resume_q", "r"), scopeA, genQ.ID, domain.CommandResume, v.Revision, "")
+		require.NoError(t, err)
+		require.NoError(t, p1.relay.Tick(ctx))
+		v, err = p1.ops.Get(ctx, scopeA, genQ.ID)
+		require.NoError(t, err)
+		require.Equal(t, "resumed", v.Phase)
+		// The same poll command after the hold re-enters the queue: one new
+		// transition, then nothing for every further poll.
+		for range 3 {
+			poll()
+		}
+		v, err = p1.ops.Get(ctx, scopeA, genQ.ID)
+		require.NoError(t, err)
+		require.Equal(t, "queued", v.Phase)
+		var queueEvents int
+		require.NoError(t, inst.Pool(t).QueryRow(ctx, "SELECT count(*) FROM operation_events WHERE operation_id = $1 AND transition_id LIKE 'queue:%'", genQ.ID).Scan(&queueEvents))
+		require.Equal(t, 2, queueEvents, "one queue transition per entry into the queue")
+	})
+
+	t.Run("P1.4: a command Update blocked by a step in flight stalls no other tenant's start or cancel", func(t *testing.T) {
+		gen3, _, err := p1.ops.Create(ctx, cmd("tenant_a", "gen_3", "body"), scopeA, domain.KindGeneration, genSubject, nil)
+		require.NoError(t, err)
+		require.NoError(t, p1.relay.TickStarts(ctx))
+		v, err := p1.ops.Get(ctx, scopeA, gen3.ID)
+		require.NoError(t, err)
+		_, _, err = p1.ops.SubmitCommand(ctx, cmd("tenant_a", "hold_3", "h"), scopeA, gen3.ID, domain.CommandHold, v.Revision, "")
+		require.NoError(t, err)
+		// The Workflow's hold handler awaits a quiescent step: the Update is
+		// accepted and does not complete within the relay's bound.
+		block := make(chan struct{})
+		p1.wf.setBlock(block)
+		relay := application.NewRelay(postgres.NewStore(inst.Pool(t)), p1.wf, p1.ops, nil, p1.preparations, p1.generations, clock, testLog, 50*time.Millisecond).WithUpdateTimeout(200 * time.Millisecond)
+		runCtx, stopRelay := context.WithCancel(ctx)
+		relayDone := make(chan struct{})
+		go func() { relay.Run(runCtx); close(relayDone) }()
+		require.Eventually(t, func() bool { return p1.wf.commandCount("hold_3") >= 1 }, 2*time.Second, 10*time.Millisecond, "the hold Update is in flight")
+		// Tenant B's new operation and a cancel of a third operation reach
+		// Temporal within one tick while the hold is still blocked.
+		opB, _, err := p1.ops.Create(ctx, cmd("tenant_b", "lc_b_relay", "body"), scopeB, domain.KindLocalCheck, subject, nil)
+		require.NoError(t, err)
+		opC, _, err := p1.ops.Create(ctx, cmd("tenant_b", "lc_c_relay", "body"), scopeB, domain.KindLocalCheck, subject, nil)
+		require.NoError(t, err)
+		require.Eventually(t, func() bool { return p1.wf.startCount(opB.ID) == 1 && p1.wf.startCount(opC.ID) == 1 }, 2*time.Second, 10*time.Millisecond, "starts proceed beside the blocked Update")
+		// The start mark of the relay moves the revision beside this read: the
+		// cancel is submitted against the current one.
+		require.Eventually(t, func() bool {
+			vc, err := p1.ops.Get(ctx, scopeB, opC.ID)
+			if err != nil {
+				return false
+			}
+			_, _, err = p1.ops.SubmitCommand(ctx, cmd("tenant_b", "cancel_c_relay", "c"), scopeB, opC.ID, domain.CommandCancel, vc.Revision, "")
+			return err == nil
+		}, 2*time.Second, 20*time.Millisecond, "the cancel is accepted against the current revision")
+		require.Eventually(t, func() bool { return p1.wf.cancelCount(opC.ID) == 1 }, 2*time.Second, 10*time.Millisecond, "the cancel reaches Temporal beside the blocked Update")
+		hc, err := p1.ops.GetCommand(ctx, scopeA, gen3.ID, "hold_3")
+		require.NoError(t, err)
+		require.Equal(t, domain.OutcomePending, hc.Outcome, "the hold stays pending while its handler waits; the relay reissues it under the same id")
+		require.GreaterOrEqual(t, p1.wf.commandCount("hold_3"), 1)
+		// The step quiesces: the same update id completes and the hold applies.
+		close(block)
+		p1.wf.setBlock(nil)
+		require.Eventually(t, func() bool {
+			hc, err := p1.ops.GetCommand(ctx, scopeA, gen3.ID, "hold_3")
+			return err == nil && hc.Outcome == domain.OutcomeApplied
+		}, 3*time.Second, 20*time.Millisecond)
+		stopRelay()
+		<-relayDone
+	})
 }
 
 func ptr(s string) *string { return &s }
+
+// countingStore counts the transactions a call opens (P1.5 AC2).
+type countingStore struct {
+	application.Store
+	txs atomic.Int64
+}
+
+func (c *countingStore) Tx(ctx context.Context, fn func(application.Repo) error) error {
+	c.txs.Add(1)
+	return c.Store.Tx(ctx, fn)
+}

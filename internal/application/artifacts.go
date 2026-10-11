@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
@@ -22,11 +23,13 @@ import (
 // reads inside the caller's scope. Every object key stays in this service
 // and its store; callers and logs see handles and transfer ids only.
 type Artifacts struct {
-	store   Store
-	objects ArtifactStore
-	limits  ArtifactLimits
-	clock   domain.Clock
-	log     *slog.Logger
+	slotsOnce sync.Once
+	slots     chan struct{}
+	store     Store
+	objects   ArtifactStore
+	limits    ArtifactLimits
+	clock     domain.Clock
+	log       *slog.Logger
 }
 
 // ArtifactLimits are the reviewed bounds of the artifact service.
@@ -35,6 +38,10 @@ type ArtifactLimits struct {
 	MaxWindow      time.Duration
 	CapabilityTTL  time.Duration
 	Archive        domain.ArchiveLimits
+	// FinalizeConcurrency bounds the finalizations that hold object bytes
+	// at once (P1.5, CTL-INF-07); zero means 2. Only archive checks hold
+	// bytes: every other class is verified as a stream.
+	FinalizeConcurrency int
 }
 
 // NewArtifacts builds the service; a nil objects store leaves every
@@ -346,8 +353,39 @@ func (s *Artifacts) Finalize(ctx context.Context, cmd domain.CommandIdentity, tr
 		return s.settle(ctx, cmd, peek.ID, objectVersion, nil, fmt.Errorf("%w: transfer %s deadline %s passed", domain.ErrStaleExecution, peek.ID, peek.Deadline.UTC().Format(time.RFC3339)), domain.ReasonDeadlineExceeded)
 	}
 
-	// Step 2: the object, outside every lock.
-	body, facts, err := s.objects.Read(ctx, peek.ObjectKey, objectVersion, peek.ExpectedSize)
+	// Step 2: the object, outside every lock. Digest and size are verified as
+	// a stream; only an archive check needs the bytes, under the finalize
+	// semaphore sized to the memory limit (P1.5, CTL-INF-07).
+	// The slot is held from the read until the bytes are dropped after the
+	// archive check: the check, not only the read, holds the object.
+	var body []byte
+	var facts domain.ObjectFacts
+	var slot sync.Once
+	release := func() {}
+	defer func() { slot.Do(release) }()
+	if domain.NeedsArchiveCheck(peek.Class, peek.MediaType) {
+		if release, err = s.finalizeSlot(ctx); err != nil {
+			return nil, false, err
+		}
+		body, facts, err = s.objects.Read(ctx, peek.ObjectKey, objectVersion, peek.ExpectedSize)
+		if err == nil && (facts.Size != peek.ExpectedSize || facts.Digest != peek.ExpectedDigest) {
+			body = nil // a mismatch is classified below, never checked as an archive
+		}
+	} else {
+		facts, err = s.objects.Verify(ctx, peek.ObjectKey, objectVersion, peek.ExpectedSize)
+		// Bytes that are an archive are checked as one whatever media type
+		// was declared (an escape stays an escape); the leading bytes the
+		// stream kept decide, and only then is the object read.
+		if err == nil && facts.Size == peek.ExpectedSize && facts.Digest == peek.ExpectedDigest && domain.DetectArchive(facts.Head) != "" {
+			if release, err = s.finalizeSlot(ctx); err != nil {
+				return nil, false, err
+			}
+			body, facts, err = s.objects.Read(ctx, peek.ObjectKey, objectVersion, peek.ExpectedSize)
+			if err == nil && (facts.Size != peek.ExpectedSize || facts.Digest != peek.ExpectedDigest) {
+				body = nil
+			}
+		}
+	}
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return nil, false, fmt.Errorf("%w: transfer %s: object version %s is not present; the upload is not complete", domain.ErrInvalid, peek.ID, objectVersion)
@@ -361,9 +399,14 @@ func (s *Artifacts) Finalize(ctx context.Context, cmd domain.CommandIdentity, tr
 	reason := ""
 	if facts.Size != peek.ExpectedSize || facts.Digest != peek.ExpectedDigest {
 		verification = nil // Finalize itself classifies size and digest mismatches
-	} else if err := domain.CheckArchive(peek.Class, peek.MediaType, body, s.limits.Archive); err != nil {
-		verification, reason = err, archiveReason(err)
+	} else if body != nil {
+		if err := domain.CheckArchive(peek.Class, peek.MediaType, body, s.limits.Archive); err != nil {
+			verification, reason = err, archiveReason(err)
+		}
+		body = nil // the bytes are not needed past the check
 	}
+	body = nil
+	slot.Do(release)
 
 	// Step 3: commit under the locks.
 	return s.settle(ctx, cmd, peek.ID, objectVersion, &facts, verification, reason)
@@ -625,4 +668,21 @@ func artifactRelationship(ctx context.Context, r Repo, op *domain.Operation, t *
 		return err
 	}
 	return fmt.Errorf("%w: transfer %s is no input of operation %s: not its prompt, an accepted answer, its brief, its preview or release source or an accepted stage artifact", domain.ErrStaleExecution, t.ID, op.ID)
+}
+
+// finalizeSlot acquires one of the bounded finalization slots.
+func (s *Artifacts) finalizeSlot(ctx context.Context) (func(), error) {
+	s.slotsOnce.Do(func() {
+		n := s.limits.FinalizeConcurrency
+		if n <= 0 {
+			n = 2
+		}
+		s.slots = make(chan struct{}, n)
+	})
+	select {
+	case s.slots <- struct{}{}:
+		return func() { <-s.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

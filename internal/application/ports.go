@@ -30,6 +30,9 @@ type Store interface {
 // command/result (6) before events (7).
 type Repo interface {
 	GetOperationSettlement(ctx context.Context, operationID string) (*domain.SettlementIntent, error)
+	// ListReconcilingSettlements lists operations kept reconciling under a
+	// stored settlement intent, oldest change first (P1.6).
+	ListReconcilingSettlements(ctx context.Context, limit int) ([]string, error)
 	InsertOperationSettlement(ctx context.Context, intent *domain.SettlementIntent) error
 	InsertOperation(ctx context.Context, op *domain.Operation) error
 	GetOperationByCommand(ctx context.Context, tenantID, commandID string) (*domain.Operation, error)
@@ -149,6 +152,12 @@ type Repo interface {
 
 	// Dispatches (rank 4) and their ledger (rank 6).
 	GetDispatchByCall(ctx context.Context, tenantID, owner, callID string) (*domain.Dispatch, error)
+	// ListPreparedDispatchesByAttempt locks the PREPARED dispatches of an
+	// attempt (P1.5): denied when the attempt closes.
+	ListPreparedDispatchesByAttempt(ctx context.Context, attemptID string) ([]*domain.Dispatch, error)
+	// ListUnresolvedDispatches lists AUTHORIZED and UNKNOWN dispatches
+	// admitted longer ago than age (P1.5): the periodic reconciler's input.
+	ListUnresolvedDispatches(ctx context.Context, age time.Duration, limit int) ([]*domain.Dispatch, error)
 	FindDispatchByOwnerCall(ctx context.Context, owner, callID string) (*domain.Dispatch, error)
 	GetDispatch(ctx context.Context, dispatchID string) (*domain.Dispatch, error)
 	LockDispatch(ctx context.Context, dispatchID string) (*domain.Dispatch, error)
@@ -202,6 +211,10 @@ type Repo interface {
 	GetRecoveryRun(ctx context.Context, runID string) (*domain.RecoveryRun, error)
 	LockRecoveryRun(ctx context.Context, runID string) (*domain.RecoveryRun, error)
 	MaxRecoveryEpoch(ctx context.Context) (uint64, error)
+	// NextRecoveryEpoch allocates a unique epoch from the sequence (P1.5).
+	NextRecoveryEpoch(ctx context.Context) (uint64, error)
+	// AnyAdmissionClosed reports whether any scope's closure is open (P1.5).
+	AnyAdmissionClosed(ctx context.Context) (bool, error)
 	InsertRecoveryRun(ctx context.Context, r *domain.RecoveryRun) error
 	UpdateRecoveryRun(ctx context.Context, r *domain.RecoveryRun) error
 	ListRecoveryPending(ctx context.Context, limit int) ([]*domain.RecoveryRun, error)
@@ -276,6 +289,10 @@ type InventoryPage struct {
 type ArtifactStore interface {
 	UploadCapability(ctx context.Context, key, mediaType string, size int64, expiresAt time.Time) (UploadCapability, error)
 	Read(ctx context.Context, key, version string, limit int64) ([]byte, domain.ObjectFacts, error)
+	// Verify streams the exact object version through the digest and size
+	// check without holding its bytes (P1.5, CTL-INF-07); limit bounds the
+	// bytes read (one more than declared tells a mismatch).
+	Verify(ctx context.Context, key, version string, limit int64) (domain.ObjectFacts, error)
 	// DownloadCapability issues the time-bounded authorization for one read
 	// of the exact object version under the key (no request is made); the
 	// trusted reader verifies the bytes against the recorded digest and size.
@@ -322,6 +339,18 @@ type RelayOutcome struct {
 // ErrRelayClosed reports that the operation's run cannot take an Update
 // (closed, terminal or not started); the relay records the rejection.
 var ErrRelayClosed = errors.New("workflow run closed")
+
+// ErrRelayPending reports that an Update was accepted by the run but did
+// not complete within the relay's bound (P1.4): the intent stays sent and a
+// later tick settles it under the same update id.
+var ErrRelayPending = errors.New("workflow update pending")
+
+// EventNotifier wakes event streams when an operation event commits on any
+// replica (P1.4): Subscribe returns a channel that receives one coalesced
+// signal per notification of the operation until cancel.
+type EventNotifier interface {
+	Subscribe(operationID string) (wake <-chan struct{}, cancel func())
+}
 
 // ManifestValidator exposes the jobs contract (contracts/jobs): it
 // validates a result manifest against the schema and answers the reviewed
@@ -406,4 +435,19 @@ type DispositionEvidence interface {
 // never qualify.
 type NotSentEvidence interface {
 	VerifyNotSent(ctx context.Context, d *domain.Dispatch, evidenceRef string, evidenceDigest domain.Digest) error
+}
+
+// Bounded reentry of a use case after a duplicate-key collision (P1.5,
+// CTL-APP-04): a concurrent replica committed the same record first and the
+// second pass answers it; the depth travels in the context so no path
+// recurses past duplicateRetries.
+type reentryDepthKey struct{}
+
+func depthOf(ctx context.Context) int {
+	d, _ := ctx.Value(reentryDepthKey{}).(int)
+	return d
+}
+
+func deeper(ctx context.Context) context.Context {
+	return context.WithValue(ctx, reentryDepthKey{}, depthOf(ctx)+1)
 }

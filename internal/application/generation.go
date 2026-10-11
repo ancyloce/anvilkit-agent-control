@@ -126,6 +126,16 @@ type PermitAnswer struct {
 // again later under the same command identity (the same digest); a
 // different digest under the command conflicts.
 func (s *Generations) RequestExecutionPermit(ctx context.Context, cmd domain.CommandIdentity, operationID string) (PermitAnswer, error) {
+	out, err := s.RequestExecutionPermitOnce(ctx, cmd, operationID)
+	if errors.Is(err, ErrDuplicateKey) {
+		return s.requestExecutionPermitRetry(ctx, cmd, operationID)
+	}
+	return out, err
+}
+
+// RequestExecutionPermitOnce is one pass of RequestExecutionPermit; a
+// duplicate-key collision is returned to the caller.
+func (s *Generations) RequestExecutionPermitOnce(ctx context.Context, cmd domain.CommandIdentity, operationID string) (PermitAnswer, error) {
 	var out PermitAnswer
 	err := s.store.Tx(ctx, func(r Repo) error {
 		op, err := r.LockOperation(ctx, operationID)
@@ -177,7 +187,12 @@ func (s *Generations) RequestExecutionPermit(ctx context.Context, cmd domain.Com
 		if !decision.Granted {
 			out.QueuedAhead = active
 			if op.Phase != "queued" {
-				ev := op.Transition("queue:"+cmd.CommandID, now, func(o *domain.Operation) { o.Phase = "queued" })
+				// The poll's command id is stable across polls; the revision it
+				// leaves makes each entry into the queue its own transition, so
+				// a re-queue after a hold never collides with the first one
+				// (P1.5, CTL-APP-04). A poll that finds the phase queued
+				// writes nothing.
+				ev := op.Transition(fmt.Sprintf("queue:%s:r%d", cmd.CommandID, op.Revision), now, func(o *domain.Operation) { o.Phase = "queued" })
 				if err := r.UpdateOperation(ctx, op); err != nil {
 					return err
 				}
@@ -203,10 +218,20 @@ func (s *Generations) RequestExecutionPermit(ctx context.Context, cmd domain.Com
 		}
 		return r.InsertEvent(ctx, ev)
 	})
-	if errors.Is(err, ErrDuplicateKey) {
-		return s.RequestExecutionPermit(ctx, cmd, operationID)
-	}
 	return out, err
+}
+
+const duplicateRetries = 2
+
+func (s *Generations) requestExecutionPermitRetry(ctx context.Context, cmd domain.CommandIdentity, operationID string) (PermitAnswer, error) {
+	var out PermitAnswer
+	var err error
+	for i := 0; i < duplicateRetries; i++ {
+		if out, err = s.RequestExecutionPermitOnce(ctx, cmd, operationID); !errors.Is(err, ErrDuplicateKey) {
+			return out, err
+		}
+	}
+	return out, fmt.Errorf("%w: permit request of %s kept colliding with concurrent writers", domain.ErrUnavailable, operationID)
 }
 
 // RecordLease records a confirmed lease report under a stable occurrence.

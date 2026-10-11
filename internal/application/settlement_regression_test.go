@@ -243,5 +243,74 @@ func TestSettlementRegressions(t *testing.T) {
 		require.Equal(t, domain.LifecycleCanceled, current.Lifecycle)
 		require.Equal(t, 0, active(t, op.ID))
 	})
-
+	// P1.6 AC2: the Workflow stated the outcome while a dispatch was still
+	// unresolved and then stopped polling (its run hit the history limit or
+	// was terminated). Once the dispatch is observed, Control re-applies the
+	// stored intent itself: the operation ends as the Workflow intended,
+	// with the same terminal transition a re-poll would have written.
+	settleStopped := func(t *testing.T, sweep func(t *testing.T, opID string)) {
+		op := create(t)
+		run := execution()
+		at, _, err := run.OpenAttempt(ctx, cmd("tenant_a", op.ID+":open", "open"), op.ID, "analysis", 0, p.ID)
+		require.NoError(t, err)
+		var budgets int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM budget_pools").Scan(&budgets))
+		if budgets == 0 {
+			pools(t, pool, "unsettled", [3]int64{10_000_000, 10_000_000, 10_000_000})
+		}
+		auth := &authorityDouble{allowed: map[string]bool{"tenant_a/" + modelRoute: true}}
+		dispatch := application.NewDispatch(store, inv, fixturePrices(t, "regression", 1), auth, nil, domain.SystemClock{}, testLog)
+		_, _, err = dispatch.Allocate(ctx, scopeA, op.ID, usd(1_000_000))
+		require.NoError(t, err)
+		sent, err := dispatch.Admit(ctx, cmd("tenant_a", op.ID+":send", "send"), modelRequest(op, at, op.ID+":send", "proxy", 1000))
+		require.NoError(t, err)
+		require.True(t, sent.Allowed)
+		_, current, _, err := run.CloseAttempt(ctx, cmd("tenant_a", op.ID+":close", "close"), at.ID, domain.OutcomeCompleted, domain.CleanupComplete, "")
+		require.NoError(t, err)
+		command := cmd("tenant_a", op.ID+":settle", "settle")
+		current, _, err = run.SettleOperation(ctx, command, op.ID, domain.OperationSucceeded, "", "candidate_ready")
+		require.NoError(t, err)
+		require.Equal(t, domain.LifecycleReconciling, current.Lifecycle, "the authorized send keeps the settlement reconciling")
+		settled, err := execution().SettleFromIntent(ctx, op.ID)
+		require.NoError(t, err)
+		require.False(t, settled, "nothing is re-applied while an obligation is open")
+		// The Workflow polls no more. The send's outcome arrives.
+		_, _, err = dispatch.Observe(ctx, application.Reader{}, sent.Dispatch.ID, "proxy", 1, domain.DispatchSucceeded, reported(domain.Usage{}), "receipt", time.Now())
+		require.NoError(t, err)
+		sweep(t, op.ID)
+		current, err = ops.Get(ctx, scopeA, op.ID)
+		require.NoError(t, err)
+		require.Equal(t, domain.LifecycleSucceeded, current.Lifecycle, "settled by Control from the stored intent")
+		require.Equal(t, "candidate_ready", current.Phase)
+		require.Equal(t, 0, active(t, op.ID), "the permit is released")
+		var terminal int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM operation_events WHERE operation_id = $1 AND transition_id = $2", op.ID, "settle:"+command.CommandID+":terminal").Scan(&terminal))
+		require.Equal(t, 1, terminal, "the terminal transition a re-poll would have written")
+		// A Workflow that does poll again finds the settled operation.
+		again, existing, err := execution().SettleOperation(ctx, command, op.ID, domain.OperationSucceeded, "", "candidate_ready")
+		require.NoError(t, err)
+		require.True(t, existing)
+		require.Equal(t, current.Revision, again.Revision, "the late poll changes nothing")
+	}
+	t.Run("P1.6 AC2 a stopped Workflow's settlement is re-applied by the sweep", func(t *testing.T) {
+		settleStopped(t, func(t *testing.T, opID string) {
+			n, err := execution().ReconcileSettlements(ctx, 100)
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, n, 1)
+		})
+	})
+	t.Run("P1.6 AC2 the relay's settlement lane re-applies it on its own", func(t *testing.T) {
+		settleStopped(t, func(t *testing.T, opID string) {
+			relay := application.NewRelay(store, &fakeWorkflows{starts: map[string]int{}, cancels: map[string]int{}}, ops, nil, nil, generations, domain.SystemClock{}, testLog, time.Hour).
+				WithSettlementReconciler(execution(), 50*time.Millisecond, 100)
+			runCtx, stop := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func() { relay.Run(runCtx); close(done) }()
+			defer func() { stop(); <-done }()
+			require.Eventually(t, func() bool {
+				op, err := ops.Get(ctx, scopeA, opID)
+				return err == nil && op.Lifecycle == domain.LifecycleSucceeded
+			}, 5*time.Second, 25*time.Millisecond)
+		})
+	})
 }
