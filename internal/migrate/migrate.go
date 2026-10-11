@@ -26,7 +26,7 @@ const Domain = "control"
 
 // Latest is the migration version an empty database reaches from
 // 00001_init.sql plus the forward migrations of this build.
-const Latest int64 = 14
+const Latest int64 = 15
 
 // Source is the embedded migration directory (00001_init.sql and the
 // forward migrations), the same files the Job applies; tests install a
@@ -79,6 +79,33 @@ func DownTo(ctx context.Context, db *sql.DB, version int64) (int64, error) {
 		return 0, fmt.Errorf("migrate: down %s: %w", Domain, err)
 	}
 	return p.GetDBVersion(ctx)
+}
+
+// ExpectedVersion is the highest version of the embedded migrations: what
+// a binary's schema check compares the database against (P1.4).
+func ExpectedVersion() (int64, error) {
+	entries, err := fs.ReadDir(Source(), ".")
+	if err != nil {
+		return 0, err
+	}
+	var max int64
+	for _, e := range entries {
+		name := e.Name()
+		var v int64
+		for _, ch := range name {
+			if ch < '0' || ch > '9' {
+				break
+			}
+			v = v*10 + int64(ch-'0')
+		}
+		if v > max {
+			max = v
+		}
+	}
+	if max == 0 {
+		return 0, fmt.Errorf("no embedded migration")
+	}
+	return max, nil
 }
 
 // Version reports the applied version without changing anything.
