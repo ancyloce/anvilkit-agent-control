@@ -295,6 +295,50 @@ type Dispatch struct {
 	// is asked about every interval until its outcome is known.
 	ReconcileInterval time.Duration `koanf:"reconcile_interval"`
 	ReconcileAge      time.Duration `koanf:"reconcile_age"`
+	// The production authority inputs (P2.1): the commercial authority
+	// source, the trusted evidence issuers and the price book. Outside
+	// dispatch.development every one is required; Control refuses to start
+	// without them rather than deny every paid route silently.
+	Authority AuthoritySource `koanf:"authority"`
+	Evidence  Evidence        `koanf:"evidence"`
+	Prices    Prices          `koanf:"prices"`
+}
+
+// AuthoritySource is the guarded client of the commercial authority decision
+// endpoint of the ENV-07 declaration (DD-06 AuthorizationPort): an absolute
+// https URL, the CA that verifies it and the workload certificate (mTLS) or
+// a bearer token file (an OAuth client-credentials token the platform keeps
+// current; the file is CSI-mounted and never the value).
+type AuthoritySource struct {
+	URL        string        `koanf:"url"`
+	Timeout    time.Duration `koanf:"timeout"`
+	CAFile     string        `koanf:"ca_file"`
+	CertFile   string        `koanf:"cert_file"`
+	KeyFile    string        `koanf:"key_file"`
+	ServerName string        `koanf:"server_name"`
+	TokenFile  string        `koanf:"token_file"`
+}
+
+// Evidence names the trusted issuers of signed not-sent and disposition
+// evidence: one Ed25519 public key file (PEM, PKIX) per key id; rotation
+// adds a key id.
+type Evidence struct {
+	Issuers []EvidenceIssuer `koanf:"issuers"`
+}
+
+type EvidenceIssuer struct {
+	Name          string `koanf:"name"`
+	KeyID         string `koanf:"key_id"`
+	PublicKeyFile string `koanf:"public_key_file"`
+}
+
+// Prices place the price book: the refresh interval of every replica's
+// snapshot and the reviewed ENV-06 price book file published (idempotently)
+// at start; a database without any price revision and no initial file
+// refuses to start outside dispatch.development.
+type Prices struct {
+	RefreshInterval time.Duration `koanf:"refresh_interval"`
+	InitialFile     string        `koanf:"initial_file"`
 }
 
 // DispatchDevelopment is the DEVELOPMENT_ONLY source of prices, route
@@ -414,6 +458,8 @@ var defaults = map[string]any{
 	"dispatch.authority_freshness":          "30s",
 	"dispatch.reconcile_interval":           "30s",
 	"dispatch.reconcile_age":                "10m",
+	"dispatch.authority.timeout":            "5s",
+	"dispatch.prices.refresh_interval":      "2s",
 	"artifacts.finalize_concurrency":        2,
 	"dispatch.development.enabled":          false,
 	"inventory.backend":                     InventoryFilesystem,
@@ -455,6 +501,9 @@ var envOverrides = map[string]string{
 	"ANVILKIT_CONTROL_TEMPORAL_ADDRESS":                    "temporal.address",
 	"ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS":                 "model_proxy.address",
 	"ANVILKIT_CONTROL_MODEL_PROXY_TOKEN":                   "model_proxy.token",
+	"ANVILKIT_CONTROL_AUTHORITY_URL":                       "dispatch.authority.url",
+	"ANVILKIT_CONTROL_AUTHORITY_TOKEN_FILE":                "dispatch.authority.token_file",
+	"ANVILKIT_CONTROL_PRICES_INITIAL_FILE":                 "dispatch.prices.initial_file",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_ENDPOINT":               "artifacts.s3.endpoint",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_BUCKET":                 "artifacts.s3.bucket",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID":          "artifacts.s3.access_key_id",
@@ -777,6 +826,10 @@ func (c Config) validate() error {
 	if !dev.Enabled && (len(dev.Prices) > 0 || len(dev.AuthorizedRoutes) > 0 || len(dev.NotSentIssuers) > 0) {
 		errs = append(errs, errors.New("dispatch.development fixtures require dispatch.development.enabled: true (DEVELOPMENT_ONLY)"))
 	}
+	if dev.Enabled && !c.Development.Enabled {
+		errs = append(errs, errors.New("dispatch.development.enabled requires development.enabled: true (the dispatch fixtures are DEVELOPMENT_ONLY)"))
+	}
+	errs = append(errs, c.validateProductionAuthority()...)
 	if _, err := dev.DomainPrices(); err != nil {
 		errs = append(errs, err)
 	}
@@ -788,31 +841,106 @@ func (c Config) validate() error {
 	return errors.Join(errs...)
 }
 
+// validateProductionAuthority refuses a non-development dispatch chain that
+// would run on fixtures or on nothing (P2.1, B-14): the authority source,
+// at least one evidence issuer and the Model Proxy's original-identity
+// query are required, each named in the refusal.
+func (c Config) validateProductionAuthority() []error {
+	var errs []error
+	if c.Dispatch.Prices.RefreshInterval < 500*time.Millisecond || c.Dispatch.Prices.RefreshInterval > time.Minute {
+		errs = append(errs, fmt.Errorf("dispatch.prices.refresh_interval %s outside [500ms, 1m]", c.Dispatch.Prices.RefreshInterval))
+	}
+	a := c.Dispatch.Authority
+	if a.Timeout < 100*time.Millisecond || a.Timeout > 30*time.Second {
+		errs = append(errs, fmt.Errorf("dispatch.authority.timeout %s outside [100ms, 30s]", a.Timeout))
+	}
+	if (a.CertFile == "") != (a.KeyFile == "") {
+		errs = append(errs, errors.New("dispatch.authority.cert_file and key_file are both set or both empty"))
+	}
+	if a.URL != "" {
+		u, err := url.Parse(a.URL)
+		switch {
+		case err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http"):
+			errs = append(errs, errors.New("dispatch.authority.url must be an absolute http(s) URL without credentials"))
+		case u.Scheme == "http" && !c.Development.Enabled:
+			errs = append(errs, errors.New("dispatch.authority.url must be https outside development"))
+		}
+	}
+	for i, iss := range c.Dispatch.Evidence.Issuers {
+		if iss.Name == "" || iss.KeyID == "" || iss.PublicKeyFile == "" {
+			errs = append(errs, fmt.Errorf("dispatch.evidence.issuers[%d] needs name, key_id and public_key_file", i))
+		}
+	}
+	if c.Dispatch.Development.Enabled {
+		return errs
+	}
+	if a.URL == "" {
+		errs = append(errs, errors.New("production authority: dispatch.authority.url is required outside dispatch.development (no commercial authority source; the DEVELOPMENT_ONLY route fixture is not admitted)"))
+	} else if a.CertFile == "" && a.TokenFile == "" {
+		errs = append(errs, errors.New("production authority: dispatch.authority needs a workload certificate (cert_file/key_file) or a token_file"))
+	}
+	if len(c.Dispatch.Evidence.Issuers) == 0 {
+		errs = append(errs, errors.New("production evidence: dispatch.evidence.issuers is required outside dispatch.development (no trusted signer of not-sent or disposition evidence)"))
+	}
+	if c.ModelProxy.Address == "" {
+		errs = append(errs, errors.New("production outcome query: model_proxy.address is required outside dispatch.development (UNKNOWN model dispatches would otherwise resolve through the DEVELOPMENT_ONLY attestation double)"))
+	}
+	return errs
+}
+
 // DomainPrices converts the fixture prices into validated domain
 // observations; every string money value is parsed, never converted
 // through a float.
 func (d DispatchDevelopment) DomainPrices() ([]domain.Price, error) {
-	out := make([]domain.Price, 0, len(d.Prices))
-	for i, f := range d.Prices {
+	return domainPrices("dispatch.development.prices", d.Prices)
+}
+
+func domainPrices(name string, fixtures []PriceFixture) ([]domain.Price, error) {
+	out := make([]domain.Price, 0, len(fixtures))
+	for i, f := range fixtures {
 		bound, err := domain.ParseMoney(f.Currency, f.MaxExposure)
 		if err != nil {
-			return nil, fmt.Errorf("dispatch.development.prices[%d].max_exposure: %w", i, err)
+			return nil, fmt.Errorf("%s[%d].max_exposure: %w", name, i, err)
 		}
 		p := domain.Price{Revision: f.Revision, Kind: domain.DispatchKind(f.Kind), Route: f.Route, Provider: f.Provider, Model: f.Model, Currency: f.Currency, EffectiveFrom: f.EffectiveFrom.UTC(), EffectiveUntil: f.EffectiveUntil.UTC(), PerMillion: map[domain.UsageCategory]int64{}, MaxExposure: bound.Amount}
 		p.InputIncludesCached, p.OutputIncludesReasoning = f.InputIncludesCached, f.OutputIncludesReasoning
 		for category, value := range f.PerMillion {
 			m, err := domain.ParseMoney(f.Currency, value)
 			if err != nil {
-				return nil, fmt.Errorf("dispatch.development.prices[%d].per_million.%s: %w", i, category, err)
+				return nil, fmt.Errorf("%s[%d].per_million.%s: %w", name, i, category, err)
 			}
 			p.PerMillion[domain.UsageCategory(category)] = m.Amount
 		}
 		if err := p.Validate(); err != nil {
-			return nil, fmt.Errorf("dispatch.development.prices[%d]: %w", i, err)
+			return nil, fmt.Errorf("%s[%d]: %w", name, i, err)
 		}
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// LoadPriceBook reads a reviewed ENV-06 price book file (P2.1): schemaVersion
+// 1 and a prices list in the fixture format (scale-6 decimal strings per one
+// million units, RFC 3339 interval). Unknown keys reject the file.
+func LoadPriceBook(path string) ([]domain.Price, error) {
+	k := koanf.New(".")
+	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
+		return nil, fmt.Errorf("dispatch.prices.initial_file %s: %w", path, err)
+	}
+	var book struct {
+		SchemaVersion int            `koanf:"schemaVersion"`
+		Prices        []PriceFixture `koanf:"prices"`
+	}
+	if err := k.UnmarshalWithConf("", &book, koanf.UnmarshalConf{DecoderConfig: &mapstructure.DecoderConfig{
+		DecodeHook:  mapstructure.ComposeDecodeHookFunc(mapstructure.StringToTimeHookFunc(time.RFC3339)),
+		ErrorUnused: true, WeaklyTypedInput: true, Result: &book,
+	}}); err != nil {
+		return nil, fmt.Errorf("dispatch.prices.initial_file %s: %w", path, err)
+	}
+	if book.SchemaVersion != 1 || len(book.Prices) == 0 {
+		return nil, fmt.Errorf("dispatch.prices.initial_file %s: needs schemaVersion 1 and at least one price", path)
+	}
+	return domainPrices("dispatch.prices.initial_file prices", book.Prices)
 }
 
 // validateIdentity checks the listener identity, the top-level guard and

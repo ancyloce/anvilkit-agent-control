@@ -20,7 +20,19 @@ func write(t *testing.T, body string) string {
 	return path
 }
 
-const minimal = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    ca_file: /etc/anvilkit/identity/ca.crt\n"
+const bare = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    ca_file: /etc/anvilkit/identity/ca.crt\n"
+
+// production holds the authority inputs a non-development dispatch chain
+// needs (P2.1): the decision endpoint, a trusted evidence issuer and the
+// Model Proxy's original-identity query.
+const production = "dispatch:\n  authority:\n    url: https://authority.example/decisions\n    token_file: /var/run/secrets/anvilkit/authority/token\n" +
+	"  evidence:\n    issuers:\n      - name: anvilkit-model-proxy\n        key_id: mp-1\n        public_key_file: /etc/anvilkit/evidence/mp-1.pem\n" +
+	"model_proxy:\n  address: https://anvilkit-agent-model-proxy:9103\n  identity:\n    mode: mtls\n    mtls:\n      cert_file: /etc/anvilkit/identity/tls.crt\n      key_file: /etc/anvilkit/identity/tls.key\n      ca_file: /etc/anvilkit/identity/ca.crt\n"
+
+const minimal = bare + production
+
+// devDispatch selects the DEVELOPMENT_ONLY dispatch chain.
+const devDispatch = "development:\n  enabled: true\ndispatch:\n  development:\n    enabled: true\n"
 
 // identityEnv places the mounted identity files and the trust domain
 // (P0.1); the loader does not read the files.
@@ -117,16 +129,20 @@ func TestRequiredValuesAndRanges(t *testing.T) {
 func TestDispatchFixturesAreFileOnlyValidatedAndOffByDefault(t *testing.T) {
 	c, err := config.LoadFrom(filepath.Join("..", "..", "config.yaml"), env)
 	require.NoError(t, err)
-	require.False(t, c.Dispatch.Development.Enabled, "the checked-in file denies every paid route")
+	require.True(t, c.Dispatch.Development.Enabled, "the checked-in file is the foundation's DEVELOPMENT_ONLY dispatch chain")
+	require.Empty(t, c.Dispatch.Development.Prices, "with no fixture price every paid route is denied")
+	require.Empty(t, c.Dispatch.Development.AuthorizedRoutes)
 	require.Equal(t, 30*time.Second, c.Dispatch.AuthorityFreshness)
-	_, err = config.LoadFrom(write(t, minimal+"dispatch:\n  authority_freshness: 2m\n"), env)
+	_, err = config.LoadFrom(write(t, bare+"dispatch:\n  authority_freshness: 2m\n"), env)
 	require.ErrorContains(t, err, "authority_freshness", "never fresher than the 30 s baseline bound")
-	_, err = config.LoadFrom(write(t, minimal+"dispatch:\n  development:\n    authorized_routes:\n      - tenant_id: tenant_a\n        route_id: r\n"), env)
+	_, err = config.LoadFrom(write(t, bare+"dispatch:\n  development:\n    authorized_routes:\n      - tenant_id: tenant_a\n        route_id: r\n"), env)
 	require.ErrorContains(t, err, "require dispatch.development.enabled")
 	_, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_DISPATCH_DEVELOPMENT_ENABLED=true"))
 	require.ErrorContains(t, err, "ANVILKIT_CONTROL_DISPATCH_DEVELOPMENT_ENABLED", "fixtures are never enabled from the environment")
 	const price = "dispatch:\n  development:\n    enabled: true\n    prices:\n      - revision: fx-1\n        kind: model\n        route: fixture-route\n        provider: fixture\n        model: fixture-model\n        currency: USD\n        effective_from: 2026-01-01T00:00:00Z\n        effective_until: 2027-01-01T00:00:00Z\n        per_million: {input_units: \"3000000\", output_units: \"15000000\", reasoning_units: \"15000000\", cached_input_units: \"300000\"}\n        max_exposure: \"5000000\"\n"
-	c, err = config.LoadFrom(write(t, minimal+price), env)
+	_, err = config.LoadFrom(write(t, bare+price), env)
+	require.ErrorContains(t, err, "dispatch.development.enabled requires development.enabled", "the fixtures exist only in a development deployment")
+	c, err = config.LoadFrom(write(t, bare+"development:\n  enabled: true\n"+price), env)
 	require.NoError(t, err)
 	prices, err := c.Dispatch.Development.DomainPrices()
 	require.NoError(t, err)
@@ -134,20 +150,20 @@ func TestDispatchFixturesAreFileOnlyValidatedAndOffByDefault(t *testing.T) {
 	require.Equal(t, int64(5_000_000), prices[0].MaxExposure)
 	require.False(t, prices[0].InputIncludesCached)
 	require.False(t, prices[0].OutputIncludesReasoning)
-	inclusive, err := config.LoadFrom(write(t, minimal+price+"        input_includes_cached: true\n        output_includes_reasoning: true\n"), env)
+	inclusive, err := config.LoadFrom(write(t, bare+"development:\n  enabled: true\n"+price+"        input_includes_cached: true\n        output_includes_reasoning: true\n"), env)
 	require.NoError(t, err)
 	inclusivePrices, err := inclusive.Dispatch.Development.DomainPrices()
 	require.NoError(t, err)
 	require.True(t, inclusivePrices[0].InputIncludesCached)
 	require.True(t, inclusivePrices[0].OutputIncludesReasoning)
 	require.Equal(t, [2]string{"fixture", "fixture-model"}, [2]string{prices[0].Provider, prices[0].Model}, "a model price binds the trusted provider and model of its route")
-	_, err = config.LoadFrom(write(t, minimal+strings.Replace(price, "        model: fixture-model\n", "", 1)), env)
+	_, err = config.LoadFrom(write(t, bare+"development:\n  enabled: true\n"+strings.Replace(price, "        model: fixture-model\n", "", 1)), env)
 	require.ErrorContains(t, err, "must bind a provider and a model", "a model price without its binding is rejected at startup")
-	_, err = config.LoadFrom(write(t, minimal+strings.Replace(price, "kind: model", "kind: tool", 1)), env)
+	_, err = config.LoadFrom(write(t, bare+"development:\n  enabled: true\n"+strings.Replace(price, "kind: model", "kind: tool", 1)), env)
 	require.ErrorContains(t, err, "binds a provider or model", "a tool price binds neither")
-	_, err = config.LoadFrom(write(t, minimal+strings.Replace(price, "\"3000000\"", "\"3.5\"", 1)), env)
+	_, err = config.LoadFrom(write(t, bare+"development:\n  enabled: true\n"+strings.Replace(price, "\"3000000\"", "\"3.5\"", 1)), env)
 	require.ErrorContains(t, err, "per_million.input_units", "money is a canonical integer string, never a float")
-	_, err = config.LoadFrom(write(t, minimal+strings.Replace(price, ", cached_input_units: \"300000\"", "", 1)), env)
+	_, err = config.LoadFrom(write(t, bare+"development:\n  enabled: true\n"+strings.Replace(price, ", cached_input_units: \"300000\"", "", 1)), env)
 	require.ErrorContains(t, err, "does not meter cached_input_units")
 }
 
@@ -174,20 +190,20 @@ func TestInventoryS3BackendRequiresPlacementAndEnvOnlyCredentials(t *testing.T) 
 }
 
 func TestModelProxyPlacementAndSecret(t *testing.T) {
-	c, err := config.LoadFrom(write(t, minimal), env)
+	c, err := config.LoadFrom(write(t, bare+devDispatch), env)
 	require.NoError(t, err)
-	require.Empty(t, c.ModelProxy.Address, "no placement: the attestation double answers model dispatches")
+	require.Empty(t, c.ModelProxy.Address, "no placement: the DEVELOPMENT_ONLY attestation double answers model dispatches")
 	require.Equal(t, "anvilkit-agent-model-proxy", c.ModelProxy.Owner)
-	_, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103"))
+	_, err = config.LoadFrom(write(t, bare), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103"))
 	require.ErrorContains(t, err, "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN")
-	_, err = config.LoadFrom(write(t, minimal), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
+	_, err = config.LoadFrom(write(t, bare), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
 	require.ErrorContains(t, err, "model_proxy.identity.mode development (plaintext bearer) requires development.enabled", "the bearer path is DEVELOPMENT_ONLY")
-	c, err = config.LoadFrom(write(t, minimal+"development:\n  enabled: true\n"), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
+	c, err = config.LoadFrom(write(t, bare+devDispatch), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=http://127.0.0.1:9103", "ANVILKIT_CONTROL_MODEL_PROXY_TOKEN=secret"))
 	require.NoError(t, err)
 	require.Equal(t, "secret", c.ModelProxy.Token)
-	_, err = config.LoadFrom(write(t, minimal+"model_proxy:\n  token: in-file\n"), env)
+	_, err = config.LoadFrom(write(t, bare+"model_proxy:\n  token: in-file\n"), env)
 	require.ErrorContains(t, err, "model_proxy.token is a secret")
-	_, err = config.LoadFrom(write(t, minimal+"model_proxy:\n  identity:\n    mode: mtls\n"), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=https://proxy"))
+	_, err = config.LoadFrom(write(t, bare+"model_proxy:\n  identity:\n    mode: mtls\n"), append(env, "ANVILKIT_CONTROL_MODEL_PROXY_ADDRESS=https://proxy"))
 	require.ErrorContains(t, err, "model_proxy.identity.mtls.cert_file, key_file and ca_file are required")
 }
 
@@ -408,6 +424,30 @@ func TestDataPlaneTLS(t *testing.T) {
 	const plainTemporal = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    mode: development\n"
 	_, err = config.LoadFrom(write(t, plainTemporal), env)
 	require.ErrorContains(t, err, "temporal.tls.mode development (plaintext) requires development.enabled")
-	_, err = config.LoadFrom(write(t, plainTemporal+"development:\n  enabled: true\n"), env)
+	_, err = config.LoadFrom(write(t, plainTemporal+devDispatch), env)
 	require.NoError(t, err)
+}
+
+// TestProductionAuthorityIsRequired: outside the DEVELOPMENT_ONLY dispatch
+// chain Control refuses to start without a commercial authority source,
+// trusted evidence issuers and the Model Proxy's outcome query, each named
+// (P2.1 AC7, B-14).
+func TestProductionAuthorityIsRequired(t *testing.T) {
+	_, err := config.LoadFrom(write(t, bare), env)
+	require.ErrorContains(t, err, "production authority: dispatch.authority.url is required")
+	require.ErrorContains(t, err, "production evidence: dispatch.evidence.issuers is required")
+	require.ErrorContains(t, err, "production outcome query: model_proxy.address is required")
+	c, err := config.LoadFrom(write(t, minimal), env)
+	require.NoError(t, err)
+	require.Equal(t, "https://authority.example/decisions", c.Dispatch.Authority.URL)
+	require.Len(t, c.Dispatch.Evidence.Issuers, 1)
+	require.Equal(t, 2*time.Second, c.Dispatch.Prices.RefreshInterval)
+	_, err = config.LoadFrom(write(t, strings.Replace(minimal, "https://authority.example", "http://authority.example", 1)), env)
+	require.ErrorContains(t, err, "dispatch.authority.url must be https outside development")
+	_, err = config.LoadFrom(write(t, strings.Replace(minimal, "    token_file: /var/run/secrets/anvilkit/authority/token\n", "", 1)), env)
+	require.ErrorContains(t, err, "needs a workload certificate (cert_file/key_file) or a token_file")
+	c, err = config.LoadFrom(write(t, bare+production[:strings.Index(production, "  evidence:")]), append(env, "ANVILKIT_CONTROL_AUTHORITY_URL=https://authz.internal/v1/decide"))
+	require.ErrorContains(t, err, "production evidence")
+	_, err = config.LoadFrom(write(t, bare+devDispatch), env)
+	require.NoError(t, err, "the DEVELOPMENT_ONLY chain needs none of them")
 }
