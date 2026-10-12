@@ -69,6 +69,14 @@ spec:
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/etc/anvilkit/trust
             {{- end }}
+            {{- if and .Values.modelProxy.address (eq .Values.modelProxy.identityMode "development") }}
+            # DEVELOPMENT_ONLY: the bearer token of the Model Proxy client.
+            - name: ANVILKIT_CONTROL_MODEL_PROXY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.modelProxy.tokenSecret.name }}
+                  key: {{ .Values.modelProxy.tokenSecret.key }}
+            {{- end }}
             {{- if .Values.telemetry.otlpEndpoint }}
             - name: ANVILKIT_CONTROL_TELEMETRY_OTLP_ENDPOINT
               value: {{ .Values.telemetry.otlpEndpoint | quote }}
@@ -202,6 +210,16 @@ spec:
               mountPath: /etc/anvilkit/trust
               readOnly: true
             {{- end }}
+            {{- if .Values.evidence.issuers }}
+            - name: evidence-keys
+              mountPath: /etc/anvilkit/evidence
+              readOnly: true
+            {{- end }}
+            {{- if .Values.prices.configMap }}
+            - name: prices
+              mountPath: /etc/anvilkit/prices
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -233,6 +251,21 @@ spec:
           configMap:
             name: {{ .Values.trust.configMap }}
             items: [{key: ca.crt, path: ca.crt}]
+        {{- end }}
+        {{- if .Values.evidence.issuers }}
+        - name: evidence-keys
+          configMap:
+            name: {{ .Values.evidence.configMap }}
+            items:
+              {{- range .Values.evidence.issuers }}
+              - {key: {{ printf "%s.pem" .keyId | quote }}, path: {{ printf "%s.pem" .keyId | quote }}}
+              {{- end }}
+        {{- end }}
+        {{- if .Values.prices.configMap }}
+        - name: prices
+          configMap:
+            name: {{ .Values.prices.configMap }}
+            items: [{key: prices.yaml, path: prices.yaml}]
         {{- end }}
         {{- if eq .Values.secrets.provider "csi" }}
         - name: credentials

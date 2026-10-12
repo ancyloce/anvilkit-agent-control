@@ -86,6 +86,46 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (eq .Values.identity.mode "mtls") (not .Values.identity.certificate.create) (not .Values.identity.secretName) }}
 {{- fail "identity.secretName is required while identity.certificate.create is false" }}
 {{- end }}
+{{- /* P2.1/P2.3: the dispatch chain's authority inputs. */ -}}
+{{- $dispatchDev := dig "dispatch" "development" "enabled" false .Values.config -}}
+{{- if and $dispatchDev (not .Values.development.enabled) }}
+{{- fail "config.dispatch.development.enabled is DEVELOPMENT_ONLY: it renders only with development.enabled: true (fixture prices, routes and unsigned evidence)" }}
+{{- end }}
+{{- if not (has .Values.modelProxy.identityMode (list "mtls" "development")) }}
+{{- fail "modelProxy.identityMode must be mtls or development" }}
+{{- end }}
+{{- if and (eq .Values.modelProxy.identityMode "development") (not .Values.development.enabled) }}
+{{- fail "modelProxy.identityMode development is DEVELOPMENT_ONLY: it renders only with development.enabled: true (a bearer token authenticates no workload)" }}
+{{- end }}
+{{- if and (eq .Values.modelProxy.identityMode "development") .Values.modelProxy.address (not .Values.modelProxy.tokenSecret.name) }}
+{{- fail "modelProxy.tokenSecret.name is required under modelProxy.identityMode development (ANVILKIT_CONTROL_MODEL_PROXY_TOKEN)" }}
+{{- end }}
+{{- if and (eq .Values.modelProxy.identityMode "mtls") .Values.modelProxy.address (ne .Values.identity.mode "mtls") }}
+{{- fail "modelProxy.identityMode mtls presents the workload certificate: it needs identity.mode mtls" }}
+{{- end }}
+{{- if not (has .Values.authority.identity (list "mtls" "token")) }}
+{{- fail "authority.identity must be mtls or token" }}
+{{- end }}
+{{- if and .Values.authority.url (eq .Values.authority.identity "token") (ne .Values.secrets.provider "csi") }}
+{{- fail "authority.identity token reads the CSI file authority-token: it needs secrets.provider csi" }}
+{{- end }}
+{{- if and .Values.authority.url (eq .Values.authority.identity "mtls") (ne .Values.identity.mode "mtls") }}
+{{- fail "authority.identity mtls presents the workload certificate: it needs identity.mode mtls" }}
+{{- end }}
+{{- if and .Values.evidence.issuers (not .Values.evidence.configMap) }}
+{{- fail "evidence.configMap is required with evidence.issuers: the ConfigMap holding <keyId>.pem per issuer key" }}
+{{- end }}
+{{- if not $dispatchDev }}
+{{- if not .Values.authority.url }}
+{{- fail "authority.url is required outside config.dispatch.development: the ENV-07 commercial authority decision endpoint (P2.1)" }}
+{{- end }}
+{{- if not .Values.evidence.issuers }}
+{{- fail "evidence.issuers is required outside config.dispatch.development: the trusted signers of not-sent and disposition evidence (P2.1)" }}
+{{- end }}
+{{- if not .Values.modelProxy.address }}
+{{- fail "modelProxy.address is required outside config.dispatch.development: the original-identity query of model dispatches (P2.3)" }}
+{{- end }}
+{{- end }}
 {{- if not (has .Values.temporal.tls.mode (list "tls" "mtls" "development")) }}
 {{- fail "temporal.tls.mode must be tls, mtls or development" }}
 {{- end }}
@@ -137,6 +177,41 @@ wired to the loader's keys. */}}
 {{- $_ = set $id "ca_file" "/etc/anvilkit/identity/ca.crt" }}
 {{- end -}}
 {{- $_ = set $cfg.grpc "identity" $id -}}
+{{- /* P2.3: the Model Proxy placement and the identity Control presents. */ -}}
+{{- $mp := default (dict) $cfg.model_proxy -}}
+{{- if .Values.modelProxy.address }}{{- $_ = set $mp "address" .Values.modelProxy.address }}{{- end -}}
+{{- $mpid := dict "mode" .Values.modelProxy.identityMode -}}
+{{- if eq .Values.modelProxy.identityMode "mtls" }}
+{{- $_ = set $mpid "mtls" (dict "cert_file" "/etc/anvilkit/identity/tls.crt" "key_file" "/etc/anvilkit/identity/tls.key" "ca_file" "/etc/anvilkit/identity/ca.crt" "server_name" .Values.modelProxy.serverName) }}
+{{- end -}}
+{{- $_ = set $mp "identity" $mpid -}}
+{{- $_ = set $cfg "model_proxy" $mp -}}
+{{- /* P2.1: the production authority inputs of the dispatch chain. */ -}}
+{{- $d := default (dict) $cfg.dispatch -}}
+{{- if .Values.authority.url }}
+{{- $a := dict "url" .Values.authority.url -}}
+{{- if .Values.authority.serverName }}{{- $_ = set $a "server_name" .Values.authority.serverName }}{{- end -}}
+{{- if eq .Values.authority.identity "token" }}
+{{- $_ = set $a "token_file" "/var/run/secrets/anvilkit/csi/authority-token" }}
+{{- else }}
+{{- $_ = set $a "cert_file" "/etc/anvilkit/identity/tls.crt" }}
+{{- $_ = set $a "key_file" "/etc/anvilkit/identity/tls.key" }}
+{{- end -}}
+{{- $_ = set $d "authority" $a -}}
+{{- end -}}
+{{- if .Values.evidence.issuers }}
+{{- $issuers := list -}}
+{{- range .Values.evidence.issuers }}
+{{- $issuers = append $issuers (dict "name" .name "key_id" .keyId "public_key_file" (printf "/etc/anvilkit/evidence/%s.pem" .keyId)) -}}
+{{- end -}}
+{{- $_ = set $d "evidence" (dict "issuers" $issuers) -}}
+{{- end -}}
+{{- if .Values.prices.configMap }}
+{{- $p := default (dict) $d.prices -}}
+{{- $_ = set $p "initial_file" "/etc/anvilkit/prices/prices.yaml" -}}
+{{- $_ = set $d "prices" $p -}}
+{{- end -}}
+{{- $_ = set $cfg "dispatch" $d -}}
 {{- $tt := dict "mode" .Values.temporal.tls.mode -}}
 {{- if ne .Values.temporal.tls.mode "development" }}
 {{- $_ = set $tt "ca_file" "/etc/anvilkit/temporal-ca/ca.crt" }}
@@ -200,6 +275,9 @@ spec:
 {{- $keys := list "database-url" "inventory-access-key-id" "inventory-secret-access-key" -}}
 {{- if .Values.artifacts.enabled -}}
 {{- $keys = concat $keys (list "artifacts-access-key-id" "artifacts-secret-access-key") -}}
+{{- end -}}
+{{- if and .Values.authority.url (eq .Values.authority.identity "token") -}}
+{{- $keys = append $keys "authority-token" -}}
 {{- end -}}
 {{- toJson $keys -}}
 {{- end -}}

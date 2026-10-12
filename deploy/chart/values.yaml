@@ -108,6 +108,45 @@ secrets:
 trust:
   configMap: ""
 
+# P2.3: the Model Proxy placement of the original-identity query of model
+# dispatches (config model_proxy). identityMode mtls presents this
+# workload's identity certificate and verifies the Proxy by serverName (a
+# DNS SAN of the Proxy's certificate, issued by the same PKI);
+# development sends the DEVELOPMENT_ONLY bearer token of tokenSecret and
+# renders only with development.enabled. Required outside the
+# DEVELOPMENT_ONLY dispatch chain (config.dispatch.development.enabled).
+modelProxy:
+  address: ""
+  serverName: anvilkit-agent-model-proxy
+  identityMode: mtls
+  tokenSecret:
+    name: ""
+    key: control
+
+# P2.1: the production authority inputs of the dispatch chain, required
+# outside config.dispatch.development (the chart refuses to render without
+# them, as the configuration loader refuses to start).
+#  authority: the ENV-07 decision endpoint (an absolute https URL),
+#    verified against the image roots plus the trust bundle; Control answers
+#    with this workload's identity certificate (identity mtls) or with the
+#    bearer token of the CSI file authority-token (identity token, which
+#    needs secrets.provider csi and that key in the service's KV path).
+#  evidence: the trusted issuers of signed not-sent and disposition
+#    evidence, one PEM (PKIX Ed25519) public key per keyId in the ConfigMap
+#    evidence.configMap (key <keyId>.pem); rotation adds a keyId.
+#  prices: the reviewed ENV-06 price book published at start (ConfigMap
+#    prices.configMap, key prices.yaml); without it the database must
+#    already hold a price revision.
+authority:
+  url: ""
+  serverName: ""
+  identity: mtls
+evidence:
+  configMap: ""
+  issuers: []  # [{name: anvilkit-job-access-sidecar, keyId: sidecar-1}]
+prices:
+  configMap: ""
+
 # The application-role connection (ANVILKIT_CONTROL_DATABASE_URL): a secret,
 # read from an existing Secret that this chart never creates. Required under
 # secrets.provider kubernetes.
