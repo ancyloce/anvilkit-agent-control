@@ -26,10 +26,20 @@ type Dispatch struct {
 	profiles  map[string]domain.Profile
 	clock     domain.Clock
 	log       *slog.Logger
+	// capsRequired denies a paid route without a tenant, project or
+	// operation cost cap (P2.1); only a development deployment relaxes it.
+	capsRequired bool
 }
 
 func NewDispatch(store Store, inventory Inventory, prices PriceBook, authority Authority, evidence NotSentEvidence, clock domain.Clock, log *slog.Logger) *Dispatch {
-	return &Dispatch{store: store, inventory: inventory, prices: prices, authority: authority, evidence: evidence, profiles: map[string]domain.Profile{}, clock: clock, log: log}
+	return &Dispatch{store: store, inventory: inventory, prices: prices, authority: authority, evidence: evidence, profiles: map[string]domain.Profile{}, clock: clock, log: log, capsRequired: true}
+}
+
+// WithDevelopmentCaps relaxes the cap requirement for a DEVELOPMENT_ONLY
+// deployment: caps that exist are enforced, a missing level is not denied.
+func (s *Dispatch) WithDevelopmentCaps() *Dispatch {
+	s.capsRequired = false
+	return s
 }
 
 // WithProfiles installs the reviewed operation profiles so admission knows
@@ -212,13 +222,12 @@ func (s *Dispatch) Admit(ctx context.Context, cmd domain.CommandIdentity, req do
 				return r.InsertDispatch(ctx, d)
 			}
 			fresh := domain.NewDispatch(req, ac)
-			for _, a := range ac.Allocations {
-				if err := a.Reserve(req.MaxExposure); err != nil {
-					return err
-				}
-				if err := r.UpdateAllocation(ctx, a); err != nil {
-					return err
-				}
+			b := &budget{caps: ac.Caps, allocs: ac.Allocations}
+			if err := b.reserve(req.MaxExposure); err != nil {
+				return err
+			}
+			if err := b.save(ctx, r); err != nil {
+				return err
 			}
 			if err := r.InsertDispatch(ctx, fresh); err != nil {
 				return err
@@ -294,13 +303,12 @@ func (s *Dispatch) Admit(ctx context.Context, cmd domain.CommandIdentity, req do
 			if err := locked.Deny(denial.Code); err != nil {
 				return err
 			}
-			for _, a := range ac.Allocations {
-				if err := a.Release(locked.Reserved); err != nil {
-					return err
-				}
-				if err := r.UpdateAllocation(ctx, a); err != nil {
-					return err
-				}
+			b := &budget{caps: ac.Caps, allocs: ac.Allocations}
+			if err := b.release(locked.Reserved); err != nil {
+				return err
+			}
+			if err := b.save(ctx, r); err != nil {
+				return err
 			}
 			return r.UpdateDispatch(ctx, locked)
 		}
@@ -378,7 +386,7 @@ func (s *Dispatch) admissionContext(ctx context.Context, r Repo, b binding, tena
 		}
 		grant = g
 	}
-	allocs, err := r.LockAllocations(ctx, b.OperationID)
+	locked, err := lockBudget(ctx, r, b.OperationID)
 	if err != nil {
 		return domain.AdmissionContext{}, err
 	}
@@ -400,7 +408,7 @@ func (s *Dispatch) admissionContext(ctx context.Context, r Repo, b binding, tena
 	if err != nil {
 		return domain.AdmissionContext{}, err
 	}
-	ac := domain.AdmissionContext{Operation: op, Attempt: at, Allocations: allocs, Authority: authority, AdmissionClosed: closed, LeaseRequired: s.profiles[op.Subject.ProfileID].QueuePool != ""}
+	ac := domain.AdmissionContext{Operation: op, Attempt: at, Allocations: locked.allocs, Caps: locked.caps, CapsRequired: s.capsRequired, Authority: authority, AdmissionClosed: closed, LeaseRequired: s.profiles[op.Subject.ProfileID].QueuePool != ""}
 	if b.InstanceID != "" {
 		inst, err := r.LockInstance(ctx, b.InstanceID)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -516,7 +524,7 @@ func (s *Dispatch) Observe(ctx context.Context, reader Reader, dispatchID, sourc
 		return nil, false, fmt.Errorf("%w: dispatch %s was metered under price revision %q, which is no longer available", domain.ErrProfileUnqualified, peek.ID, peek.MeterRevision)
 	}
 	err = s.store.Tx(ctx, func(r Repo) error {
-		allocs, err := r.LockAllocations(ctx, peek.OperationID)
+		b, err := lockBudget(ctx, r, peek.OperationID)
 		if err != nil {
 			return err
 		}
@@ -569,26 +577,20 @@ func (s *Dispatch) Observe(ctx context.Context, reader Reader, dispatchID, sourc
 			if err := r.InsertCostEntry(ctx, entry); err != nil {
 				return err
 			}
-			for _, a := range allocs {
-				if err := a.Charge(entry.Amount, locked.Reserved, false); err != nil {
-					return err
-				}
+			if err := b.charge(entry.Amount, locked.Reserved, false); err != nil {
+				return err
 			}
 			if cost.Amount > locked.Reserved.Amount {
 				s.log.Warn("dispatch overspend retained; new admission of the operation is blocked", "dispatchId", locked.ID, "operationId", locked.OperationID, "reserved", locked.Reserved.String(), "actual", cost.String())
 			}
 		}
 		if settled {
-			for _, a := range allocs {
-				if err := a.Release(locked.Reserved); err != nil {
-					return err
-				}
-			}
-		}
-		for _, a := range allocs {
-			if err := r.UpdateAllocation(ctx, a); err != nil {
+			if err := b.release(locked.Reserved); err != nil {
 				return err
 			}
+		}
+		if err := b.save(ctx, r); err != nil {
+			return err
 		}
 		if err := r.UpdateDispatch(ctx, locked); err != nil {
 			return err
@@ -665,7 +667,7 @@ func (s *Dispatch) ConfirmNotSent(ctx context.Context, cmd domain.CommandIdentit
 // current authority (a recovery epoch) refuses without a partial change.
 // The evidence must have been verified outside the transaction.
 func (s *Dispatch) ConfirmNotSentLocked(ctx context.Context, r Repo, operationID, dispatchID, evidenceRef string, guard func(*domain.Operation) error) (d *domain.Dispatch, existing bool, err error) {
-	allocs, err := r.LockAllocations(ctx, operationID)
+	b, err := lockBudget(ctx, r, operationID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -699,13 +701,11 @@ func (s *Dispatch) ConfirmNotSentLocked(ctx context.Context, r Repo, operationID
 		return nil, false, err
 	}
 	if held {
-		for _, a := range allocs {
-			if err := a.Release(locked.Reserved); err != nil {
-				return nil, false, err
-			}
-			if err := r.UpdateAllocation(ctx, a); err != nil {
-				return nil, false, err
-			}
+		if err := b.release(locked.Reserved); err != nil {
+			return nil, false, err
+		}
+		if err := b.save(ctx, r); err != nil {
+			return nil, false, err
 		}
 	}
 	if err := r.UpdateDispatch(ctx, locked); err != nil {

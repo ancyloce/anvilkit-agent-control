@@ -25,6 +25,11 @@ type InstanceScope struct {
 	Operation     *domain.Operation
 	TenantID      string
 	RecoveryEpoch uint64
+	// BudgetHeadroom is the operation's unreserved budget (P2.4): the
+	// smallest amount − reserved − consumed over its allocations; nil when
+	// the operation is unfunded. A preflight for sizing sends, never a
+	// reservation.
+	BudgetHeadroom *domain.Money
 }
 
 // GetInstance reads the instance registered for one Pod of a launch. The
@@ -49,6 +54,16 @@ func (s *Execution) GetInstance(ctx context.Context, backend, launchKey, podUID 
 			return err
 		}
 		out = InstanceScope{Instance: inst, Attempt: at, Operation: op, TenantID: op.TenantID, RecoveryEpoch: op.RecoveryEpoch}
+		allocs, err := r.ListAllocationsByOperation(ctx, op.ID)
+		if err != nil {
+			return err
+		}
+		for _, a := range allocs {
+			left := max(0, a.Amount-a.Reserved-a.Consumed)
+			if out.BudgetHeadroom == nil || left < out.BudgetHeadroom.Amount {
+				out.BudgetHeadroom = &domain.Money{Currency: a.Currency, Amount: left}
+			}
+		}
 		return nil
 	})
 	if err != nil {

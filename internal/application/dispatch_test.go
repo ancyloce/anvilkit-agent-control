@@ -226,7 +226,7 @@ func newDispatchProcess(t *testing.T, inst *testdb.Instance, inv *hookedInventor
 		pool:     pool,
 		ops:      application.NewOperations(store, inv, []domain.Profile{profile}, domain.SystemClock{}, testLog),
 		exec:     application.NewExecution(store, inv, manifests, []domain.Profile{profile}, domain.SystemClock{}, testLog),
-		dispatch: application.NewDispatch(store, inv, prices, auth, development.NewNotSentEvidence(inv, []string{issuer}), domain.SystemClock{}, testLog),
+		dispatch: application.NewDispatch(store, inv, prices, auth, development.NewNotSentEvidence(inv, []string{issuer}), domain.SystemClock{}, testLog).WithDevelopmentCaps(),
 	}
 }
 

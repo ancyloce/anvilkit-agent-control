@@ -7,6 +7,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
@@ -149,6 +150,33 @@ type Repo interface {
 	GetAllocationByPool(ctx context.Context, poolID, operationID string) (*domain.Allocation, error)
 	InsertAllocation(ctx context.Context, a *domain.Allocation) error
 	UpdateAllocation(ctx context.Context, a *domain.Allocation) error
+
+	// Finance administration and settlement (P2.1): the price book, the
+	// cost caps (rank 1, locked before the allocations, in id order), pool
+	// provisioning and the return ledger of settled allocations.
+	InsertPriceRevision(ctx context.Context, p *domain.PriceRecord) error
+	GetPriceRevision(ctx context.Context, revision string) (*domain.PriceRecord, error)
+	LockPriceRevision(ctx context.Context, revision string) (*domain.PriceRecord, error)
+	WithdrawPriceRevision(ctx context.Context, revision string, at time.Time, by string) error
+	ListPriceRevisions(ctx context.Context) ([]*domain.PriceRecord, error)
+	CountPriceRevisions(ctx context.Context) (int64, error)
+	GetCostCap(ctx context.Context, level domain.CapLevel, tenantID, projectID, currency string) (*domain.CostCap, error)
+	LockCostCap(ctx context.Context, capID string) (*domain.CostCap, error)
+	InsertCostCap(ctx context.Context, c *domain.CostCap) error
+	UpdateCostCapLimit(ctx context.Context, c *domain.CostCap) error
+	UpdateCostCapCounters(ctx context.Context, c *domain.CostCap) error
+	LockOperationCostCaps(ctx context.Context, operationID string) ([]*domain.CostCap, error)
+	InsertPool(ctx context.Context, p *domain.BudgetPool, createdBy string) error
+	GetPool(ctx context.Context, poolID string) (*domain.BudgetPool, error)
+	GetPoolByScope(ctx context.Context, level domain.BudgetLevel, tenantID, actorID string, periodStart time.Time) (*domain.BudgetPool, error)
+	UpdatePoolCap(ctx context.Context, p *domain.BudgetPool) error
+	InsertAllocationReturn(ctx context.Context, a *domain.Allocation, amount int64, at time.Time) error
+	HasAllocationReturn(ctx context.Context, allocationID string) (bool, error)
+	ListFinanceUnsettled(ctx context.Context, limit int) ([]string, error)
+	// GetOperation reads an operation by id without a scope (internal
+	// settlement paths only) and ListAllocationsByOperation without locks.
+	GetOperation(ctx context.Context, operationID string) (*domain.Operation, error)
+	ListAllocationsByOperation(ctx context.Context, operationID string) ([]*domain.Allocation, error)
 
 	// Dispatches (rank 4) and their ledger (rank 6).
 	GetDispatchByCall(ctx context.Context, tenantID, owner, callID string) (*domain.Dispatch, error)
@@ -383,6 +411,14 @@ type Authority interface {
 	CheckExecution(ctx context.Context, scope domain.Scope, routeID string) (domain.Decision, error)
 }
 
+// AuthorizationSource answers any commercial authorization question for
+// Control's AuthorizationService (P2.1): the same source and the same
+// freshness rule as the admission's Authority. An unreachable source is
+// domain.ErrUnavailable and never a grant.
+type AuthorizationSource interface {
+	Check(ctx context.Context, q domain.AuthorizationQuery) (domain.Decision, error)
+}
+
 // OutcomeQuery answers the query of an obligation's original identity
 // (DD-06 §2 query-by-identity, DD-02 §4 "query original ID"): what the
 // upstream or the sender knows about the call or mutation. Known false
@@ -424,7 +460,9 @@ type EffectOutcomeReport struct {
 // the offered digest, naming the obligation and the decision, from a
 // trusted issuer. Anything less is domain.ErrEvidenceInsufficient.
 type DispositionEvidence interface {
-	VerifyDisposition(ctx context.Context, class, obligationID string, decision domain.DispositionDecision, evidenceRef string, evidenceDigest domain.Digest) error
+	// The evidence is bound to the obligation's tenant and the recovery
+	// epoch the disposition is made under (P2.1).
+	VerifyDisposition(ctx context.Context, tenantID string, recoveryEpoch uint64, class, obligationID string, decision domain.DispositionDecision, evidenceRef string, evidenceDigest domain.Digest) error
 }
 
 // NotSentEvidence verifies, outside database locks, that the evidence a
@@ -450,4 +488,8 @@ func depthOf(ctx context.Context) int {
 
 func deeper(ctx context.Context) context.Context {
 	return context.WithValue(ctx, reentryDepthKey{}, depthOf(ctx)+1)
+}
+
+func domainUnavailable(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{domain.ErrUnavailable}, args...)...)
 }

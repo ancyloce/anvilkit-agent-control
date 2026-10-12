@@ -20,6 +20,33 @@ type Execution struct {
 	profiles  map[string]domain.Profile
 	clock     domain.Clock
 	log       *slog.Logger
+	// finance settles a terminal operation's money right after the
+	// transition commits (P2.1); the settlement sweep repairs a miss.
+	finance *Finance
+}
+
+// WithFinance installs the financial settlement of terminal operations.
+func (s *Execution) WithFinance(f *Finance) *Execution {
+	s.finance = f
+	return s
+}
+
+// settleFinanceAfter settles a terminal operation's money in its own
+// transaction once the terminal transition committed; a failure is left
+// to the sweep and never fails the transition.
+func (s *Execution) settleFinanceAfter(ctx context.Context, op *domain.Operation) *domain.Operation {
+	if s.finance == nil || op == nil || !op.Lifecycle.Terminal() {
+		return op
+	}
+	settledOp, settled, err := s.finance.SettleFinance(ctx, op.ID)
+	if err != nil {
+		s.log.Warn("financial settlement deferred to the sweep", "operationId", op.ID, "error", err)
+		return op
+	}
+	if settled {
+		return settledOp
+	}
+	return op
 }
 
 func NewExecution(store Store, inventory Inventory, manifests ManifestValidator, profiles []domain.Profile, clock domain.Clock, log *slog.Logger) *Execution {
@@ -588,7 +615,7 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 			return err
 		}
 		if len(prepared) > 0 {
-			allocs, err := r.LockAllocations(ctx, lockedOp.ID)
+			b, err := lockBudget(ctx, r, lockedOp.ID)
 			if err != nil {
 				return err
 			}
@@ -599,17 +626,13 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 				if err := r.UpdateDispatch(ctx, d); err != nil {
 					return err
 				}
-				for _, a := range allocs {
-					if err := a.Release(d.Reserved); err != nil {
-						return err
-					}
+				if err := b.release(d.Reserved); err != nil {
+					return err
 				}
 				s.log.Warn("dispatch still prepared at attempt close denied", "dispatchId", d.ID, "attemptId", locked.ID, "operationId", lockedOp.ID)
 			}
-			for _, a := range allocs {
-				if err := r.UpdateAllocation(ctx, a); err != nil {
-					return err
-				}
+			if err := b.save(ctx, r); err != nil {
+				return err
 			}
 		}
 		locked.UpdatedAt = now
@@ -643,6 +666,9 @@ func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity
 		at, op = locked, lockedOp
 		return nil
 	})
+	if err == nil {
+		op = s.settleFinanceAfter(ctx, op)
+	}
 	return at, op, existing, err
 }
 
@@ -743,6 +769,11 @@ func (s *Execution) SettleFromIntent(ctx context.Context, operationID string) (s
 		settled = true
 		return nil
 	})
+	if err == nil && settled && s.finance != nil {
+		if _, _, ferr := s.finance.SettleFinance(ctx, operationID); ferr != nil {
+			s.log.Warn("financial settlement deferred to the sweep", "operationId", operationID, "error", ferr)
+		}
+	}
 	return settled, err
 }
 
@@ -769,6 +800,15 @@ func (s *Execution) ReconcileSettlements(ctx context.Context, limit int) (int, e
 		}
 		if settled {
 			n++
+		}
+	}
+	// The financial settlement sweep (P2.1): terminal operations whose
+	// money has not settled yet, whatever path ended them.
+	if s.finance != nil {
+		if m, err := s.finance.ReconcileFinance(ctx, limit); err != nil {
+			s.log.Warn("financial settlement sweep failed", "error", err)
+		} else if m > 0 {
+			s.log.Info("operations settled financially by the sweep", "count", m)
 		}
 	}
 	return n, nil
@@ -868,5 +908,8 @@ func (s *Execution) SettleOperation(ctx context.Context, cmd domain.CommandIdent
 		op = locked
 		return nil
 	})
+	if err == nil {
+		op = s.settleFinanceAfter(ctx, op)
+	}
 	return op, existing, err
 }

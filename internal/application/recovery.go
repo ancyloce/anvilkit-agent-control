@@ -694,17 +694,15 @@ func (s *Recovery) restore(ctx context.Context, run *domain.RecoveryRun, f *doma
 				// have spent and its settlement releases or charges what it
 				// holds. Allocations created after the restore point are gone
 				// with their operation and hold nothing.
-				allocs, err := r.LockAllocations(ctx, rec.OperationID)
+				b, err := lockBudget(ctx, r, rec.OperationID)
 				if err != nil {
 					return err
 				}
-				for _, a := range allocs {
-					if err := a.Restore(d.Reserved); err != nil {
-						return err
-					}
-					if err := r.UpdateAllocation(ctx, a); err != nil {
-						return err
-					}
+				if err := b.restore(d.Reserved); err != nil {
+					return err
+				}
+				if err := b.save(ctx, r); err != nil {
+					return err
 				}
 				op, err := r.LockOperation(ctx, rec.OperationID)
 				if err != nil {
@@ -1216,7 +1214,7 @@ func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, scop
 		if err := s.notSent.VerifyNotSent(ctx, dispatch, req.EvidenceRef, req.EvidenceDigest); err != nil {
 			return nil, false, err
 		}
-	} else if err := s.evidence.VerifyDisposition(ctx, req.Class, req.ObligationID, req.Decision, req.EvidenceRef, req.EvidenceDigest); err != nil {
+	} else if err := s.evidence.VerifyDisposition(ctx, cmd.TenantID, req.RecoveryEpoch, req.Class, req.ObligationID, req.Decision, req.EvidenceRef, req.EvidenceDigest); err != nil {
 		return nil, false, err
 	}
 	// One commit: epoch under the operation lock, the obligation's change,

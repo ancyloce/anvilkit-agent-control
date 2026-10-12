@@ -142,7 +142,7 @@ func newLifecycleProcess(t *testing.T, inst *testdb.Instance, inv application.In
 	profiles := lifecycleProfiles()
 	prices, err := development.NewPriceBook(nil)
 	require.NoError(t, err)
-	dispatch := application.NewDispatch(store, inv, prices, development.NewAuthority(nil, 30*time.Second, clock), development.NewNotSentEvidence(inv, nil), clock, testLog).WithProfiles(profiles)
+	dispatch := application.NewDispatch(store, inv, prices, development.NewAuthority(nil, 30*time.Second, clock), development.NewNotSentEvidence(inv, nil), clock, testLog).WithDevelopmentCaps().WithProfiles(profiles)
 	limits := application.ArtifactLimits{MaxObjectBytes: 1 << 20, MaxWindow: time.Hour, CapabilityTTL: 5 * time.Minute}
 	p := &lifecycleProcess{
 		ops:          application.NewOperations(store, inv, profiles, clock, testLog),

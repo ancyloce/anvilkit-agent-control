@@ -355,8 +355,8 @@ type hookedDisposition struct {
 	once  sync.Once
 }
 
-func (h *hookedDisposition) VerifyDisposition(ctx context.Context, class, obligationID string, decision domain.DispositionDecision, evidenceRef string, evidenceDigest domain.Digest) error {
-	if err := h.inner.VerifyDisposition(ctx, class, obligationID, decision, evidenceRef, evidenceDigest); err != nil {
+func (h *hookedDisposition) VerifyDisposition(ctx context.Context, tenantID string, epoch uint64, class, obligationID string, decision domain.DispositionDecision, evidenceRef string, evidenceDigest domain.Digest) error {
+	if err := h.inner.VerifyDisposition(ctx, tenantID, epoch, class, obligationID, decision, evidenceRef, evidenceDigest); err != nil {
 		return err
 	}
 	if h.hook != nil {
