@@ -638,7 +638,7 @@ func (q *Queries) InsertUsageObservation(ctx context.Context, arg InsertUsageObs
 
 const listCurrentPools = `-- name: ListCurrentPools :many
 
-SELECT pool_id, level, tenant_id, actor_id, period_start, period_end, currency, cap_amount, allocated, revision FROM budget_pools
+SELECT pool_id, level, tenant_id, actor_id, period_start, period_end, currency, cap_amount, allocated, revision, created_by FROM budget_pools
 WHERE currency = $1 AND period_start <= $2 AND period_end > $2
   AND ((level = 'platform' AND tenant_id IS NULL AND actor_id IS NULL)
     OR (level = 'tenant' AND tenant_id = $3 AND actor_id IS NULL)
@@ -683,6 +683,7 @@ func (q *Queries) ListCurrentPools(ctx context.Context, arg ListCurrentPoolsPara
 			&i.CapAmount,
 			&i.Allocated,
 			&i.Revision,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -925,7 +926,7 @@ func (q *Queries) LockGrantPolicy(ctx context.Context, arg LockGrantPolicyParams
 }
 
 const lockPool = `-- name: LockPool :one
-SELECT pool_id, level, tenant_id, actor_id, period_start, period_end, currency, cap_amount, allocated, revision FROM budget_pools WHERE pool_id = $1 FOR UPDATE
+SELECT pool_id, level, tenant_id, actor_id, period_start, period_end, currency, cap_amount, allocated, revision, created_by FROM budget_pools WHERE pool_id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockPool(ctx context.Context, poolID string) (BudgetPool, error) {
@@ -942,6 +943,7 @@ func (q *Queries) LockPool(ctx context.Context, poolID string) (BudgetPool, erro
 		&i.CapAmount,
 		&i.Allocated,
 		&i.Revision,
+		&i.CreatedBy,
 	)
 	return i, err
 }

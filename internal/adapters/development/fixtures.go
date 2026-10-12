@@ -82,6 +82,16 @@ func NewAuthority(routes []RouteAuthorization, freshness time.Duration, clock do
 	return a
 }
 
+// Check answers AuthorizationService questions from the same fixture: a
+// model-route execution as CheckExecution; any other resource is allowed
+// only for a tenant listed with the route "*" (DEVELOPMENT_ONLY).
+func (a *Authority) Check(ctx context.Context, q domain.AuthorizationQuery) (domain.Decision, error) {
+	if q.ResourceType == "model-route" && !q.Disclosure {
+		return a.CheckExecution(ctx, q.Scope, q.ResourceID)
+	}
+	return a.CheckExecution(ctx, q.Scope, "*")
+}
+
 func (a *Authority) CheckExecution(_ context.Context, scope domain.Scope, routeID string) (domain.Decision, error) {
 	now := a.clock.Now()
 	if a.allowed[scope.TenantID+"\x00"+routeID] {
@@ -276,7 +286,7 @@ func NewDispositionEvidence(objects ObjectReader, issuers []string) *Disposition
 	return e
 }
 
-func (e *DispositionEvidence) VerifyDisposition(ctx context.Context, class, obligationID string, decision domain.DispositionDecision, evidenceRef string, evidenceDigest domain.Digest) error {
+func (e *DispositionEvidence) VerifyDisposition(ctx context.Context, _ string, _ uint64, class, obligationID string, decision domain.DispositionDecision, evidenceRef string, evidenceDigest domain.Digest) error {
 	if evidenceRef != DispositionKey(class, obligationID) {
 		return fmt.Errorf("%w: evidence %q is not the disposition attestation of %s/%s", domain.ErrEvidenceInsufficient, evidenceRef, class, obligationID)
 	}

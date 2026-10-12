@@ -27,6 +27,15 @@ type Allocation struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type AllocationReturn struct {
+	AllocationID string
+	PoolID       string
+	OperationID  string
+	Currency     string
+	Amount       int64
+	ReturnedAt   pgtype.Timestamptz
+}
+
 type Answer struct {
 	AnswerID            string
 	OperationID         string
@@ -127,6 +136,21 @@ type BudgetPool struct {
 	CapAmount   int64
 	Allocated   int64
 	Revision    int64
+	CreatedBy   string
+}
+
+type CostCap struct {
+	CapID     string
+	Level     string
+	TenantID  string
+	ProjectID string
+	Currency  string
+	CapAmount int64
+	Reserved  int64
+	Consumed  int64
+	Revision  int64
+	UpdatedBy string
+	UpdatedAt pgtype.Timestamptz
 }
 
 type CostEntry struct {
@@ -421,6 +445,30 @@ type Preview struct {
 	FailureCode     *string
 	Revision        int64
 	UpdatedAt       pgtype.Timestamptz
+}
+
+type PriceRevision struct {
+	Revision                string
+	Kind                    string
+	Route                   string
+	Provider                string
+	Model                   string
+	Currency                string
+	EffectiveFrom           pgtype.Timestamptz
+	EffectiveUntil          pgtype.Timestamptz
+	InputUnits              int64
+	OutputUnits             int64
+	ReasoningUnits          int64
+	CachedInputUnits        int64
+	MaxExposure             int64
+	InputIncludesCached     bool
+	OutputIncludesReasoning bool
+	Digest                  string
+	PublishedBy             string
+	CommandID               string
+	PublishedAt             pgtype.Timestamptz
+	WithdrawnAt             pgtype.Timestamptz
+	WithdrawnBy             *string
 }
 
 type QuestionSet struct {
