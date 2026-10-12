@@ -158,8 +158,14 @@ dispatch:
   reconcile_interval: 30s
   reconcile_age: 10m
   # development: DEVELOPMENT_ONLY prices, route authorizations and trusted
-  # not-sent issuers for the admission chain (delivery.md P06). With
-  # enabled: false every paid route is denied; real prices/caps (ENV-06) and
-  # authorization (ENV-07) are deployment inputs, never this file.
+  # not-sent issuers for the admission chain (delivery.md P06). This file
+  # serves the development foundation's host-side runs: the fixtures are
+  # selected but empty, so every paid route is denied until a scenario adds
+  # them. Outside dispatch.development Control requires the production
+  # inputs (P2.1) — dispatch.authority (the ENV-07 decision endpoint),
+  # dispatch.evidence.issuers (signed evidence keys), the price book
+  # (dispatch.prices.initial_file or a published revision) and
+  # model_proxy.address — and refuses to start without them; the chart
+  # renders that file.
   development:
-    enabled: false
+    enabled: true
