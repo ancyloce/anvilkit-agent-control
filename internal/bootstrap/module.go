@@ -18,10 +18,8 @@ import (
 	"go.uber.org/fx/fxevent"
 
 	artifactstore "github.com/ancyloce/anvilkit-agent-control/internal/adapters/artifacts"
-	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/development"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/inventory"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/jobs"
-	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/modelproxy"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres"
 	temporaladapter "github.com/ancyloce/anvilkit-agent-control/internal/adapters/temporal"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
@@ -136,8 +134,8 @@ func Module() fx.Option {
 			func(cfg config.Config, store application.Store, inv application.Inventory, clock domain.Clock, log *slog.Logger) *application.Operations {
 				return application.NewOperations(store, inv, Profiles(cfg), clock, log)
 			},
-			func(cfg config.Config, store application.Store, inv application.Inventory, mv application.ManifestValidator, clock domain.Clock, log *slog.Logger) *application.Execution {
-				return application.NewExecution(store, inv, mv, Profiles(cfg), clock, log)
+			func(cfg config.Config, store application.Store, inv application.Inventory, mv application.ManifestValidator, finance *application.Finance, clock domain.Clock, log *slog.Logger) *application.Execution {
+				return application.NewExecution(store, inv, mv, Profiles(cfg), clock, log).WithFinance(finance)
 			},
 			func(cfg config.Config, store application.Store, clock domain.Clock, log *slog.Logger) *application.Preparations {
 				return application.NewPreparations(store, Profiles(cfg), clock, log)
@@ -145,48 +143,24 @@ func Module() fx.Option {
 			func(cfg config.Config, store application.Store, dispatch *application.Dispatch, clock domain.Clock, log *slog.Logger) *application.Generations {
 				return application.NewGenerations(store, dispatch, Profiles(cfg), Pools(cfg), clock, log)
 			},
-			// DEVELOPMENT_ONLY sources of prices, authority and not-sent
-			// evidence; disabled fixtures deny every paid route (P06, ENV-06/07).
-			func(cfg config.Config, clock domain.Clock, log *slog.Logger) (application.PriceBook, error) {
-				prices, err := cfg.Dispatch.Development.DomainPrices()
-				if err != nil {
-					return nil, err
+			// The authority inputs of the dispatch chain (P2.1): the
+			// DEVELOPMENT_ONLY fixtures only under dispatch.development (which
+			// the loader admits only with development.enabled), the
+			// production price book, authority source, signed evidence and
+			// Model Proxy query otherwise.
+			newPriceBook,
+			newAuthority,
+			newEvidence,
+			newOutcomeQuery,
+			func(store application.Store, prices *application.StoredPrices, clock domain.Clock, log *slog.Logger) *application.Finance {
+				var refresh func(context.Context) error
+				if prices != nil {
+					refresh = prices.Refresh
 				}
-				if cfg.Dispatch.Development.Enabled {
-					log.Warn("DEVELOPMENT_ONLY dispatch fixtures enabled", "prices", len(prices), "authorizedRoutes", len(cfg.Dispatch.Development.AuthorizedRoutes), "notSentIssuers", len(cfg.Dispatch.Development.NotSentIssuers))
-				}
-				return development.NewPriceBook(prices)
+				return application.NewFinance(store, refresh, clock, log)
 			},
-			func(cfg config.Config, clock domain.Clock) application.Authority {
-				routes := make([]development.RouteAuthorization, 0, len(cfg.Dispatch.Development.AuthorizedRoutes))
-				for _, r := range cfg.Dispatch.Development.AuthorizedRoutes {
-					routes = append(routes, development.RouteAuthorization{TenantID: r.TenantID, RouteID: r.RouteID})
-				}
-				return development.NewAuthority(routes, cfg.Dispatch.AuthorityFreshness, clock)
-			},
-			// The original-identity query: the Model Proxy for model dispatches
-			// when its placement is configured (P11), otherwise — and for
-			// business writes until the Pagix declaration exists (ENV-07) — the
-			// DEVELOPMENT_ONLY attestation double.
-			func(cfg config.Config, inv application.Inventory, log *slog.Logger) (application.OutcomeQuery, error) {
-				double := development.NewOutcomeQuery(inv, cfg.Dispatch.Development.NotSentIssuers)
-				mp := cfg.ModelProxy
-				if mp.Address == "" {
-					return double, nil
-				}
-				o := modelproxy.Options{BaseURL: mp.Address, Timeout: mp.Timeout, Owner: mp.Owner}
-				if mp.Identity.Mode == "mtls" {
-					m := mp.Identity.MTLS
-					o.TLS = &modelproxy.TLSFiles{CertFile: m.CertFile, KeyFile: m.KeyFile, CAFile: m.CAFile, ServerName: m.ServerName}
-				} else {
-					log.Warn("DEVELOPMENT_ONLY model proxy identity: bearer token; qualifies no production identity")
-					o.Token = mp.Token
-				}
-				log.Info("model dispatch outcomes are queried from the Model Proxy", "address", mp.Address, "owner", mp.Owner)
-				return modelproxy.New(o, double)
-			},
-			func(cfg config.Config, inv application.Inventory) application.DispositionEvidence {
-				return development.NewDispositionEvidence(inv, cfg.Dispatch.Development.NotSentIssuers)
+			func(source application.AuthorizationSource, clock domain.Clock) *application.Authorization {
+				return application.NewAuthorization(source, clock)
 			},
 			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, clock domain.Clock, log *slog.Logger) *application.Effects {
 				return application.NewEffects(store, inv, queries, clock, log).WithProfiles(Profiles(cfg))
@@ -194,11 +168,12 @@ func Module() fx.Option {
 			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, dispatch *application.Dispatch, effects *application.Effects, exec *application.Execution, ev application.NotSentEvidence, de application.DispositionEvidence, clock domain.Clock, log *slog.Logger) *application.Recovery {
 				return application.NewRecovery(store, inv, queries, dispatch, effects, exec, Profiles(cfg), ev, de, clock, log, cfg.Recovery.EnumerationPage)
 			},
-			func(cfg config.Config, inv application.Inventory) application.NotSentEvidence {
-				return development.NewNotSentEvidence(inv, cfg.Dispatch.Development.NotSentIssuers)
-			},
 			func(cfg config.Config, store application.Store, inv application.Inventory, prices application.PriceBook, auth application.Authority, ev application.NotSentEvidence, clock domain.Clock, log *slog.Logger) *application.Dispatch {
-				return application.NewDispatch(store, inv, prices, auth, ev, clock, log).WithProfiles(Profiles(cfg))
+				d := application.NewDispatch(store, inv, prices, auth, ev, clock, log).WithProfiles(Profiles(cfg))
+				if cfg.Dispatch.Development.Enabled {
+					d = d.WithDevelopmentCaps()
+				}
+				return d
 			},
 			func(cfg config.Config, store application.Store, wf application.WorkflowRelay, ops *application.Operations, recovery *application.Recovery, preparations *application.Preparations, generations *application.Generations, dispatch *application.Dispatch, exec *application.Execution, queries application.OutcomeQuery, clock domain.Clock, log *slog.Logger) *application.Relay {
 				// P1.6: stored settlement intents are re-applied at the
@@ -219,7 +194,7 @@ func Module() fx.Option {
 			},
 			newTracer,
 			newMetrics,
-			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, _ trace.Tracer, reg *prometheus.Registry, notifier *postgres.Notifier) (*grpctransport.Server, error) {
+			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, finance *application.Finance, authorization *application.Authorization, _ trace.Tracer, reg *prometheus.Registry, notifier *postgres.Notifier) (*grpctransport.Server, error) {
 				id, reloader, err := serverIdentity(cfg, log)
 				if err != nil {
 					return nil, err
@@ -230,7 +205,7 @@ func Module() fx.Option {
 				return grpctransport.NewServerWithIdentity(cfg.GRPC.Listen, id,
 					grpctransport.Capacity{Control: cfg.GRPC.ControlCapacity, Execution: cfg.GRPC.ExecutionCapacity, Streams: cfg.GRPC.StreamCapacity, StreamPerTenant: cfg.GRPC.StreamPerTenant, CommandReserve: cfg.GRPC.CommandReserve},
 					grpctransport.Dependencies{Ops: ops, Exec: exec, Dispatch: dispatch, Effects: effects, Recovery: recovery, Artifacts: artifacts, Preparations: preparations, Generations: generations, Grants: grants, Previews: previews, Releases: releases,
-						Notifier: notifier, DefaultDeadline: cfg.GRPC.DefaultDeadline, MaxConnectionAge: cfg.GRPC.Identity.MaxConnectionAge},
+						Finance: finance, Authorization: authorization, Notifier: notifier, DefaultDeadline: cfg.GRPC.DefaultDeadline, MaxConnectionAge: cfg.GRPC.Identity.MaxConnectionAge},
 					grpctransport.Observability(reg)...)
 			},
 			// The event notifier (P1.4): one LISTEN connection per replica wakes
@@ -356,7 +331,7 @@ func newPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {
 
 // run orders the lifecycle so the server and relay stop before the pool and
 // the Temporal client close (DD-09 §3).
-func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, h *health, relay *application.Relay, generations *application.Generations, tc client.Client, log *slog.Logger) {
+func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, h *health, relay *application.Relay, generations *application.Generations, prices *application.StoredPrices, finance *application.Finance, tc client.Client, log *slog.Logger) {
 	relayCtx, cancelRelay := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	// The probe listener is registered first: up before the business
@@ -368,6 +343,12 @@ func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, h *healt
 			// written before serving, never guessed at runtime.
 			if err := generations.InstallPools(ctx); err != nil {
 				return fmt.Errorf("install execution pools: %w", err)
+			}
+			if err := startPriceBook(ctx, cfg, prices, finance, log); err != nil {
+				return err
+			}
+			if prices != nil {
+				go prices.Run(relayCtx, cfg.Dispatch.Prices.RefreshInterval)
 			}
 			addr, err := srv.Start()
 			if err != nil {
