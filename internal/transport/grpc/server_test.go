@@ -59,7 +59,7 @@ func TestTransport(t *testing.T) {
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log)
 	exec := application.NewExecution(store, inv, jobs.Contract{}, profiles, domain.SystemClock{}, log)
 	authority := development.NewAuthority([]development.RouteAuthorization{{TenantID: "tenant_a", RouteID: "authorized-route"}}, 30*time.Second, domain.SystemClock{})
-	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log)
+	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log).WithDevelopmentCaps()
 	effects := application.NewEffects(store, inv, development.NewOutcomeQuery(inv, nil), domain.SystemClock{}, log)
 	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, log, 100)
 	srv, err := grpctransport.NewServer("127.0.0.1:0", 4, 4, ops, exec, dispatch, effects, recovery, application.NewArtifacts(store, nil, application.ArtifactLimits{}, domain.SystemClock{}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))), application.NewPreparations(store, profiles, domain.SystemClock{}, log), application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}, log), application.NewGrantPolicies(store, domain.SystemClock{}, log), application.NewPreviews(store, domain.SystemClock{}), application.NewReleases(store, domain.SystemClock{}))
@@ -338,9 +338,19 @@ func TestPolicyCoversEveryRegisteredMethod(t *testing.T) {
 	err = build(partial)
 	require.ErrorContains(t, err, "/anvilkit.control.v1.DispatchService/AdmitModel")
 	stale := grpctransport.Policy()
-	stale["/anvilkit.control.v1.AuthorizationService/CheckDisclosure"] = []identity.Workload{{Namespace: "anvilkit-apps", ServiceAccount: "anvilkit-agent-api"}}
+	stale["/anvilkit.control.v1.DispatchService/AdmitEverything"] = []identity.Workload{{Namespace: "anvilkit-apps", ServiceAccount: "anvilkit-agent-api"}}
 	err = build(stale)
-	require.ErrorContains(t, err, "AuthorizationService/CheckDisclosure", "an entry for an unregistered service is a configuration error")
+	require.ErrorContains(t, err, "DispatchService/AdmitEverything", "an entry for an unregistered method is a configuration error")
+	// P2.1: with the finance administration and AuthorizationService
+	// registered, the reviewed policy covers their methods too.
+	_, err = grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: "anvilkit.local", Policy: grpctransport.Policy()}, grpctransport.Capacity{Control: 4, Execution: 4},
+		grpctransport.Dependencies{Finance: application.NewFinance(nil, nil, domain.SystemClock{}, nil), Authorization: application.NewAuthorization(nil, domain.SystemClock{})})
+	require.NoError(t, err)
+	missing := grpctransport.Policy()
+	delete(missing, "/anvilkit.control.v1.AuthorizationService/CheckExecution")
+	_, err = grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: "anvilkit.local", Policy: missing}, grpctransport.Capacity{Control: 4, Execution: 4},
+		grpctransport.Dependencies{Finance: application.NewFinance(nil, nil, domain.SystemClock{}, nil), Authorization: application.NewAuthorization(nil, domain.SystemClock{})})
+	require.ErrorContains(t, err, "AuthorizationService/CheckExecution")
 }
 
 // TestWorkloadAuthorizationBeforeHandlers (P0.1 AC2) runs the real server

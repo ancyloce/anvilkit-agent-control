@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,10 @@ type Dependencies struct {
 	Grants       *application.GrantPolicies
 	Previews     *application.Previews
 	Releases     *application.Releases
+	// Finance administers prices, pools and cost caps; Authorization
+	// serves AuthorizationService (P2.1). Nil leaves them unregistered.
+	Finance       *application.Finance
+	Authorization *application.Authorization
 	// Notifier wakes event streams when an event of their operation commits
 	// (P1.4); nil means the streams poll at the fallback interval only.
 	Notifier application.EventNotifier
@@ -88,7 +93,14 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 		if id.Reloader == nil {
 			return nil, errors.New("identity: mtls needs loaded material")
 		}
-		authz, err = identity.NewAuthorizer(id.TrustDomain, id.Policy)
+		policy := id.Policy
+		if deps.Finance == nil {
+			policy = withoutService(policy, "PriceAdminService", "BudgetPoolService")
+		}
+		if deps.Authorization == nil {
+			policy = withoutService(policy, "AuthorizationService")
+		}
+		authz, err = identity.NewAuthorizer(id.TrustDomain, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -126,12 +138,38 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 	controlv1.RegisterGrantPolicyServiceServer(s, &grantPolicyServer{grants: grants})
 	controlv1.RegisterPreviewServiceServer(s, &previewServer{previews: previews})
 	controlv1.RegisterReleaseServiceServer(s, &releaseServer{releases: releases})
+	if deps.Finance != nil {
+		controlv1.RegisterPriceAdminServiceServer(s, &priceAdminServer{finance: deps.Finance})
+		controlv1.RegisterBudgetPoolServiceServer(s, &budgetPoolServer{finance: deps.Finance})
+	}
+	if deps.Authorization != nil {
+		controlv1.RegisterAuthorizationServiceServer(s, &authorizationServer{authorization: deps.Authorization})
+	}
 	if authz != nil {
 		if err := authz.Check(s); err != nil {
 			return nil, err
 		}
 	}
 	return &Server{grpc: s, health: h, listen: listen}, nil
+}
+
+// withoutService drops the entries of services the server does not register
+// (a build without Finance or Authorization), so the completeness check
+// still names every other stale entry.
+func withoutService(p identity.Policy, services ...string) identity.Policy {
+	out := identity.Policy{}
+	for method, allowed := range p {
+		drop := false
+		for _, svc := range services {
+			if strings.HasPrefix(method, "/anvilkit.control.v1."+svc+"/") {
+				drop = true
+			}
+		}
+		if !drop {
+			out[method] = allowed
+		}
+	}
+	return out
 }
 
 // Ready reports whether the listener serves (the /readyz answer).

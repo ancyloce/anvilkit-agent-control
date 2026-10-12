@@ -42,7 +42,7 @@ func TestAuthorityFromWorkloadIdentity(t *testing.T) {
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log)
 	exec := application.NewExecution(store, inv, jobs.Contract{}, profiles, domain.SystemClock{}, log)
 	authority := development.NewAuthority([]development.RouteAuthorization{{TenantID: "tenant_a", RouteID: "authorized-route"}}, 30*time.Second, domain.SystemClock{})
-	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log)
+	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log).WithDevelopmentCaps()
 	effects := application.NewEffects(store, inv, development.NewOutcomeQuery(inv, nil), domain.SystemClock{}, log)
 	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, log, 100)
 

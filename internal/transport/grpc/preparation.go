@@ -98,7 +98,7 @@ func (s *preparationServer) GetPreparation(ctx context.Context, req *controlv1.G
 	}
 	op := v.Operation
 	out := &controlv1.Preparation{
-		OperationId: op.ID, TenantId: op.TenantID, PromptHandle: v.PromptHandle,
+		OperationId: op.ID, TenantId: op.TenantID, ActorId: op.ActorID, ProjectId: op.ProjectID, PromptHandle: v.PromptHandle,
 		Prompt:          &controlv1.ArtifactBinding{TransferId: op.Preparation.Prompt.TransferID, Digest: string(op.Preparation.Prompt.Digest)},
 		BrandReferences: toSourceRefs(op.Preparation.BrandReferences), AssetReferences: toSourceRefs(op.Preparation.AssetReferences),
 		MaxRounds: domain.Revision(v.Bounds.MaxRounds).String(), MaxQuestions: domain.Revision(v.Bounds.MaxQuestions).String(),

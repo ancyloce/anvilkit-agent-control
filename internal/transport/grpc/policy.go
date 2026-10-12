@@ -17,8 +17,9 @@ var (
 
 // Policy is the method→principal allowlist of every RPC Control registers.
 // A method without an entry is denied and fails the Authorizer's
-// completeness check at startup; AuthorizationService is not registered
-// and therefore has no entry.
+// completeness check at startup. The entries of a service the server does
+// not register (Finance or Authorization absent from a test build) are
+// dropped by withoutService.
 func Policy() identity.Policy {
 	p := identity.Policy{}
 	add := func(service string, methods []string, allowed ...identity.Workload) {
@@ -50,6 +51,13 @@ func Policy() identity.Policy {
 	add("PreviewService", []string{"GetPreview", "GetSource"}, api, workflow)
 	add("ReleaseService", []string{"RecordRelease"}, workflow)
 	add("ReleaseService", []string{"GetRelease"}, api, workflow)
+	// P2.1: operator administration through the API workload (Finance
+	// decides on the verified roles); commercial authorization for the
+	// owners that disclose or execute on a user's behalf.
+	add("PriceAdminService", []string{"PublishPriceRevision", "WithdrawPriceRevision", "GetPriceRevision"}, api)
+	add("BudgetPoolService", []string{"CreatePool", "AdjustPool", "GetPool", "SetCostCap", "GetCostCap"}, api)
+	add("AuthorizationService", []string{"CheckDisclosure"}, knowledge)
+	add("AuthorizationService", []string{"CheckExecution"}, mcp)
 	for _, m := range []string{"Check", "Watch", "List"} {
 		p["/grpc.health.v1.Health/"+m] = []identity.Workload{identity.AnyAuthenticated}
 	}

@@ -16,8 +16,12 @@ func (s *executionServer) GetInstance(ctx context.Context, req *controlv1.GetIns
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &controlv1.GetInstanceResponse{
+	out := &controlv1.GetInstanceResponse{
 		Instance: toInstance(scope.Instance), Attempt: toAttempt(scope.Attempt), Operation: toView(scope.Operation), TenantId: scope.TenantID,
 		RecoveryEpoch: domain.Revision(scope.RecoveryEpoch).String(),
-	}, nil
+	}
+	if scope.BudgetHeadroom != nil {
+		out.BudgetHeadroom = toMoney(*scope.BudgetHeadroom)
+	}
+	return out, nil
 }
