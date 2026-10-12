@@ -151,6 +151,11 @@ type AdmissionContext struct {
 	// (a Generation), so a send needs the confirmed lease to cover now
 	// (DD-01 §4: an unknown renewal never extends known validity).
 	LeaseRequired bool
+	// Caps are the locked actual-cost caps of the operation's tenant,
+	// project and operation (P2.1); CapsRequired denies a paid route that
+	// lacks one (every non-development deployment).
+	Caps         []*CostCap
+	CapsRequired bool
 }
 
 // Denial is a recorded refusal: the public code and the reason.
@@ -284,6 +289,19 @@ func CheckAdmission(req AdmissionRequest, c AdmissionContext, budget bool) error
 				}
 				return err
 			}
+		}
+	}
+	// Actual-cost caps (P2.1): the new exposure at step 2; at step 4 the
+	// call's own exposure is already counted, so a cap lowered in between
+	// refuses the consumption, while a call already authorized is never
+	// revoked by a later change.
+	if !c.Price.Free() {
+		exposure := int64(0)
+		if budget {
+			exposure = req.MaxExposure.Amount
+		}
+		if err := CheckCaps(c.Caps, c.Allocations, req.MaxExposure.Currency, exposure, c.CapsRequired); err != nil {
+			return err
 		}
 	}
 	return nil
