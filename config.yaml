@@ -169,3 +169,23 @@ dispatch:
   # renders that file.
   development:
     enabled: true
+# P2.8: the publication of operation events. Every operation event inserts
+# its operation.changed envelope into the outbox on the same transaction,
+# always; enabled runs the forwarder module (outbox to the JetStream stream
+# ANVILKIT_CONTROL) and the waker, which consumes operation.changed and
+# wakes the event streams on every replica beside the LISTEN wake. Outside
+# development it must be enabled over a verified TLS connection with a NATS
+# user credential (ANVILKIT_CONTROL_NATS_URL, ANVILKIT_CONTROL_NATS_CREDS_FILE
+# and ANVILKIT_CONTROL_NATS_TLS_*); the chart renders that. Host-side
+# development runs leave it off: the events stay in the outbox and the
+# LISTEN wake serves the streams. retention bounds the forwarded rows kept.
+events:
+  enabled: false
+  wake: true
+  consumer_group: anvilkit-agent-control-forwarder
+  poll_interval: 200ms
+  retention: 168h
+  retention_interval: 10m
+  nats:
+    tls:
+      mode: development
