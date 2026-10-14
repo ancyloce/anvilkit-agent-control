@@ -14,6 +14,7 @@ import (
 	artifactstore "github.com/ancyloce/anvilkit-agent-control/internal/adapters/artifacts"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/development"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/inventory"
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/outbox"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
@@ -644,6 +645,39 @@ func TestLifecycle(t *testing.T) {
 		}, 3*time.Second, 20*time.Millisecond)
 		stopRelay()
 		<-relayDone
+	})
+
+	// P2.8 AC1: every operation event the lifecycle above committed
+	// (intake, transitions, holds, cancels, recovery, settlement) inserted
+	// exactly one operation.changed envelope on its own transaction: one
+	// outbox row per event, keyed by the operation and its event sequence.
+	t.Run("every operation event has exactly one outbox envelope", func(t *testing.T) {
+		type key struct{ op, seq string }
+		events := map[key]int{}
+		rows, err := conn.Query(ctx, "SELECT operation_id, event_seq::text FROM operation_events")
+		require.NoError(t, err)
+		for rows.Next() {
+			var k key
+			require.NoError(t, rows.Scan(&k.op, &k.seq))
+			events[k]++
+		}
+		require.NoError(t, rows.Err())
+		rows.Close()
+		require.NotEmpty(t, events)
+		envelopes := map[key]int{}
+		rows, err = conn.Query(ctx, "SELECT payload::text FROM outbox")
+		require.NoError(t, err)
+		for rows.Next() {
+			var raw string
+			require.NoError(t, rows.Scan(&raw))
+			env, _, err := outbox.Unwrap([]byte(raw))
+			require.NoError(t, err)
+			require.Equal(t, domain.EventOperationChanged, env.EventType)
+			envelopes[key{env.AggregateID, env.AggregateRevision}]++
+		}
+		require.NoError(t, rows.Err())
+		rows.Close()
+		require.Equal(t, events, envelopes, "one envelope per committed event, none for rolled-back work")
 	})
 }
 

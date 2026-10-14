@@ -229,6 +229,8 @@ func Module() fx.Option {
 			},
 			newHealth,
 		),
+		// The event publication (P2.8): forwarder, waker and outbox retention.
+		fx.Invoke(startEvents),
 		fx.Invoke(run),
 	)
 }
