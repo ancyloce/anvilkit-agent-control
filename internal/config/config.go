@@ -10,6 +10,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/url"
@@ -395,6 +396,56 @@ type Telemetry struct {
 	OTLPTLS ClientTLS `koanf:"otlp_tls"`
 }
 
+// Events is the publication of Control's domain events (P2.8): every
+// operation event inserts its operation.changed envelope into the outbox
+// on the same transaction (always); with Enabled, the in-process forwarder
+// module publishes the outbox to JetStream (the ANVILKIT_CONTROL stream,
+// a deployment input) and the waker consumes operation.changed to wake the
+// event streams on every replica. Outside development it must be enabled.
+// Retention deletes rows the consumer group acknowledged after Retention,
+// a bounded batch every RetentionInterval.
+type Events struct {
+	Enabled           bool          `koanf:"enabled"`
+	Wake              bool          `koanf:"wake"`
+	ConsumerGroup     string        `koanf:"consumer_group"`
+	PollInterval      time.Duration `koanf:"poll_interval"`
+	AckDeadline       time.Duration `koanf:"ack_deadline"`
+	ResendInterval    time.Duration `koanf:"resend_interval"`
+	BatchSize         int           `koanf:"batch_size"`
+	CloseTimeout      time.Duration `koanf:"close_timeout"`
+	Retention         time.Duration `koanf:"retention"`
+	RetentionInterval time.Duration `koanf:"retention_interval"`
+	RetentionBatch    int           `koanf:"retention_batch"`
+	NATS              NATS          `koanf:"nats"`
+}
+
+// NATS is the replica's JetStream connection. TLS is accepted from the
+// file or the environment (ANVILKIT_CONTROL_NATS_TLS_{MODE,CA_FILE,
+// CERT_FILE,KEY_FILE,SERVER_NAME}); CredsFile is a placement
+// (ANVILKIT_CONTROL_NATS_CREDS_FILE): a mounted NATS user .creds file or a
+// bare NKey user seed, read and classified at load (CredsKind) and required
+// outside development (P0.6).
+type NATS struct {
+	URL            string        `koanf:"url"`
+	Name           string        `koanf:"name"`
+	PublishTimeout time.Duration `koanf:"publish_timeout"`
+	TLS            ClientTLS     `koanf:"tls"`
+	CredsFile      string        `koanf:"creds_file"`
+	// CredsKind is NATSCredsUser or NATSCredsNKey, set by the loader from
+	// the content of CredsFile; empty without a credential.
+	CredsKind string `koanf:"-"`
+}
+
+// The kinds of a NATS client credential file.
+const (
+	// NATSCredsUser is a NATS user .creds file (the decorated user JWT and
+	// its NKey seed).
+	NATSCredsUser = "user"
+	// NATSCredsNKey is a bare NKey user seed (the first non-empty line
+	// starts with SU).
+	NATSCredsNKey = "nkey"
+)
+
 type Config struct {
 	Development Development `koanf:"development"`
 	Health      Health      `koanf:"health"`
@@ -409,6 +460,7 @@ type Config struct {
 	Dispatch    Dispatch    `koanf:"dispatch"`
 	Recovery    Recovery    `koanf:"recovery"`
 	ModelProxy  ModelProxy  `koanf:"model_proxy"`
+	Events      Events      `koanf:"events"`
 }
 
 var defaults = map[string]any{
@@ -475,6 +527,20 @@ var defaults = map[string]any{
 	"artifacts.capability_ttl":              "15m",
 	"artifacts.s3.path_style":               true,
 	"artifacts.s3.qualify_on_start":         true,
+	"events.enabled":                        false,
+	"events.wake":                           true,
+	"events.consumer_group":                 "anvilkit-agent-control-forwarder",
+	"events.poll_interval":                  "200ms",
+	"events.ack_deadline":                   "30s",
+	"events.resend_interval":                "1s",
+	"events.batch_size":                     100,
+	"events.close_timeout":                  "10s",
+	"events.retention":                      "168h",
+	"events.retention_interval":             "10m",
+	"events.retention_batch":                1000,
+	"events.nats.name":                      "anvilkit-agent-control",
+	"events.nats.publish_timeout":           "5s",
+	"events.nats.tls.mode":                  "tls",
 }
 
 // envOverrides is the complete set of accepted environment variables:
@@ -510,6 +576,13 @@ var envOverrides = map[string]string{
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID_FILE":     "artifacts.s3.access_key_id_file",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY":      "artifacts.s3.secret_access_key",
 	"ANVILKIT_CONTROL_ARTIFACTS_S3_SECRET_ACCESS_KEY_FILE": "artifacts.s3.secret_access_key_file",
+	"ANVILKIT_CONTROL_NATS_URL":                            "events.nats.url",
+	"ANVILKIT_CONTROL_NATS_CREDS_FILE":                     "events.nats.creds_file",
+	"ANVILKIT_CONTROL_NATS_TLS_MODE":                       "events.nats.tls.mode",
+	"ANVILKIT_CONTROL_NATS_TLS_CA_FILE":                    "events.nats.tls.ca_file",
+	"ANVILKIT_CONTROL_NATS_TLS_CERT_FILE":                  "events.nats.tls.cert_file",
+	"ANVILKIT_CONTROL_NATS_TLS_KEY_FILE":                   "events.nats.tls.key_file",
+	"ANVILKIT_CONTROL_NATS_TLS_SERVER_NAME":                "events.nats.tls.server_name",
 }
 
 // secretKeys may only arrive through the environment.
@@ -555,6 +628,13 @@ func LoadFrom(path string, environ []string) (Config, error) {
 	}
 	if err := c.readSecretFiles(); err != nil {
 		return Config{}, err
+	}
+	if c.Events.Enabled && c.Events.NATS.CredsFile != "" {
+		kind, err := readNATSCredentials(c.Events.NATS.CredsFile)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: events.nats.creds_file: %w", err)
+		}
+		c.Events.NATS.CredsKind = kind
 	}
 	return c, c.validate()
 }
@@ -644,6 +724,7 @@ func (c Config) validate() error {
 	}
 	errs = append(errs, c.validateIdentity()...)
 	errs = append(errs, c.validateDataPlane()...)
+	errs = append(errs, c.validateEvents()...)
 	req("database.url (ANVILKIT_CONTROL_DATABASE_URL or ANVILKIT_CONTROL_DATABASE_URL_FILE)", c.Database.URL)
 	if c.Telemetry.SampleRatio < 0 || c.Telemetry.SampleRatio > 1 {
 		errs = append(errs, fmt.Errorf("telemetry.sample_ratio %v outside [0, 1]", c.Telemetry.SampleRatio))
@@ -1056,4 +1137,68 @@ func (t ClientTLS) validate(name string, required bool, development bool) []erro
 		errs = append(errs, fmt.Errorf("%s.mode %q is not one of development, tls, mtls", name, t.Mode))
 	}
 	return errs
+}
+
+// validateEvents bounds the event publication (P2.8): outside development
+// the forwarder runs, over a verified, authenticated NATS connection.
+func (c Config) validateEvents() []error {
+	e := c.Events
+	var errs []error
+	check := func(ok bool, format string, args ...any) {
+		if !ok {
+			errs = append(errs, fmt.Errorf(format, args...))
+		}
+	}
+	check(e.Enabled || c.Development.Enabled, "events.enabled must be true outside development: operation events reach JetStream through the forwarder (P2.8)")
+	check(e.ConsumerGroup != "", "events.consumer_group is required")
+	check(e.PollInterval >= 10*time.Millisecond && e.PollInterval <= time.Minute, "events.poll_interval %s outside [10ms, 1m]", e.PollInterval)
+	check(e.AckDeadline > 0 && e.AckDeadline <= 5*time.Minute, "events.ack_deadline %s outside (0, 5m]", e.AckDeadline)
+	check(e.ResendInterval > 0 && e.ResendInterval <= time.Minute, "events.resend_interval %s outside (0, 1m]", e.ResendInterval)
+	check(e.BatchSize >= 1 && e.BatchSize <= 1000, "events.batch_size %d outside [1, 1000]", e.BatchSize)
+	check(e.CloseTimeout >= time.Second && e.CloseTimeout <= 5*time.Minute, "events.close_timeout %s outside [1s, 5m]", e.CloseTimeout)
+	check(e.Retention >= time.Hour && e.Retention <= 2160*time.Hour, "events.retention %s outside [1h, 2160h]", e.Retention)
+	check(e.RetentionInterval >= time.Minute && e.RetentionInterval <= 24*time.Hour, "events.retention_interval %s outside [1m, 24h]", e.RetentionInterval)
+	check(e.RetentionBatch >= 1 && e.RetentionBatch <= 100000, "events.retention_batch %d outside [1, 100000]", e.RetentionBatch)
+	check(e.NATS.PublishTimeout > 0 && e.NATS.PublishTimeout <= time.Minute, "events.nats.publish_timeout %s outside (0, 1m]", e.NATS.PublishTimeout)
+	if !e.Enabled {
+		return errs
+	}
+	check(e.NATS.URL != "", "events.nats.url is required while events are enabled (ANVILKIT_CONTROL_NATS_URL)")
+	if e.NATS.URL != "" {
+		u, err := url.Parse(e.NATS.URL)
+		check(err == nil && (u.Scheme == "nats" || u.Scheme == "tls"), "events.nats.url must be a nats:// or tls:// URL")
+	}
+	check(e.NATS.Name != "", "events.nats.name is required")
+	errs = append(errs, e.NATS.TLS.validate("events.nats.tls", true, c.Development.Enabled)...)
+	check(e.NATS.CredsFile != "" || c.Development.Enabled, "events.nats.creds_file is required outside development (ANVILKIT_CONTROL_NATS_CREDS_FILE: a NATS user .creds file or an NKey user seed)")
+	return errs
+}
+
+// natsUserJWTMarker opens the user JWT block of a NATS .creds file.
+var natsUserJWTMarker = []byte("-----BEGIN NATS USER JWT-----")
+
+// readNATSCredentials reads and classifies a mounted NATS client
+// credential: a user .creds file (it holds the decorated user JWT) or a
+// bare NKey user seed (the first non-empty line starts with SU). The
+// content never leaves this function, not even in an error, and the
+// buffer is wiped; the connection's options read the file themselves
+// when they authenticate.
+func readNATSCredentials(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	defer clear(raw)
+	if bytes.Contains(raw, natsUserJWTMarker) {
+		return NATSCredsUser, nil
+	}
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			if bytes.HasPrefix(line, []byte("SU")) {
+				return NATSCredsNKey, nil
+			}
+			break
+		}
+	}
+	return "", errors.New("neither a NATS user credentials file (.creds) nor an NKey user seed")
 }

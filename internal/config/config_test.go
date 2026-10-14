@@ -27,7 +27,13 @@ const bare = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    ca_file: /etc/a
 // Model Proxy's original-identity query.
 const production = "dispatch:\n  authority:\n    url: https://authority.example/decisions\n    token_file: /var/run/secrets/anvilkit/authority/token\n" +
 	"  evidence:\n    issuers:\n      - name: anvilkit-model-proxy\n        key_id: mp-1\n        public_key_file: /etc/anvilkit/evidence/mp-1.pem\n" +
-	"model_proxy:\n  address: https://anvilkit-agent-model-proxy:9103\n  identity:\n    mode: mtls\n    mtls:\n      cert_file: /etc/anvilkit/identity/tls.crt\n      key_file: /etc/anvilkit/identity/tls.key\n      ca_file: /etc/anvilkit/identity/ca.crt\n"
+	"model_proxy:\n  address: https://anvilkit-agent-model-proxy:9103\n  identity:\n    mode: mtls\n    mtls:\n      cert_file: /etc/anvilkit/identity/tls.crt\n      key_file: /etc/anvilkit/identity/tls.key\n      ca_file: /etc/anvilkit/identity/ca.crt\n" +
+	events
+
+// events places the event publication a non-development Control needs
+// (P2.8): the JetStream connection over verified TLS with the mounted NKey
+// seed (a placeholder the loader only classifies).
+const events = "events:\n  enabled: true\n  nats:\n    url: tls://anvilkit-nats.example:4222\n    creds_file: testdata/nats-user.nk\n    tls:\n      ca_file: /etc/anvilkit/trust/ca.crt\n"
 
 const minimal = bare + production
 
@@ -450,4 +456,51 @@ func TestProductionAuthorityIsRequired(t *testing.T) {
 	require.ErrorContains(t, err, "production evidence")
 	_, err = config.LoadFrom(write(t, bare+devDispatch), env)
 	require.NoError(t, err, "the DEVELOPMENT_ONLY chain needs none of them")
+}
+
+// TestEventPublicationIsRequiredOutsideDevelopment (P2.8): a production
+// Control publishes its operation events through the forwarder over a
+// verified, authenticated JetStream connection; development may run
+// without it. The credential is classified, never echoed.
+func TestEventPublicationIsRequiredOutsideDevelopment(t *testing.T) {
+	without := strings.Replace(minimal, events, "", 1)
+	_, err := config.LoadFrom(write(t, without), env)
+	require.ErrorContains(t, err, "events.enabled must be true outside development")
+
+	c, err := config.LoadFrom(write(t, minimal), env)
+	require.NoError(t, err)
+	require.True(t, c.Events.Enabled)
+	require.Equal(t, config.NATSCredsNKey, c.Events.NATS.CredsKind)
+	require.Equal(t, "anvilkit-agent-control-forwarder", c.Events.ConsumerGroup)
+	require.True(t, c.Events.Wake)
+
+	_, err = config.LoadFrom(write(t, strings.Replace(minimal, "    creds_file: testdata/nats-user.nk\n", "", 1)), env)
+	require.ErrorContains(t, err, "events.nats.creds_file is required outside development")
+	_, err = config.LoadFrom(write(t, strings.Replace(minimal, "    url: tls://anvilkit-nats.example:4222\n", "", 1)), env)
+	require.ErrorContains(t, err, "events.nats.url is required")
+	_, err = config.LoadFrom(write(t, strings.Replace(minimal, "tls://anvilkit-nats", "http://anvilkit-nats", 1)), env)
+	require.ErrorContains(t, err, "nats:// or tls://")
+	_, err = config.LoadFrom(write(t, strings.Replace(minimal, "    tls:\n      ca_file: /etc/anvilkit/trust/ca.crt\n", "    tls:\n      mode: development\n", 1)), env)
+	require.ErrorContains(t, err, "events.nats.tls.mode development")
+	_, err = config.LoadFrom(write(t, minimal+"  poll_interval: 5ms\n"), env)
+	require.ErrorContains(t, err, "events.poll_interval")
+
+	garbage := secretFile(t, "not a credential")
+	_, err = config.LoadFrom(write(t, strings.Replace(minimal, "testdata/nats-user.nk", garbage, 1)), env)
+	require.ErrorContains(t, err, "neither a NATS user credentials file")
+	require.NotContains(t, err.Error(), "not a credential")
+	creds := secretFile(t, "-----BEGIN NATS USER JWT-----\neyJ0eXAiOiJKV1QifQ.e30.c2ln\n------END NATS USER JWT------\n")
+	c, err = config.LoadFrom(write(t, strings.Replace(minimal, "testdata/nats-user.nk", creds, 1)), env)
+	require.NoError(t, err)
+	require.Equal(t, config.NATSCredsUser, c.Events.NATS.CredsKind)
+
+	// Development may run without publication (the outbox still records
+	// every event) or with a plaintext, unauthenticated JetStream.
+	dev := strings.Replace(minimal, events, "", 1) + "development:\n  enabled: true\n"
+	c, err = config.LoadFrom(write(t, dev), env)
+	require.NoError(t, err)
+	require.False(t, c.Events.Enabled)
+	c, err = config.LoadFrom(write(t, dev+"events:\n  enabled: true\n  nats:\n    url: nats://127.0.0.1:24222\n    tls:\n      mode: development\n"), env)
+	require.NoError(t, err)
+	require.Empty(t, c.Events.NATS.CredsKind)
 }
