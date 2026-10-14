@@ -400,6 +400,21 @@ type OperationSettlement struct {
 	Phase         string
 }
 
+type Outbox struct {
+	Offset        int64
+	Uuid          string
+	CreatedAt     pgtype.Timestamp
+	Payload       []byte
+	Metadata      []byte
+	TransactionID interface{}
+}
+
+type OutboxOffset struct {
+	ConsumerGroup              string
+	OffsetAcked                *int64
+	LastProcessedTransactionID interface{}
+}
+
 type Permit struct {
 	PermitID        string
 	PoolID          string

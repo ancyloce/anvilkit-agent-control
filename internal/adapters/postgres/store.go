@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/outbox"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres/sqlc"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
@@ -238,10 +239,27 @@ func (r *repo) InsertEvent(ctx context.Context, ev domain.Event) error {
 	if err != nil {
 		return err
 	}
+	// P2.8: the event and its operation.changed envelope commit together or
+	// not at all; an event outside a transaction would publish nothing.
+	tx, ok := r.db.(pgx.Tx)
+	if !ok {
+		return errors.New("operation events are inserted inside a transaction")
+	}
 	if err := r.q.InsertOperationEvent(ctx, sqlc.InsertOperationEventParams{
 		OperationID: ev.OperationID, EventSeq: int64(ev.EventSeq), TransitionID: ev.TransitionID, EventType: ev.EventType,
 		Revision: int64(ev.Revision), Payload: payload, OccurredAt: ts(ev.OccurredAt),
 	}); err != nil {
+		return err
+	}
+	var tenantID string
+	if err := tx.QueryRow(ctx, "SELECT tenant_id FROM operations WHERE operation_id = $1", ev.OperationID).Scan(&tenantID); err != nil {
+		return err
+	}
+	env, err := domain.OperationChangedEnvelope(ev, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := outbox.Publish(ctx, tx, env); err != nil {
 		return err
 	}
 	// Delivered at commit to every replica's listener (P1.4): streams wake
