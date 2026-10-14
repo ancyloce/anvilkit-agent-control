@@ -140,6 +140,18 @@ spec:
                   key: {{ .Values.artifacts.s3.secret.secretAccessKeyKey }}
             {{- end }}
             {{- end }}
+            {{- if .Values.events.enabled }}
+            # P2.8: the JetStream placement and the NATS user credential.
+            - name: ANVILKIT_CONTROL_NATS_URL
+              value: {{ .Values.events.nats.url | quote }}
+            {{- if $csi }}
+            - name: ANVILKIT_CONTROL_NATS_CREDS_FILE
+              value: /var/run/secrets/anvilkit/csi/nats-creds
+            {{- else if .Values.events.nats.credentials.secret.name }}
+            - name: ANVILKIT_CONTROL_NATS_CREDS_FILE
+              value: {{ printf "/var/run/secrets/anvilkit/nats/%s" .Values.events.nats.credentials.secret.key | quote }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: grpc
               containerPort: {{ .Values.listen.port }}
@@ -205,6 +217,16 @@ spec:
               mountPath: /var/run/secrets/anvilkit/csi
               readOnly: true
             {{- end }}
+            {{- if and .Values.events.enabled (ne .Values.events.nats.tls.mode "development") }}
+            - name: nats-ca
+              mountPath: /etc/anvilkit/nats-ca
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.events.enabled .Values.events.nats.credentials.secret.name (ne .Values.secrets.provider "csi") }}
+            - name: nats-credentials
+              mountPath: /var/run/secrets/anvilkit/nats
+              readOnly: true
+            {{- end }}
             {{- if .Values.trust.configMap }}
             - name: trust
               mountPath: /etc/anvilkit/trust
@@ -224,6 +246,19 @@ spec:
         - name: config
           configMap:
             name: {{ include "anvilkit-agent-control.fullname" . }}
+        {{- if and .Values.events.enabled (ne .Values.events.nats.tls.mode "development") }}
+        - name: nats-ca
+          secret:
+            secretName: {{ .Values.events.nats.tls.caSecret.name }}
+            items:
+              - key: {{ .Values.events.nats.tls.caSecret.key }}
+                path: ca.crt
+        {{- end }}
+        {{- if and .Values.events.enabled .Values.events.nats.credentials.secret.name (ne .Values.secrets.provider "csi") }}
+        - name: nats-credentials
+          secret:
+            secretName: {{ .Values.events.nats.credentials.secret.name }}
+        {{- end }}
         {{- if eq .Values.identity.mode "mtls" }}
         - name: identity
           secret:

@@ -139,6 +139,30 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- fail "temporal.tls.mode mtls presents the workload certificate and needs identity.mode mtls" }}
 {{- end }}
 {{- if .Values.telemetry.otlpEndpoint }}
+{{- /* P2.8: operation events reach JetStream outside development. */ -}}
+{{- if and (not .Values.events.enabled) (not .Values.development.enabled) }}
+{{- fail "events.enabled is required outside development: operation events reach JetStream through the forwarder (P2.8)" }}
+{{- end }}
+{{- if .Values.events.enabled }}
+{{- if not .Values.events.nats.url }}
+{{- fail "events.nats.url is required while events.enabled is true: the JetStream placement (ANVILKIT_CONTROL_NATS_URL)" }}
+{{- end }}
+{{- if not (has .Values.events.nats.tls.mode (list "tls" "mtls" "development")) }}
+{{- fail "events.nats.tls.mode must be tls, mtls or development" }}
+{{- end }}
+{{- if and (eq .Values.events.nats.tls.mode "development") (not .Values.development.enabled) }}
+{{- fail "events.nats.tls.mode development is DEVELOPMENT_ONLY: it renders only with development.enabled: true" }}
+{{- end }}
+{{- if and (ne .Values.events.nats.tls.mode "development") (not .Values.events.nats.tls.caSecret.name) }}
+{{- fail "events.nats.tls.caSecret.name is required under events.nats.tls.mode tls or mtls: the Secret holding the NATS server's CA bundle (key ca.crt)" }}
+{{- end }}
+{{- if and (eq .Values.events.nats.tls.mode "mtls") (ne .Values.identity.mode "mtls") }}
+{{- fail "events.nats.tls.mode mtls presents the workload certificate and needs identity.mode mtls" }}
+{{- end }}
+{{- if and (ne .Values.events.nats.tls.mode "development") (ne .Values.secrets.provider "csi") (not .Values.events.nats.credentials.secret.name) }}
+{{- fail "events.nats.credentials.secret.name is required under secrets.provider kubernetes unless events.nats.tls.mode is development (the NATS user credential; under csi it is the key nats-creds)" }}
+{{- end }}
+{{- end }}
 {{- if not (has .Values.telemetry.otlpTls.mode (list "tls" "mtls" "development")) }}
 {{- fail "telemetry.otlpTls.mode must be tls, mtls or development" }}
 {{- end }}
@@ -222,6 +246,19 @@ wired to the loader's keys. */}}
 {{- $_ = set $tt "key_file" "/etc/anvilkit/identity/tls.key" }}
 {{- end -}}
 {{- $_ = set $cfg.temporal "tls" $tt -}}
+{{- /* P2.8: the event publication; the URL and the credential file are environment placements. */ -}}
+{{- $ev := merge (dict "enabled" .Values.events.enabled "wake" .Values.events.wake "retention" .Values.events.retention) (default (dict) $cfg.events) -}}
+{{- $nt := dict "mode" .Values.events.nats.tls.mode -}}
+{{- if ne .Values.events.nats.tls.mode "development" }}
+{{- $_ = set $nt "ca_file" "/etc/anvilkit/nats-ca/ca.crt" }}
+{{- if .Values.events.nats.tls.serverName }}{{- $_ = set $nt "server_name" .Values.events.nats.tls.serverName }}{{- end }}
+{{- end -}}
+{{- if eq .Values.events.nats.tls.mode "mtls" }}
+{{- $_ = set $nt "cert_file" "/etc/anvilkit/identity/tls.crt" }}
+{{- $_ = set $nt "key_file" "/etc/anvilkit/identity/tls.key" }}
+{{- end -}}
+{{- $_ = set $ev "nats" (merge (dict "tls" $nt) (default (dict) $ev.nats)) -}}
+{{- $_ = set $cfg "events" $ev -}}
 {{- if .Values.telemetry.otlpEndpoint }}
 {{- $ot := dict "mode" .Values.telemetry.otlpTls.mode -}}
 {{- if ne .Values.telemetry.otlpTls.mode "development" }}
@@ -278,6 +315,9 @@ spec:
 {{- end -}}
 {{- if and .Values.authority.url (eq .Values.authority.identity "token") -}}
 {{- $keys = append $keys "authority-token" -}}
+{{- end -}}
+{{- if .Values.events.enabled -}}
+{{- $keys = append $keys "nats-creds" -}}
 {{- end -}}
 {{- toJson $keys -}}
 {{- end -}}

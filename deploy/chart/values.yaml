@@ -169,6 +169,36 @@ temporal:
       name: ""
       key: ca.crt
 
+# P2.8: the publication of Control's operation events. Every operation event
+# inserts its operation.changed envelope into the outbox on the same
+# transaction; with enabled, the in-process forwarder publishes it to the
+# JetStream stream ANVILKIT_CONTROL (anvilkit.control.>, a deployment input)
+# and every replica consumes it to wake its event streams (wake). Required
+# outside development. nats.url is the placement (ANVILKIT_CONTROL_NATS_URL);
+# tls verifies the server against caSecret (key ca.crt) and serverName, mtls
+# also presents the workload certificate, development is the plaintext NATS
+# of the development foundation (development.enabled only). The NATS user
+# credential (an NKey seed or a .creds file, ANVILKIT_CONTROL_NATS_CREDS_FILE)
+# is the CSI key nats-creds or, under secrets.provider kubernetes, the key of
+# an existing Secret; required outside development. retention bounds the
+# forwarded rows the outbox keeps.
+events:
+  enabled: true
+  wake: true
+  retention: 168h
+  nats:
+    url: ""
+    tls:
+      mode: tls
+      serverName: ""
+      caSecret:
+        name: ""
+        key: ca.crt
+    credentials:
+      secret:
+        name: ""
+        key: creds
+
 # The obligation inventory (DD-02 §5): in a cluster every replica must share
 # one backend, so the chart renders the S3 backend only (the filesystem
 # adapter is DEVELOPMENT_ONLY and per process). Endpoint and bucket are
