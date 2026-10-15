@@ -10,14 +10,21 @@ on:
     tags: ["v*"]
   pull_request:
 env:
+  # A mirror of the pinned MinIO digest for the S3 tests (P3.1): the
+  # upstream registries no longer serve it to GitHub-hosted runners. Set
+  # the repository variable ANVILKIT_TEST_MINIO_IMAGE to the mirror; unset,
+  # the tests pull the upstream reference.
+  ANVILKIT_TEST_MINIO_IMAGE: ${{ vars.ANVILKIT_TEST_MINIO_IMAGE }}
   GOWORK: "off"
   GOFLAGS: "-mod=readonly"
+permissions:
+  contents: read
 jobs:
   go:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.27.0"
       - run: go build ./...
@@ -27,8 +34,8 @@ jobs:
   sqlc:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.27.0"
       - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
@@ -36,13 +43,13 @@ jobs:
   image:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: docker build -t anvilkit-agent-control:ci .
   chart:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: "v3.19.0"
       - run: >-
@@ -50,8 +57,10 @@ jobs:
           --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
           --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
           --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
+          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
       - run: >-
           helm template anvilkit-agent-control deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233
           --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
           --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
-          --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca > /dev/null
+          --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
+          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443 > /dev/null
