@@ -1019,6 +1019,52 @@ func (q *Queries) ShareLockGrantPolicy(ctx context.Context, arg ShareLockGrantPo
 	return i, err
 }
 
+const unresolvedObligations = `-- name: UnresolvedObligations :many
+SELECT 'dispatch'::text AS class, state::text AS state, count(*)::bigint AS obligations,
+       coalesce(extract(epoch FROM now() - min(admitted_at)), 0)::float8 AS oldest_seconds
+FROM dispatches WHERE state IN ('authorized', 'unknown') GROUP BY state
+UNION ALL
+SELECT 'effect'::text, state::text, count(*)::bigint,
+       coalesce(extract(epoch FROM now() - min(created_at)), 0)::float8
+FROM effect_intents WHERE state IN ('permitted', 'unknown') GROUP BY state
+`
+
+type UnresolvedObligationsRow struct {
+	Class         string
+	State         string
+	Obligations   int64
+	OldestSeconds float64
+}
+
+// P3.6: the unresolved obligations by class and state for the operator's
+// gauges (count and oldest age): dispatches whose permission was consumed or
+// is uncertain, external effects permitted or unknown. Both branches stay
+// inside the partial unresolved indexes.
+func (q *Queries) UnresolvedObligations(ctx context.Context) ([]UnresolvedObligationsRow, error) {
+	rows, err := q.db.Query(ctx, unresolvedObligations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UnresolvedObligationsRow{}
+	for rows.Next() {
+		var i UnresolvedObligationsRow
+		if err := rows.Scan(
+			&i.Class,
+			&i.State,
+			&i.Obligations,
+			&i.OldestSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateAllocation = `-- name: UpdateAllocation :exec
 UPDATE allocations SET reserved = $2, consumed = $3, revision = $4 WHERE allocation_id = $1
 `

@@ -23,11 +23,16 @@ import (
 // and the conditional-create and listing contract on a real S3 API; it is
 // not the Ceph RGW backend of C09, and passing here qualifies neither RGW
 // nor the independent failure domain of ENV-02.
-// The MinIO image of the foundation (deploy/dev), by the registry that still
-// serves this release publicly: Docker Hub denies the pull of this tag on a
-// fresh machine (GitHub-hosted runners), quay.io serves the same digest
-// (sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e).
-const minioImage = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+// The MinIO image of the foundation (deploy/dev) by its digest. Since
+// 2026-10 neither Docker Hub nor quay.io serves it to a fresh machine
+// (GitHub-hosted runners): ANVILKIT_TEST_MINIO_IMAGE names a mirror of the
+// same digest (P3.1; CI reads it from the repository variable of that name).
+var minioImage = func() string {
+	if image := os.Getenv("ANVILKIT_TEST_MINIO_IMAGE"); image != "" {
+		return image
+	}
+	return "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+}()
 
 type s3Backend struct {
 	endpoint string

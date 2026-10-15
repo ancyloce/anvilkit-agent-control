@@ -143,3 +143,16 @@ SELECT * FROM dispatches WHERE attempt_id = $1 AND state = 'prepared' ORDER BY a
 SELECT * FROM dispatches
 WHERE state IN ('authorized', 'unknown') AND admitted_at < now() - make_interval(secs => sqlc.arg(age_seconds)::float8)
 ORDER BY admitted_at LIMIT $1;
+
+-- name: UnresolvedObligations :many
+-- P3.6: the unresolved obligations by class and state for the operator's
+-- gauges (count and oldest age): dispatches whose permission was consumed or
+-- is uncertain, external effects permitted or unknown. Both branches stay
+-- inside the partial unresolved indexes.
+SELECT 'dispatch'::text AS class, state::text AS state, count(*)::bigint AS obligations,
+       coalesce(extract(epoch FROM now() - min(admitted_at)), 0)::float8 AS oldest_seconds
+FROM dispatches WHERE state IN ('authorized', 'unknown') GROUP BY state
+UNION ALL
+SELECT 'effect'::text, state::text, count(*)::bigint,
+       coalesce(extract(epoch FROM now() - min(created_at)), 0)::float8
+FROM effect_intents WHERE state IN ('permitted', 'unknown') GROUP BY state;

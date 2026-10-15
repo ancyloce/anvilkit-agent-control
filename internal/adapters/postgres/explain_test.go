@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres/sqlc"
 	"github.com/ancyloce/anvilkit-agent-control/internal/testdb"
 )
 
@@ -29,6 +30,9 @@ func TestHotPathQueriesHaveIndexes(t *testing.T) {
 		"ListStagesByOperation":       "SELECT * FROM stage_manifests WHERE operation_id = 'op' ORDER BY accepted_at",
 		"PreparedDispatchesByAttempt": "SELECT * FROM dispatches WHERE attempt_id = 'at' AND state = 'prepared' ORDER BY admitted_at",
 		"HasUnknownDispatch":          "SELECT EXISTS (SELECT 1 FROM dispatches WHERE operation_id = 'op' AND state = 'unknown')",
+		// P3.6: the obligation gauges' two branches stay inside the partial unresolved indexes.
+		"UnresolvedDispatchGauges": "SELECT state, count(*), min(admitted_at) FROM dispatches WHERE state IN ('authorized', 'unknown') GROUP BY state",
+		"UnresolvedEffectGauges":   "SELECT state, count(*), min(created_at) FROM effect_intents WHERE state IN ('permitted', 'unknown') GROUP BY state",
 	}
 	for name, q := range queries {
 		rows, err := pool.Query(ctx, "EXPLAIN "+q)
@@ -45,4 +49,13 @@ func TestHotPathQueriesHaveIndexes(t *testing.T) {
 		require.Contains(t, text, "Index", "%s has no index serving it:\n%s", name, text)
 		require.NotContains(t, text, "Seq Scan on", "%s falls back to a sequential scan:\n%s", name, text)
 	}
+}
+
+// P3.6: the obligation gauges' query runs against the migrated schema and
+// reports nothing on an empty database.
+func TestUnresolvedObligationsQuery(t *testing.T) {
+	inst := testdb.Start(t)
+	rows, err := sqlc.New(inst.Pool(t)).UnresolvedObligations(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, rows)
 }
