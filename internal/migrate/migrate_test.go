@@ -85,6 +85,23 @@ func TestControlSchema(t *testing.T) {
 		"app role may read (grants applied)")
 	_, err = appDB.ExecContext(ctx, "DELETE FROM goose_db_version")
 	require.Error(t, err, "app role has no DELETE on migration bookkeeping")
+	// 00018 (P3.7 AC5): the runtime role never writes migration bookkeeping
+	// and never rewrites its append-only ledgers; it still appends to them.
+	for _, stmt := range []string{
+		"INSERT INTO goose_db_version (version_id, is_applied) VALUES (999, true)",
+		"UPDATE goose_db_version SET is_applied = false",
+		"UPDATE cost_entries SET amount = 0",
+		"UPDATE usage_observations SET input_units = 0",
+		"UPDATE operation_events SET event_type = event_type",
+		"DELETE FROM cost_entries",
+		"DELETE FROM operation_events",
+	} {
+		_, err = appDB.ExecContext(ctx, stmt)
+		require.ErrorContains(t, err, "permission denied", stmt)
+	}
+	var canInsert bool
+	require.NoError(t, appDB.QueryRowContext(ctx, `SELECT has_table_privilege('cost_entries', 'INSERT') AND has_table_privilege('usage_observations', 'INSERT') AND has_table_privilege('operation_events', 'INSERT')`).Scan(&canInsert))
+	require.True(t, canInsert, "the ledgers stay appendable")
 
 	// Reversible: down to empty, up again lands on the same version.
 	version, err = migrate.DownTo(ctx, db, 0)
