@@ -231,6 +231,7 @@ func Module() fx.Option {
 		),
 		// The event publication (P2.8): forwarder, waker and outbox retention.
 		fx.Invoke(startEvents),
+		fx.Invoke(startOperationalMetrics),
 		fx.Invoke(run),
 	)
 }

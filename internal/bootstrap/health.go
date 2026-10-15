@@ -31,8 +31,9 @@ type health struct {
 	ready    func() bool
 	stopping atomic.Bool
 	// P1.4 (CTL-INF-05): readiness also needs the database (pinged every
-	// interval) and a schema at the binary's version (checked at start);
-	// liveness (/healthz) stays the process alone.
+	// interval) and, since P3.1 (MIG-02), a schema at or above the
+	// binary's minimum version (checked at start and every interval until
+	// it holds); liveness (/healthz) stays the process alone.
 	ping         func(context.Context) error
 	interval     time.Duration
 	timeout      time.Duration
@@ -85,28 +86,47 @@ func (h *health) notReady() string {
 	return ""
 }
 
+func (h *health) reason(key string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.reasons[key]
+}
+
 func (h *health) setReason(key, reason string) {
 	h.mu.Lock()
 	h.reasons[key] = reason
 	h.mu.Unlock()
 }
 
-// checks runs the start-time schema check and the periodic database ping
-// until ctx ends; a failed ping withdraws readiness, the next success
-// restores it.
+// checks runs the schema check and the periodic database ping until ctx
+// ends; a failed ping withdraws readiness, the next success restores it. A
+// schema behind the minimum keeps the replica not ready and is checked
+// again every interval, so the replica becomes ready once the migration
+// Job has run, without a restart.
 func (h *health) checks(ctx context.Context, log *slog.Logger) {
-	if h.schema != nil {
-		if err := h.schema(ctx); err != nil {
-			h.setReason("schema", err.Error())
-			log.Error("schema check failed; the replica stays not ready", "error", err)
+	schemaOK := h.schema == nil
+	checkSchema := func() {
+		if schemaOK {
+			return
 		}
+		if err := h.schema(ctx); err != nil {
+			if ctx.Err() == nil && h.reason("schema") != err.Error() {
+				log.Error("schema check failed; the replica stays not ready", "error", err)
+			}
+			h.setReason("schema", err.Error())
+			return
+		}
+		schemaOK = true
+		h.setReason("schema", "")
 	}
+	checkSchema()
 	if h.ping == nil || h.interval <= 0 {
 		return
 	}
 	t := time.NewTicker(h.interval)
 	defer t.Stop()
 	for {
+		checkSchema()
 		pctx, cancel := context.WithTimeout(ctx, h.timeout)
 		err := h.ping(pctx)
 		cancel()
@@ -124,9 +144,13 @@ func (h *health) checks(ctx context.Context, log *slog.Logger) {
 	}
 }
 
-// checkSchema compares the applied migration version with the binary's.
+// checkSchema compares the applied migration version with the binary's
+// minimum, the highest migration it embeds. A schema ahead of the minimum
+// is accepted: an expand migration of the next release may be applied
+// while this image still serves (P3.4 upgrade case); a contracting change
+// raises the next binary's minimum instead.
 func checkSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	expected, err := migrate.ExpectedVersion()
+	minimum, err := migrate.ExpectedVersion()
 	if err != nil {
 		return err
 	}
@@ -134,8 +158,14 @@ func checkSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := pool.QueryRow(ctx, "SELECT coalesce(max(version_id), 0) FROM goose_db_version WHERE is_applied").Scan(&applied); err != nil {
 		return fmt.Errorf("schema version unreadable: %w", err)
 	}
-	if applied != expected {
-		return fmt.Errorf("schema at version %d, the binary expects %d", applied, expected)
+	return schemaVerdict(applied, minimum)
+}
+
+// schemaVerdict names the version pair when the applied schema is behind
+// the binary's minimum.
+func schemaVerdict(applied, minimum int64) error {
+	if applied < minimum {
+		return fmt.Errorf("schema at version %d, the binary needs at least %d", applied, minimum)
 	}
 	return nil
 }
