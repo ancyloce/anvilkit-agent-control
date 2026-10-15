@@ -5,6 +5,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"log/slog"
 	"strings"
 	"sync"
@@ -109,6 +110,9 @@ type capacity struct {
 	execution *pool
 	streams   *pool
 	tenants   *tenantStreams
+	// refused counts CAPACITY_EXHAUSTED refusals by pool (P3.6): the RPC
+	// metrics see ResourceExhausted only, shared with BUDGET_EXHAUSTED.
+	refused *prometheus.CounterVec
 }
 
 func newCapacity(c Capacity) *capacity {
@@ -118,12 +122,34 @@ func newCapacity(c Capacity) *capacity {
 	if c.StreamPerTenant <= 0 {
 		c.StreamPerTenant = c.Streams
 	}
+	refused := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "anvilkit_control_capacity_refusals_total",
+		Help: "RPCs refused with CAPACITY_EXHAUSTED, by pool (control, execution, streams, tenant_streams)."}, []string{"pool"})
 	return &capacity{
 		control:   &pool{limit: c.Control, reserve: c.CommandReserve},
 		execution: &pool{limit: c.Execution},
 		streams:   &pool{limit: c.Streams},
-		tenants:   &tenantStreams{limit: c.StreamPerTenant, held: map[string]int{}},
+		tenants:   &tenantStreams{limit: c.StreamPerTenant, held: map[string]int{}, refused: refused.WithLabelValues("tenant_streams")},
+		refused:   refused,
 	}
+}
+
+func (p *pool) inUse() float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return float64(p.held)
+}
+
+// collectors are the capacity gauges and the refusal counter (P3.6):
+// slots held and the bound of each pool, the refusals by pool.
+func (c *capacity) collectors() []prometheus.Collector {
+	out := []prometheus.Collector{c.refused}
+	for name, p := range map[string]*pool{"control": c.control, "execution": c.execution, "streams": c.streams} {
+		p := p
+		out = append(out,
+			prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "anvilkit_control_grpc_pool_in_use", Help: "Slots held in a gRPC capacity pool.", ConstLabels: prometheus.Labels{"pool": name}}, p.inUse),
+			prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "anvilkit_control_grpc_pool_limit", Help: "The bound of a gRPC capacity pool.", ConstLabels: prometheus.Labels{"pool": name}}, func() float64 { return float64(p.limit) }))
+	}
+	return out
 }
 
 const (
@@ -156,6 +182,7 @@ func (c *capacity) acquire(method string) (func(), error) {
 		return func() {}, nil
 	}
 	if !p.acquire(method == submitCommand) {
+		c.refused.WithLabelValues(c.name(p)).Inc()
 		return nil, status.Error(codes.ResourceExhausted, "CAPACITY_EXHAUSTED")
 	}
 	return p.release, nil
@@ -183,18 +210,32 @@ func (c *capacity) stream() grpc.StreamServerInterceptor {
 	}
 }
 
+func (c *capacity) name(p *pool) string {
+	switch p {
+	case c.execution:
+		return "execution"
+	case c.streams:
+		return "streams"
+	}
+	return "control"
+}
+
 // tenantStreams bounds the open event streams per tenant; the handler
 // acquires it once it knows the tenant of the request.
 type tenantStreams struct {
-	mu    sync.Mutex
-	limit int
-	held  map[string]int
+	mu      sync.Mutex
+	limit   int
+	held    map[string]int
+	refused prometheus.Counter
 }
 
 func (t *tenantStreams) acquire(tenant string) (func(), error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.held[tenant] >= t.limit {
+		if t.refused != nil {
+			t.refused.Inc()
+		}
 		return nil, status.Error(codes.ResourceExhausted, "CAPACITY_EXHAUSTED: streams of the tenant")
 	}
 	t.held[tenant]++

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -80,4 +81,47 @@ func TestDefaultDeadlineBoundsOnlyUnboundedCalls(t *testing.T) {
 		return nil, nil
 	})
 	require.NoError(t, err)
+}
+
+// P3.6: a CAPACITY_EXHAUSTED refusal is counted by pool, apart from the
+// other ResourceExhausted codes; the pool gauges report slots held and bounds.
+func TestCapacityRefusalsAreCountedByPool(t *testing.T) {
+	c := newCapacity(Capacity{Control: 1, Execution: 1, Streams: 1, StreamPerTenant: 1})
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c.collectors()...)
+	value := func(name, pool string) float64 {
+		families, err := reg.Gather()
+		require.NoError(t, err)
+		for _, f := range families {
+			if f.GetName() != name {
+				continue
+			}
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "pool" && l.GetValue() == pool {
+						if m.GetCounter() != nil {
+							return m.GetCounter().GetValue()
+						}
+						return m.GetGauge().GetValue()
+					}
+				}
+			}
+		}
+		return -1
+	}
+	release, err := c.acquire("/anvilkit.control.v1.ExecutionService/AcceptResult")
+	require.NoError(t, err)
+	require.Equal(t, 1.0, value("anvilkit_control_grpc_pool_in_use", "execution"))
+	require.Equal(t, 1.0, value("anvilkit_control_grpc_pool_limit", "execution"))
+	_, err = c.acquire("/anvilkit.control.v1.DispatchService/AdmitModel")
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, 1.0, value("anvilkit_control_capacity_refusals_total", "execution"))
+	require.Equal(t, -1.0, value("anvilkit_control_capacity_refusals_total", "control"), "no refusal of the control pool yet")
+	release()
+	require.Equal(t, 0.0, value("anvilkit_control_grpc_pool_in_use", "execution"))
+	_, err = c.tenants.acquire("t1")
+	require.NoError(t, err)
+	_, err = c.tenants.acquire("t1")
+	require.Error(t, err)
+	require.Equal(t, 1.0, value("anvilkit_control_capacity_refusals_total", "tenant_streams"))
 }

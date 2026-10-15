@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -29,6 +30,7 @@ type Server struct {
 	health  *health.Server
 	listen  string
 	serving atomic.Bool
+	cap     *capacity
 }
 
 // Identity is the listener's transport: with a Reloader the server is
@@ -150,7 +152,7 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 			return nil, err
 		}
 	}
-	return &Server{grpc: s, health: h, listen: listen}, nil
+	return &Server{grpc: s, health: h, listen: listen, cap: cap}, nil
 }
 
 // withoutService drops the entries of services the server does not register
@@ -212,4 +214,10 @@ func (s *Server) Stop(timeout time.Duration) {
 	case <-time.After(timeout):
 		s.grpc.Stop()
 	}
+}
+
+// Collectors are the capacity pool gauges and the CAPACITY_EXHAUSTED refusal
+// counter of this server (P3.6); the caller registers them.
+func (s *Server) Collectors() []prometheus.Collector {
+	return s.cap.collectors()
 }

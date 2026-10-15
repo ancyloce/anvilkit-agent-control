@@ -6,7 +6,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -29,15 +32,33 @@ func Observability(reg prometheus.Registerer) []grpc.ServerOption {
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 			start := time.Now()
+			markRequestID(ctx)
 			resp, err := handler(ctx, req)
 			record(info.FullMethod, start, err)
 			return resp, err
 		}),
 		grpc.ChainStreamInterceptor(func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 			start := time.Now()
+			markRequestID(ss.Context())
 			err := handler(srv, ss)
 			record(info.FullMethod, start, err)
 			return err
 		}),
+	}
+}
+
+// requestIDKey is the metadata the API sends with every call it makes for a
+// public request (P3.6, API-09); requestIDAttribute names it on this
+// server's span, so one trace links the public error envelope's requestId
+// to Control's work. The identifier is the API's opaque req_ value.
+const (
+	requestIDKey       = "x-anvilkit-request-id"
+	requestIDAttribute = "anvilkit.request_id"
+)
+
+func markRequestID(ctx context.Context) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	if v := md.Get(requestIDKey); len(v) == 1 && len(v[0]) <= 64 {
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(requestIDAttribute, v[0]))
 	}
 }
