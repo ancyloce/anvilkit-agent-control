@@ -50,7 +50,11 @@ helm lint deploy/chart --set database.secret.name=control-database --set tempora
   --set migration.secret.name=control-migrator
 ```
 
-The contract module is an ordinary published dependency. This build requires `github.com/ancyloce/anvilkit-agent-contracts/go v0.1.2`: the tag `go/v0.1.2` (commit `532f680` on `main` of the `anvilkit-agent-contracts` repository, tagged and pushed 2026-09-16; it carries `ExecutionService.GetInstance` with the attempt's `operation` in its answer, `profile.expectedResult.resultSizeBytes` and the `npm`, `browser` and `css` artifact classes), served by `proxy.golang.org` (origin `refs/tags/go/v0.1.2`) and verified against the checksum database (`go.sum`: `h1:BgUX79+lfJxtUlpzgNbyzejMgYvFO8iqORBDqBAvCgo=`, go.mod `h1:GpREiampo5pSy0+IsLQcbA+DVi6jwpweI3ojWuv/gs4=`; the zip includes that repository's root `LICENSE`, as Go requires for a module in a subdirectory); before the tag existed the same line named the pseudo-version of `a397fee`, and nothing but the `require` line and the two `go.sum` lines changed with the tag. No replace directive, workspace or local proxy is involved.
+The contract module is an ordinary published dependency. The version this build requires is the generated line below: a tag of the `anvilkit-agent-contracts` repository, served by `proxy.golang.org` (origin `refs/tags/go/...`) and verified against the checksum database (`go.sum`; the zip includes that repository's root `LICENSE`, as Go requires for a module in a subdirectory); a newer contract version is adopted by changing the `require` line and the two `go.sum` lines. No replace directive, workspace or local proxy is involved.
+
+<!-- generated:contracts -->
+Contracts: this build requires `github.com/ancyloce/anvilkit-agent-contracts/go v0.1.10` (`go.mod`; tag `go/v0.1.10`).
+<!-- /generated:contracts -->
 
 ## Deploy
 
