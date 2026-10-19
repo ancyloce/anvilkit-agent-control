@@ -278,6 +278,22 @@ type Event struct {
 	Revision     Revision
 	Payload      ChangedPayload
 	OccurredAt   time.Time
+	// PriorLifecycle is the lifecycle the transition left. Transition sets
+	// it and nothing stores it: the store derives the lifecycle latencies
+	// (P3.6) from it at commit; events read back carry none.
+	PriorLifecycle Lifecycle
+}
+
+// FirstProgress reports whether the event takes its operation out of the
+// accepted lifecycle, which it never re-enters.
+func (e Event) FirstProgress() bool {
+	return e.PriorLifecycle == LifecycleAccepted && e.Payload.Lifecycle != LifecycleAccepted
+}
+
+// Completes reports whether the event makes its operation terminal; a
+// terminal lifecycle is never left.
+func (e Event) Completes() bool {
+	return e.PriorLifecycle != "" && !e.PriorLifecycle.Terminal() && e.Payload.Lifecycle.Terminal()
 }
 
 // ChangedPayload is the reviewed small payload of operation.changed.
@@ -334,17 +350,19 @@ func NewOperation(cmd CommandIdentity, scope Scope, kind OperationKind, subject 
 // the event sequence and returns the event to commit with the row. The
 // caller holds the operation lock (rank 2) for the whole transaction.
 func (o *Operation) Transition(transitionID string, now time.Time, apply func(*Operation)) Event {
+	prior := o.Lifecycle
 	apply(o)
 	o.Revision++
 	o.UpdatedAt = now
 	ev := Event{
-		OperationID:  o.ID,
-		EventSeq:     o.NextEventSeq,
-		TransitionID: transitionID,
-		EventType:    EventOperationChanged,
-		Revision:     o.Revision,
-		Payload:      o.ChangedPayload(),
-		OccurredAt:   now,
+		OperationID:    o.ID,
+		EventSeq:       o.NextEventSeq,
+		TransitionID:   transitionID,
+		EventType:      EventOperationChanged,
+		Revision:       o.Revision,
+		Payload:        o.ChangedPayload(),
+		OccurredAt:     now,
+		PriorLifecycle: prior,
 	}
 	o.NextEventSeq++
 	return ev
