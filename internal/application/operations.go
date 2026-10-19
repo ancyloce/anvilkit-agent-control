@@ -20,6 +20,9 @@ type Operations struct {
 	profiles  map[string]domain.Profile
 	clock     domain.Clock
 	log       *slog.Logger
+	// finance settles the money of an operation an applied cancel ended,
+	// right after that transition commits (P2.1); the sweep repairs a miss.
+	finance *Finance
 }
 
 func NewOperations(store Store, inventory Inventory, profiles []domain.Profile, clock domain.Clock, log *slog.Logger) *Operations {
@@ -28,6 +31,12 @@ func NewOperations(store Store, inventory Inventory, profiles []domain.Profile, 
 		m[p.ID] = p
 	}
 	return &Operations{store: store, inventory: inventory, profiles: m, clock: clock, log: log}
+}
+
+// WithFinance installs the financial settlement of operations a cancel ends.
+func (s *Operations) WithFinance(f *Finance) *Operations {
+	s.finance = f
+	return s
 }
 
 // Profile returns the reviewed profile or ErrProfileUnqualified.
@@ -377,12 +386,16 @@ func (s *Operations) LineageIdentity(ctx context.Context, op *domain.Operation) 
 }
 
 // EventPage is one page of durable events with the projection's covered
-// sequence; ResetRequired means the cursor cannot be honored.
+// sequence; ResetRequired means the cursor cannot be honored. Final means
+// the operation records no further event in the normal course: it is
+// terminal and its money no longer awaits settlement (settled, or an
+// unknown exposure that only recovery resolves), so the covered sequence
+// is its last event.
 type EventPage struct {
 	Events          []domain.Event
 	CoveredEventSeq uint64
 	ResetRequired   bool
-	Terminal        bool
+	Final           bool
 }
 
 // ListEvents reads events after the cursor under current authorization.
@@ -397,7 +410,7 @@ func (s *Operations) ListEvents(ctx context.Context, scope domain.Scope, operati
 			return err
 		}
 		page.CoveredEventSeq = op.CoveredEventSeq()
-		page.Terminal = op.Lifecycle.Terminal()
+		page.Final = op.Lifecycle.Terminal() && !financeSettleable(op)
 		if afterSeq > page.CoveredEventSeq {
 			page.ResetRequired = true
 			return nil
@@ -417,7 +430,9 @@ func (s *Operations) SubmitCommand(ctx context.Context, cmd domain.CommandIdenti
 		return nil, false, fmt.Errorf("%w: command tenant differs from scope", domain.ErrInvalid)
 	}
 	now := s.clock.Now()
+	var ended bool
 	err = s.store.Tx(ctx, func(r Repo) error {
+		ended = false
 		found, err := r.GetCommand(ctx, cmd.TenantID, cmd.CommandID)
 		switch {
 		case err == nil:
@@ -512,12 +527,18 @@ func (s *Operations) SubmitCommand(ctx context.Context, cmd domain.CommandIdenti
 				return err
 			}
 			c.OperationRevision = op.Revision
+			ended = op.Lifecycle.Terminal()
 		}
 		if c.Outcome != domain.OutcomePending {
 			c.SettledAt = &now
 		}
 		return r.InsertCommand(ctx, c)
 	})
+	if err == nil && ended && s.finance != nil {
+		if _, _, ferr := s.finance.SettleFinance(ctx, operationID); ferr != nil {
+			s.log.Warn("financial settlement deferred to the sweep", "operationId", operationID, "error", ferr)
+		}
+	}
 	if errors.Is(err, ErrDuplicateKey) && depthOf(ctx) < duplicateRetries {
 		return s.SubmitCommand(deeper(ctx), cmd, scope, operationID, kind, expected, targetActivation)
 	}

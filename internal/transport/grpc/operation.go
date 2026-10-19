@@ -274,8 +274,9 @@ func (s *operationServer) ListOperationEvents(ctx context.Context, req *controlv
 }
 
 // StreamOperationEvents re-reads committed events after the cursor until
-// the operation is terminal or the client goes away; it never buffers
-// beyond one page so a slow consumer only delays itself.
+// the operation's last event was sent (terminal, and its money no longer
+// awaiting settlement) or the client goes away; it never buffers beyond
+// one page so a slow consumer only delays itself.
 func (s *operationServer) StreamOperationEvents(req *controlv1.StreamOperationEventsRequest, stream controlv1.OperationService_StreamOperationEventsServer) error {
 	ctx := stream.Context()
 	after, err := parseAfter(req.GetAfterEventSeq())
@@ -309,7 +310,7 @@ func (s *operationServer) StreamOperationEvents(req *controlv1.StreamOperationEv
 			}
 			after = ev.EventSeq
 		}
-		if page.Terminal && after >= page.CoveredEventSeq {
+		if page.Final && after >= page.CoveredEventSeq {
 			return nil
 		}
 		poll := time.NewTimer(streamPoll)

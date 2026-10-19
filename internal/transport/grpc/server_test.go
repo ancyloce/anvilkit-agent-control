@@ -56,7 +56,7 @@ func TestTransport(t *testing.T) {
 		{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"},
 		{ID: "preview-build-v1", Kind: domain.KindPreviewBuild, OperationDeadline: 30 * time.Minute, StepID: "preview-build", MultiStep: true},
 	}
-	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log)
+	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log).WithFinance(application.NewFinance(store, nil, domain.SystemClock{}, log))
 	exec := application.NewExecution(store, inv, jobs.Contract{}, profiles, domain.SystemClock{}, log)
 	authority := development.NewAuthority([]development.RouteAuthorization{{TenantID: "tenant_a", RouteID: "authorized-route"}}, 30*time.Second, domain.SystemClock{})
 	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log).WithDevelopmentCaps()
@@ -130,8 +130,14 @@ func TestTransport(t *testing.T) {
 	third, err := stream.Recv()
 	require.NoError(t, err)
 	require.Equal(t, controlv1.Lifecycle_LIFECYCLE_CANCELED, third.Event.GetOperationChanged().Lifecycle)
+	// The terminal operation's last event is its financial settlement: the
+	// stream sends it and only then ends (API-04).
+	fourth, err := stream.Recv()
+	require.NoError(t, err, "the stream stays open until the money settled")
+	require.Equal(t, "finance:settled", fourth.Event.TransitionId)
+	require.Equal(t, controlv1.FinanceState_FINANCE_STATE_SETTLED, fourth.Event.GetOperationChanged().Finance)
 	_, err = stream.Recv()
-	require.Error(t, err, "the stream ends after the terminal event")
+	require.Error(t, err, "the stream ends after the operation's last event")
 
 	// DispatchService over the wire: an unspecified enum and a malformed
 	// money amount are rejected before any handler; a route without an

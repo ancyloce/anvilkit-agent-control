@@ -133,8 +133,8 @@ func Module() fx.Option {
 			func(cfg config.Config, c client.Client) application.WorkflowRelay {
 				return temporaladapter.NewRelay(c, cfg.Temporal.TaskQueue, WorkflowNames(), RecoveryWorkflowName)
 			},
-			func(cfg config.Config, store application.Store, inv application.Inventory, clock domain.Clock, log *slog.Logger) *application.Operations {
-				return application.NewOperations(store, inv, Profiles(cfg), clock, log)
+			func(cfg config.Config, store application.Store, inv application.Inventory, finance *application.Finance, clock domain.Clock, log *slog.Logger) *application.Operations {
+				return application.NewOperations(store, inv, Profiles(cfg), clock, log).WithFinance(finance)
 			},
 			func(cfg config.Config, store application.Store, inv application.Inventory, mv application.ManifestValidator, finance *application.Finance, clock domain.Clock, log *slog.Logger) *application.Execution {
 				return application.NewExecution(store, inv, mv, Profiles(cfg), clock, log).WithFinance(finance)
