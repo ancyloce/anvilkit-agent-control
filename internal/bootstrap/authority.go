@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/authority"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/development"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/evidence"
@@ -68,7 +70,7 @@ func startPriceBook(ctx context.Context, cfg config.Config, prices *application.
 // newAuthority is the commercial authority of admission and of
 // AuthorizationService: the route fixture in development, otherwise the
 // declared decision endpoint (ENV-07).
-func newAuthority(cfg config.Config, clock domain.Clock, log *slog.Logger) (application.Authority, application.AuthorizationSource, error) {
+func newAuthority(cfg config.Config, clock domain.Clock, reg *prometheus.Registry, log *slog.Logger) (application.Authority, application.AuthorizationSource, error) {
 	if cfg.Dispatch.Development.Enabled {
 		routes := make([]development.RouteAuthorization, 0, len(cfg.Dispatch.Development.AuthorizedRoutes))
 		for _, r := range cfg.Dispatch.Development.AuthorizedRoutes {
@@ -78,9 +80,16 @@ func newAuthority(cfg config.Config, clock domain.Clock, log *slog.Logger) (appl
 		return a, a, nil
 	}
 	a := cfg.Dispatch.Authority
+	// P3.6 (platform.md SLO row 3): each decision's age at its use; the
+	// configured freshness (at most 30 s) bounds it.
+	age := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "anvilkit_control_authority_decision_age_seconds",
+		Help:    "Age of a commercial authorization decision when admission or AuthorizationService relies on it (0 when just fetched), by kind and decision.",
+		Buckets: []float64{0.001, 0.5, 1, 2.5, 5, 10, 15, 20, 25, 30}}, []string{"kind", "decision"})
+	reg.MustRegister(age)
 	src, err := authority.New(authority.Options{
 		URL: a.URL, Timeout: a.Timeout, Freshness: cfg.Dispatch.AuthorityFreshness,
 		CAFile: a.CAFile, CertFile: a.CertFile, KeyFile: a.KeyFile, ServerName: a.ServerName, TokenFile: a.TokenFile,
+		DecisionAge: age,
 	}, clock)
 	if err != nil {
 		return nil, nil, fmt.Errorf("production authority: %w", err)

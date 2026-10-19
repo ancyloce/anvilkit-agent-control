@@ -113,7 +113,9 @@ func Module() fx.Option {
 			},
 			func() domain.Clock { return domain.SystemClock{} },
 			newPool,
-			func(pool *pgxpool.Pool) *postgres.Store { return postgres.NewStore(pool) },
+			func(pool *pgxpool.Pool, reg *prometheus.Registry) *postgres.Store {
+				return postgres.NewStore(pool).WithLifecycleLatency(newLifecycleLatency(reg))
+			},
 			func(s *postgres.Store) application.Store { return s },
 			newInventory,
 			newArtifactStore,

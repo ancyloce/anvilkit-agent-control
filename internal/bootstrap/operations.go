@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres/sqlc"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	grpctransport "github.com/ancyloce/anvilkit-agent-control/internal/transport/grpc"
@@ -90,6 +91,26 @@ func startOperationalMetrics(lc fx.Lifecycle, pool *pgxpool.Pool, relay *applica
 			return nil
 		},
 	})
+}
+
+// newLifecycleLatency registers platform.md SLO row 2 (P3.6), observed by
+// the store at the commit of the transition that reaches each milestone:
+// acceptance to first progress, and acceptance to the terminal lifecycle.
+// Labels: the operation kind, the reviewed profile and the lifecycle
+// reached (bounded sets). A model is no label: an operation calls several,
+// and each call's latency is Model Proxy's.
+func newLifecycleLatency(reg prometheus.Registerer) *postgres.LifecycleLatency {
+	labels := []string{"kind", "profile", "lifecycle"}
+	l := &postgres.LifecycleLatency{
+		FirstProgress: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "anvilkit_control_operation_first_progress_seconds",
+			Help:    "Seconds from an operation's acceptance to the commit that takes it out of the accepted lifecycle, by kind, profile and the lifecycle reached.",
+			Buckets: prometheus.ExponentialBuckets(0.05, 2, 18)}, labels),
+		Completion: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "anvilkit_control_operation_completion_seconds",
+			Help:    "Seconds from an operation's acceptance to the commit of its terminal lifecycle (a Generation's succeeded is its accepted candidate), by kind, profile and lifecycle.",
+			Buckets: prometheus.ExponentialBuckets(0.5, 2, 20)}, labels),
+	}
+	reg.MustRegister(l.FirstProgress, l.Completion)
+	return l
 }
 
 // relayBacklog reads the relay's per-lane backlog at scrape time.
