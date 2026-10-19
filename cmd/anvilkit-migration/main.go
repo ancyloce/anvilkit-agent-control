@@ -65,7 +65,14 @@ func main() {
 	case *to >= 0:
 		version, err = migrate.DownTo(ctx, db, *to)
 	default:
-		version, err = migrate.Up(ctx, db)
+		// A lock-timeout retry is reported, so an operator (and the
+		// migration-under-traffic case, TEST-05) sees the lock waits the
+		// bounded run absorbed.
+		opts := migrate.DefaultOptions()
+		opts.OnRetry = func(attempt int, err error) {
+			fmt.Fprintf(os.Stderr, "anvilkit-migration: lock_timeout %s exceeded (attempt %d of %d), retrying: %v\n", opts.LockTimeout, attempt, opts.Retries+1, err)
+		}
+		version, err = migrate.UpWith(ctx, db, opts)
 	}
 	if err != nil {
 		fail(err)
