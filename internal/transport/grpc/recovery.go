@@ -3,12 +3,15 @@ package grpc
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	controlv1 "github.com/ancyloce/anvilkit-agent-contracts/go/anvilkit/control/v1"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
+	"github.com/ancyloce/anvilkit-agent-control/internal/transport/identity"
 )
 
 // recoveryServer adapts anvilkit.control.v1.RecoveryService to the
@@ -98,8 +101,33 @@ func (s *recoveryServer) BeginRecovery(ctx context.Context, req *controlv1.Begin
 	return &controlv1.BeginRecoveryResponse{Run: toRun(full, progress, unsettled), Existing: existing}, nil
 }
 
+// recoveryViewer is the user scope an operator read of a run is decided
+// for (API-17). A verified API caller reads on an operator's behalf and must
+// carry the operator's scope; the Workflow drives the run and reads without
+// one; on the DEVELOPMENT_ONLY plaintext listener, which verifies no
+// workload, a request that carries a scope is decided by it (its roles do
+// not count there, see scope).
+func recoveryViewer(ctx context.Context, s *controlv1.Scope) (*domain.Scope, error) {
+	p, verified := identity.Caller(ctx)
+	switch {
+	case verified && isWorkload(p, api) && s == nil:
+		return nil, status.Error(codes.PermissionDenied, "PERMISSION_DENIED: an operator read of a recovery run needs the operator's scope")
+	case verified && !isWorkload(p, api), s == nil:
+		return nil, nil
+	}
+	viewer := scope(ctx, s)
+	return &viewer, nil
+}
+
 func (s *recoveryServer) GetRecovery(ctx context.Context, req *controlv1.GetRecoveryRequest) (*controlv1.GetRecoveryResponse, error) {
+	viewer, err := recoveryViewer(ctx, req.GetScope())
+	if err != nil {
+		return nil, err
+	}
 	run, progress, unsettled, err := s.recovery.Get(ctx, req.GetRunId())
+	if err == nil && viewer != nil {
+		err = application.Discloses(run, *viewer)
+	}
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -115,6 +143,15 @@ func (s *recoveryServer) EnumerateInventory(ctx context.Context, req *controlv1.
 }
 
 func (s *recoveryServer) ListFindings(ctx context.Context, req *controlv1.ListFindingsRequest) (*controlv1.ListFindingsResponse, error) {
+	viewer, err := recoveryViewer(ctx, req.GetScope())
+	if err != nil {
+		return nil, err
+	}
+	if viewer != nil {
+		if err := s.recovery.Viewable(ctx, req.GetRunId(), *viewer); err != nil {
+			return nil, toStatus(err)
+		}
+	}
 	findings, next, complete, err := s.recovery.Findings(ctx, req.GetRunId(), findingStatusFromProto[req.GetStatus()], req.GetCursor(), int(req.GetLimit()))
 	if err != nil {
 		return nil, toStatus(err)

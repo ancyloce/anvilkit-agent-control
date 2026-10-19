@@ -9,7 +9,9 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	controlv1 "github.com/ancyloce/anvilkit-agent-contracts/go/anvilkit/control/v1"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
+	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 	"github.com/ancyloce/anvilkit-agent-control/internal/transport/identity"
 )
 
@@ -53,4 +55,28 @@ func TestAuthorityFieldsFollowTheVerifiedCaller(t *testing.T) {
 	reader, err = dispatchReader(verified(knowledge), "tenant_a", "anvilkit-agent-knowledge")
 	require.NoError(t, err)
 	require.Equal(t, application.Reader{TenantID: "tenant_a"}, reader, "a non-owner reader is bound to its tenant")
+}
+
+// API-17 (F-P3.7-1): an operator read of a recovery run through the API
+// carries the operator's scope; the Workflow reads without one; the
+// plaintext listener decides by a carried scope whose roles do not count.
+func TestRecoveryReadsNeedTheOperatorScopeFromTheAPI(t *testing.T) {
+	op := &controlv1.Scope{TenantId: "tenant_a", ActorId: "op", Roles: []string{"operator"}}
+	_, err := recoveryViewer(verified(api), nil)
+	require.Equal(t, codes.PermissionDenied, status.Code(err), "the API must say whom it reads for")
+	viewer, err := recoveryViewer(verified(api), op)
+	require.NoError(t, err)
+	require.Equal(t, &domain.Scope{TenantID: "tenant_a", ActorID: "op", Roles: []string{"operator"}}, viewer, "the API's verified roles count")
+	viewer, err = recoveryViewer(verified(workflow), nil)
+	require.NoError(t, err)
+	require.Nil(t, viewer, "the Workflow drives the run")
+	viewer, err = recoveryViewer(verified(workflow), op)
+	require.NoError(t, err)
+	require.Nil(t, viewer, "a scope from the Workflow is not a user's")
+	viewer, err = recoveryViewer(context.Background(), op)
+	require.NoError(t, err)
+	require.Equal(t, &domain.Scope{TenantID: "tenant_a", ActorID: "op"}, viewer, "DEVELOPMENT_ONLY: roles from an unverified caller do not count")
+	viewer, err = recoveryViewer(context.Background(), nil)
+	require.NoError(t, err)
+	require.Nil(t, viewer)
 }

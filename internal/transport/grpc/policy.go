@@ -44,8 +44,12 @@ func Policy() identity.Policy {
 	// The API workload may carry operator commands; whether the user behind
 	// it holds the operator role is the separate business authorization
 	// (the DEVELOPMENT_ONLY operator fixture until P0.3).
+	// API-17 (F-P3.7-1): the operator's recovery routes. The API also reads
+	// a run's findings for the operator; Control discloses a run only to an
+	// operator of its scope (application.Discloses).
 	add("RecoveryService", []string{"BeginRecovery", "GetRecovery", "DisposeObligation"}, api)
-	add("RecoveryService", []string{"EnumerateInventory", "ListFindings", "ReconcileFinding", "RecordLaunchOutcome", "EvaluateRecovery"}, workflow)
+	add("RecoveryService", []string{"ListFindings"}, api, workflow)
+	add("RecoveryService", []string{"EnumerateInventory", "ReconcileFinding", "RecordLaunchOutcome", "EvaluateRecovery"}, workflow)
 	add("ArtifactService", []string{"BeginTransfer", "FinalizeTransfer", "GetTransfer", "ResolveHandle", "ReadArtifact"}, api, workflow, sidecar)
 	add("PreviewService", []string{"RecordPreview"}, workflow)
 	add("PreviewService", []string{"GetPreview", "GetSource"}, api, workflow)
