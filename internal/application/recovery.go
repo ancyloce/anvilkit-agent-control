@@ -217,6 +217,33 @@ func (s *Recovery) Get(ctx context.Context, runID string) (run *domain.RecoveryR
 	return run, progress, unsettled, err
 }
 
+// Discloses decides an operator's read of a run (API-17): the operator or
+// platform_operator role in the run's own tenant, or the platform_operator
+// role for a run of every tenant ("*"), as Begin decided who could open it.
+// Anything else is NOT_FOUND: a run outside the reader's scope is not
+// disclosed, not even its existence. The run's scope key never changes, so
+// the decision holds for every later read of the same run.
+func Discloses(run *domain.RecoveryRun, viewer domain.Scope) error {
+	switch {
+	case run.ScopeKey == domain.ScopeAll && viewer.HasRole(domain.RolePlatformOperator):
+		return nil
+	case run.ScopeKey != domain.ScopeAll && run.ScopeKey == viewer.TenantID && (viewer.HasRole(domain.RoleOperator) || viewer.HasRole(domain.RolePlatformOperator)):
+		return nil
+	}
+	return fmt.Errorf("%w: recovery run %s", domain.ErrNotFound, run.ID)
+}
+
+// Viewable reads the run and decides an operator's read of it (Discloses).
+func (s *Recovery) Viewable(ctx context.Context, runID string, viewer domain.Scope) error {
+	return s.store.Read(ctx, func(r Repo) error {
+		run, err := r.GetRecoveryRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		return Discloses(run, viewer)
+	})
+}
+
 // FindingCursor is the opaque position of a findings listing: the key of
 // the last finding of the previous page in the fixed (class, obligation)
 // order. "" starts at the beginning.
