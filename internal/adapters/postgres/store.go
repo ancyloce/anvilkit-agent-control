@@ -21,7 +21,10 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool    *pgxpool.Pool
+	latency *LifecycleLatency
+}
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
@@ -31,10 +34,17 @@ func (s *Store) Tx(ctx context.Context, fn func(application.Repo) error) error {
 		return mapErr(err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
-	if err := fn(&repo{q: sqlc.New(tx), db: tx}); err != nil {
+	r := &repo{q: sqlc.New(tx), db: tx, latency: s.latency}
+	if err := fn(r); err != nil {
 		return mapErr(err)
 	}
-	return mapErr(tx.Commit(ctx))
+	if err := tx.Commit(ctx); err != nil {
+		return mapErr(err)
+	}
+	for _, observe := range r.committed {
+		observe()
+	}
+	return nil
 }
 
 func (s *Store) Read(ctx context.Context, fn func(application.Repo) error) error {
@@ -51,6 +61,10 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 type repo struct {
 	q  *sqlc.Queries
 	db sqlc.DBTX
+	// latency and committed: the lifecycle milestones this transaction's
+	// events reach, observed only after it commits (P3.6).
+	latency   *LifecycleLatency
+	committed []func()
 }
 
 func mapErr(err error) error {
@@ -251,8 +265,15 @@ func (r *repo) InsertEvent(ctx context.Context, ev domain.Event) error {
 	}); err != nil {
 		return err
 	}
-	var tenantID string
-	if err := tx.QueryRow(ctx, "SELECT tenant_id FROM operations WHERE operation_id = $1", ev.OperationID).Scan(&tenantID); err != nil {
+	var (
+		tenantID, kind, profileID string
+		createdAt                 time.Time
+	)
+	if err := tx.QueryRow(ctx, "SELECT tenant_id, kind, profile_id, created_at FROM operations WHERE operation_id = $1", ev.OperationID).
+		Scan(&tenantID, &kind, &profileID, &createdAt); err != nil {
+		return err
+	}
+	if err := r.stageLatency(ctx, ev, kind, profileID, createdAt); err != nil {
 		return err
 	}
 	env, err := domain.OperationChangedEnvelope(ev, tenantID)

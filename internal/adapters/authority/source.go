@@ -13,6 +13,12 @@
 // current decision (transport error, non-200, malformed or oversized body,
 // a redirect) is domain.ErrUnavailable: it denies new admission and
 // disclosure and never grants.
+//
+// Every decision Control relies on — admission's and AuthorizationService's
+// for Knowledge and MCP, which use the answer at once and cache nothing —
+// passes Check, so the age of a decision at its use is observed there
+// (platform.md SLO row 3, the original freshUntil): 0 for a decision just
+// fetched, the time since it was fetched for a cache hit.
 package authority
 
 import (
@@ -30,6 +36,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
@@ -50,6 +58,9 @@ type Options struct {
 	MaxEntries int
 	// Client overrides the HTTP client (tests).
 	Client *http.Client
+	// DecisionAge, when set, observes each decision's age at its use by
+	// kind (disclosure, execution) and decision (allow, deny).
+	DecisionAge *prometheus.HistogramVec
 }
 
 // Source is the guarded decision client with its absolute-freshness cache.
@@ -59,7 +70,13 @@ type Source struct {
 	clock  domain.Clock
 
 	mu    sync.Mutex
-	cache map[string]domain.Decision
+	cache map[string]cached
+}
+
+// cached is a decision and when it was fetched.
+type cached struct {
+	decision  domain.Decision
+	fetchedAt time.Time
 }
 
 // maxBody bounds a decision response.
@@ -114,7 +131,7 @@ func New(o Options, clock domain.Clock) (*Source, error) {
 	// decision is unavailable.
 	c := *client
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Source{opts: o, client: &c, clock: clock, cache: map[string]domain.Decision{}}, nil
+	return &Source{opts: o, client: &c, clock: clock, cache: map[string]cached{}}, nil
 }
 
 type request struct {
@@ -159,9 +176,10 @@ func (s *Source) Check(ctx context.Context, q domain.AuthorizationQuery) (domain
 	k := key(q)
 	now := s.clock.Now()
 	s.mu.Lock()
-	if d, ok := s.cache[k]; ok && now.Before(d.FreshUntil) {
+	if c, ok := s.cache[k]; ok && now.Before(c.decision.FreshUntil) {
 		s.mu.Unlock()
-		return d, nil
+		s.observeAge(q, c.decision, now.Sub(c.fetchedAt))
+		return c.decision, nil
 	}
 	s.mu.Unlock()
 	d, err := s.fetch(ctx, q, now)
@@ -171,17 +189,29 @@ func (s *Source) Check(ctx context.Context, q domain.AuthorizationQuery) (domain
 	s.mu.Lock()
 	if len(s.cache) >= s.opts.MaxEntries {
 		for ck, cd := range s.cache {
-			if !now.Before(cd.FreshUntil) {
+			if !now.Before(cd.decision.FreshUntil) {
 				delete(s.cache, ck)
 			}
 		}
 		if len(s.cache) >= s.opts.MaxEntries {
-			s.cache = map[string]domain.Decision{}
+			s.cache = map[string]cached{}
 		}
 	}
-	s.cache[k] = d
+	s.cache[k] = cached{decision: d, fetchedAt: now}
 	s.mu.Unlock()
+	s.observeAge(q, d, 0)
 	return d, nil
+}
+
+func (s *Source) observeAge(q domain.AuthorizationQuery, d domain.Decision, age time.Duration) {
+	if s.opts.DecisionAge == nil {
+		return
+	}
+	decision := "deny"
+	if d.Allow {
+		decision = "allow"
+	}
+	s.opts.DecisionAge.WithLabelValues(kind(q), decision).Observe(max(age.Seconds(), 0))
 }
 
 func (s *Source) fetch(ctx context.Context, q domain.AuthorizationQuery, now time.Time) (domain.Decision, error) {
