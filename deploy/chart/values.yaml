@@ -68,6 +68,9 @@ identity:
     duration: 2160h
     renewBefore: 720h
   maxConnectionAge: 1h
+  # How long a connection past maxConnectionAge keeps its open streams
+  # (grpc.identity.max_connection_age_grace, 1s..24h).
+  maxConnectionAgeGrace: 30s
 
 # The top-level DEVELOPMENT_ONLY guard: every development transport below
 # (identity.mode, temporal.tls.mode, telemetry.otlpTls.mode) renders only

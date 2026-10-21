@@ -14,3 +14,23 @@ spec:
       targetPort: grpc
       protocol: TCP
       appProtocol: grpc
+---
+# D-8: every ready replica by name, for clients that balance per call (the
+# API's round_robin resolves this name to each Control Pod; the ClusterIP
+# above gave every call of one connection the same replica).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "anvilkit-agent-control.fullname" . }}-headless
+  labels:
+    {{- include "anvilkit-agent-control.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "anvilkit-agent-control.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.service.port }}
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: grpc

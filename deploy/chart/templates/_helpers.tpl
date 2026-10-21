@@ -193,7 +193,7 @@ wired to the loader's keys. */}}
 {{- $_ = set $cfg.artifacts "backend" (ternary "s3" "disabled" .Values.artifacts.enabled) -}}
 {{- $_ = set $cfg "development" (dict "enabled" .Values.development.enabled) -}}
 {{- $_ = set $cfg "health" (dict "listen" (printf "0.0.0.0:%d" (int .Values.health.port))) -}}
-{{- $id := dict "mode" .Values.identity.mode "max_connection_age" .Values.identity.maxConnectionAge "reload_interval" (dig "identity" "reload_interval" "5s" $cfg.grpc) -}}
+{{- $id := dict "mode" .Values.identity.mode "max_connection_age" .Values.identity.maxConnectionAge "max_connection_age_grace" .Values.identity.maxConnectionAgeGrace "reload_interval" (dig "identity" "reload_interval" "5s" $cfg.grpc) -}}
 {{- if .Values.identity.trustDomain }}{{- $_ = set $id "trust_domain" .Values.identity.trustDomain }}{{- end -}}
 {{- if eq .Values.identity.mode "mtls" }}
 {{- $_ = set $id "cert_file" "/etc/anvilkit/identity/tls.crt" }}
