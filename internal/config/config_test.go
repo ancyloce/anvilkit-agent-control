@@ -71,6 +71,7 @@ func TestPrecedenceDefaultsFileEnvironment(t *testing.T) {
 	require.Equal(t, "127.0.0.1:9111", c.GRPC.Listen, "environment overrides the file")
 	require.Equal(t, 8, c.GRPC.ControlCapacity, "file overrides the default")
 	require.Equal(t, 64, c.GRPC.ExecutionCapacity, "default kept")
+	require.Equal(t, 30*time.Second, c.GRPC.Identity.MaxConnectionAgeGrace, "an aged connection keeps its streams 30s by default")
 	require.Equal(t, 500*time.Millisecond, c.Relay.Interval)
 	require.Equal(t, "/var/lib/anvilkit/inventory", c.Inventory.Dir)
 	require.Contains(t, c.Database.URL, "secret")
@@ -282,6 +283,8 @@ func TestIdentityAndDevelopmentGuard(t *testing.T) {
 	require.ErrorContains(t, err, "health.listen must not be grpc.listen")
 	_, err = config.LoadFrom(write(t, minimal+"grpc:\n  identity:\n    max_connection_age: 10s\n"), base)
 	require.ErrorContains(t, err, "grpc.identity.max_connection_age")
+	_, err = config.LoadFrom(write(t, minimal+"grpc:\n  identity:\n    max_connection_age_grace: 0s\n"), base)
+	require.ErrorContains(t, err, "grpc.identity.max_connection_age_grace", "a zero grace would never close an aged connection")
 	_, err = config.LoadFrom(write(t, minimal+"development:\n  enabled: true\n"), append(base, "ANVILKIT_CONTROL_DEVELOPMENT_ENABLED=true"))
 	require.ErrorContains(t, err, "not allowed overrides", "the guard is file-only")
 }

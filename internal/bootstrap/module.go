@@ -207,7 +207,8 @@ func Module() fx.Option {
 				return grpctransport.NewServerWithIdentity(cfg.GRPC.Listen, id,
 					grpctransport.Capacity{Control: cfg.GRPC.ControlCapacity, Execution: cfg.GRPC.ExecutionCapacity, Streams: cfg.GRPC.StreamCapacity, StreamPerTenant: cfg.GRPC.StreamPerTenant, CommandReserve: cfg.GRPC.CommandReserve},
 					grpctransport.Dependencies{Ops: ops, Exec: exec, Dispatch: dispatch, Effects: effects, Recovery: recovery, Artifacts: artifacts, Preparations: preparations, Generations: generations, Grants: grants, Previews: previews, Releases: releases,
-						Finance: finance, Authorization: authorization, Notifier: notifier, DefaultDeadline: cfg.GRPC.DefaultDeadline, MaxConnectionAge: cfg.GRPC.Identity.MaxConnectionAge},
+						Finance: finance, Authorization: authorization, Notifier: notifier, DefaultDeadline: cfg.GRPC.DefaultDeadline, MaxConnectionAge: cfg.GRPC.Identity.MaxConnectionAge,
+						MaxConnectionAgeGrace: cfg.GRPC.Identity.MaxConnectionAgeGrace},
 					grpctransport.Observability(reg)...)
 			},
 			// The event notifier (P1.4): one LISTEN connection per replica wakes
