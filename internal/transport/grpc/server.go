@@ -70,6 +70,9 @@ type Dependencies struct {
 	DefaultDeadline time.Duration
 	// MaxConnectionAge makes clients re-balance across replicas (zero: 1h).
 	MaxConnectionAge time.Duration
+	// MaxConnectionAgeGrace is how long an aged connection keeps its open
+	// streams (zero: 30s).
+	MaxConnectionAgeGrace time.Duration
 }
 
 // NewServer builds the plaintext development listener (tests).
@@ -121,7 +124,11 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 	if age <= 0 {
 		age = time.Hour
 	}
-	opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: age, MaxConnectionAgeGrace: 30 * time.Second}))
+	grace := deps.MaxConnectionAgeGrace
+	if grace <= 0 {
+		grace = 30 * time.Second
+	}
+	opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: age, MaxConnectionAgeGrace: grace}))
 	opts = append(opts, grpc.ChainUnaryInterceptor(unary...), grpc.ChainStreamInterceptor(stream...))
 	// The extra options (observability) register their interceptors first,
 	// so metrics and spans are outermost and count a refusal by the

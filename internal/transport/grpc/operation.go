@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	controlv1 "github.com/ancyloce/anvilkit-agent-contracts/go/anvilkit/control/v1"
@@ -289,6 +290,12 @@ func (s *operationServer) StreamOperationEvents(req *controlv1.StreamOperationEv
 			return err
 		}
 		defer release()
+	}
+	// The response headers say the stream is admitted (D-7): the API answers
+	// its client only then, so a refusal above stays a 429 there, never an
+	// opened stream that ends without an event.
+	if err := stream.SendHeader(metadata.Pairs("anvilkit-stream", "admitted")); err != nil {
+		return err
 	}
 	var wake <-chan struct{}
 	if s.notifier != nil {

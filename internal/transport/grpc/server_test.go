@@ -112,6 +112,10 @@ func TestTransport(t *testing.T) {
 
 	stream, err := client.StreamOperationEvents(ctx, &controlv1.StreamOperationEventsRequest{Scope: &controlv1.Scope{TenantId: "tenant_a", ActorId: "u"}, OperationId: created.Operation.OperationId})
 	require.NoError(t, err)
+	// D-7: the response headers say the stream is admitted, before any event.
+	header, err := stream.Header()
+	require.NoError(t, err)
+	require.Equal(t, []string{"admitted"}, header.Get("anvilkit-stream"))
 	first, err := stream.Recv()
 	require.NoError(t, err)
 	require.Equal(t, "1", first.Event.EventSeq)
@@ -138,6 +142,31 @@ func TestTransport(t *testing.T) {
 	require.Equal(t, controlv1.FinanceState_FINANCE_STATE_SETTLED, fourth.Event.GetOperationChanged().Finance)
 	_, err = stream.Recv()
 	require.Error(t, err, "the stream ends after the operation's last event")
+
+	// D-7: a tenant's stream over its cap (stream_per_tenant 32) is refused
+	// before any header, so the API answers 429 and never opens it.
+	capped, err := client.CreateOperation(ctx, &controlv1.CreateOperationRequest{
+		Command: &controlv1.CommandIdentity{TenantId: "tenant_s", CommandId: "s1", ActorId: "u", RequestDigest: digest},
+		Scope:   &controlv1.Scope{TenantId: "tenant_s", ActorId: "u"}, Kind: controlv1.OperationKind_OPERATION_KIND_LOCAL_CHECK,
+		Subject: &controlv1.OperationSubject{ProfileId: "local-check-v1", SubjectDigest: digest},
+	})
+	require.NoError(t, err)
+	held, stopHeld := context.WithCancel(ctx)
+	for i := 0; i < 32; i++ {
+		s, err := client.StreamOperationEvents(held, &controlv1.StreamOperationEventsRequest{Scope: &controlv1.Scope{TenantId: "tenant_s", ActorId: "u"}, OperationId: capped.Operation.OperationId})
+		require.NoError(t, err)
+		h, err := s.Header()
+		require.NoError(t, err)
+		require.Equal(t, []string{"admitted"}, h.Get("anvilkit-stream"), "stream %d is admitted", i)
+	}
+	over, err := client.StreamOperationEvents(ctx, &controlv1.StreamOperationEventsRequest{Scope: &controlv1.Scope{TenantId: "tenant_s", ActorId: "u"}, OperationId: capped.Operation.OperationId})
+	require.NoError(t, err)
+	h, err := over.Header()
+	require.NoError(t, err)
+	require.Nil(t, h, "a refused stream carries no headers")
+	_, err = over.Recv()
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	stopHeld()
 
 	// DispatchService over the wire: an unspecified enum and a malformed
 	// money amount are rejected before any handler; a route without an
