@@ -42,6 +42,25 @@ func (q *Queries) GetCommand(ctx context.Context, arg GetCommandParams) (Operati
 	return i, err
 }
 
+const getLatestAttemptEvent = `-- name: GetLatestAttemptEvent :one
+SELECT operation_id, event_seq, transition_id, event_type, revision, payload, occurred_at FROM operation_events WHERE operation_id = $1 AND payload ? 'step' ORDER BY event_seq DESC LIMIT 1
+`
+
+func (q *Queries) GetLatestAttemptEvent(ctx context.Context, operationID string) (OperationEvent, error) {
+	row := q.db.QueryRow(ctx, getLatestAttemptEvent, operationID)
+	var i OperationEvent
+	err := row.Scan(
+		&i.OperationID,
+		&i.EventSeq,
+		&i.TransitionID,
+		&i.EventType,
+		&i.Revision,
+		&i.Payload,
+		&i.OccurredAt,
+	)
+	return i, err
+}
+
 const getOperationByCommand = `-- name: GetOperationByCommand :one
 SELECT operation_id, tenant_id, project_id, actor_id, command_id, kind, profile_id, subject_digest, brief_id, source_revision, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, failure_code, revision, next_event_seq, execution_epoch, recovery_epoch, deadline, intake_state, intake_version, relay_state, relay_run_id, created_at, updated_at, active_deadline, lease_state, lease_id, lease_fence, lease_expires_at, lease_occurrence, definition_activation, prompt_transfer_id, prompt_digest, brand_references, asset_references, candidate_effect_id, source_handle, source_operation_id, package_version FROM operations WHERE tenant_id = $1 AND command_id = $2
 `
@@ -98,6 +117,30 @@ func (q *Queries) GetOperationByCommand(ctx context.Context, arg GetOperationByC
 		&i.SourceHandle,
 		&i.SourceOperationID,
 		&i.PackageVersion,
+	)
+	return i, err
+}
+
+const getOperationEventByTransition = `-- name: GetOperationEventByTransition :one
+SELECT operation_id, event_seq, transition_id, event_type, revision, payload, occurred_at FROM operation_events WHERE operation_id = $1 AND transition_id = $2
+`
+
+type GetOperationEventByTransitionParams struct {
+	OperationID  string
+	TransitionID string
+}
+
+func (q *Queries) GetOperationEventByTransition(ctx context.Context, arg GetOperationEventByTransitionParams) (OperationEvent, error) {
+	row := q.db.QueryRow(ctx, getOperationEventByTransition, arg.OperationID, arg.TransitionID)
+	var i OperationEvent
+	err := row.Scan(
+		&i.OperationID,
+		&i.EventSeq,
+		&i.TransitionID,
+		&i.EventType,
+		&i.Revision,
+		&i.Payload,
+		&i.OccurredAt,
 	)
 	return i, err
 }

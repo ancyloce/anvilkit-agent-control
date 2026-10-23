@@ -305,6 +305,30 @@ func (r *repo) ListEvents(ctx context.Context, operationID string, afterSeq uint
 	return out, nil
 }
 
+func (r *repo) GetEventByTransition(ctx context.Context, operationID, transitionID string) (*domain.Event, error) {
+	m, err := r.q.GetOperationEventByTransition(ctx, sqlc.GetOperationEventByTransitionParams{OperationID: operationID, TransitionID: transitionID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toEvent(m)
+}
+
+func (r *repo) LatestAttemptEvent(ctx context.Context, operationID string) (*domain.Event, error) {
+	m, err := r.q.GetLatestAttemptEvent(ctx, operationID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toEvent(m)
+}
+
+func toEvent(m sqlc.OperationEvent) (*domain.Event, error) {
+	ev := &domain.Event{OperationID: m.OperationID, EventSeq: uint64(m.EventSeq), TransitionID: m.TransitionID, EventType: m.EventType, Revision: domain.Revision(m.Revision), OccurredAt: fromTs(m.OccurredAt)}
+	if err := json.Unmarshal(m.Payload, &ev.Payload); err != nil {
+		return nil, err
+	}
+	return ev, nil
+}
+
 func (r *repo) ListIntakePending(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Operation, error) {
 	rows, err := r.q.ListIntakePending(ctx, sqlc.ListIntakePendingParams{CreatedAt: ts(olderThan), Limit: int32(limit)})
 	if err != nil {

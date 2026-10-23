@@ -37,6 +37,12 @@ VALUES ($1, $2, $3, $4, $5, $6, $7);
 -- name: ListOperationEvents :many
 SELECT * FROM operation_events WHERE operation_id = $1 AND event_seq > $2 ORDER BY event_seq LIMIT $3;
 
+-- name: GetOperationEventByTransition :one
+SELECT * FROM operation_events WHERE operation_id = $1 AND transition_id = $2;
+
+-- name: GetLatestAttemptEvent :one
+SELECT * FROM operation_events WHERE operation_id = $1 AND payload ? 'step' ORDER BY event_seq DESC LIMIT 1;
+
 -- name: ListIntakePending :many
 SELECT * FROM operations WHERE intake_state = 'pending' AND created_at < $1 ORDER BY created_at LIMIT $2;
 
