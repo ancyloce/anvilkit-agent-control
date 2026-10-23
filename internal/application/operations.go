@@ -585,3 +585,19 @@ func DigestOf(body []byte) domain.Digest {
 	sum := sha256.Sum256(body)
 	return domain.Digest(fmt.Sprintf("sha256:%x", sum))
 }
+
+// LatestProgress reads the newest event of the operation that carries
+// attempt-bound facts (plan 0005 Phase 2), the projection's current step
+// and node; nil before the first attempt.
+func (s *Operations) LatestProgress(ctx context.Context, op *domain.Operation) (*domain.Event, error) {
+	var ev *domain.Event
+	err := s.store.Read(ctx, func(r Repo) error {
+		found, err := r.LatestAttemptEvent(ctx, op.ID)
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil
+		}
+		ev = found
+		return err
+	})
+	return ev, err
+}

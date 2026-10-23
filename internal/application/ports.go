@@ -42,6 +42,12 @@ type Repo interface {
 	UpdateOperation(ctx context.Context, op *domain.Operation) error
 	InsertEvent(ctx context.Context, ev domain.Event) error
 	ListEvents(ctx context.Context, operationID string, afterSeq uint64, limit int) ([]domain.Event, error)
+	// GetEventByTransition reads the event a transition id recorded (the
+	// idempotency identity of a progress report); ErrNotFound when none.
+	GetEventByTransition(ctx context.Context, operationID, transitionID string) (*domain.Event, error)
+	// LatestAttemptEvent reads the newest event that carries attempt-bound
+	// facts (plan 0005 Phase 2); ErrNotFound before the first attempt.
+	LatestAttemptEvent(ctx context.Context, operationID string) (*domain.Event, error)
 	ListIntakePending(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Operation, error)
 	ListRelayPending(ctx context.Context, limit int) ([]*domain.Operation, error)
 
