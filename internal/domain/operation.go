@@ -304,7 +304,48 @@ type ChangedPayload struct {
 	Cleanup     CleanupState `json:"cleanup"`
 	Finance     FinanceState `json:"finance"`
 	FailureCode string       `json:"failureCode,omitempty"`
+	// Attempt-bound facts (plan 0005 Phase 2), set by the transitions that
+	// belong to an attempt (BindAttempt), by an accepted result (BindStage)
+	// and by an intra-Job progress report (BindProgress); empty elsewhere.
+	// Sequences are canonical decimal strings as the wire carries them.
+	Step           string  `json:"step,omitempty"`
+	Visit          string  `json:"visit,omitempty"`
+	AttemptOrdinal string  `json:"attemptOrdinal,omitempty"`
+	Verdict        Verdict `json:"verdict,omitempty"`
+	VerdictCode    string  `json:"verdictCode,omitempty"`
+	Node           string  `json:"node,omitempty"`
+	NodeState      string  `json:"nodeState,omitempty"`
+	Round          string  `json:"round,omitempty"`
+	OutcomeCode    string  `json:"outcomeCode,omitempty"`
 }
+
+// BindAttempt names the attempt a transition belongs to: its step, outer
+// visit and ordinal within the visit. Display facts only.
+func (p *ChangedPayload) BindAttempt(at *Attempt) {
+	if at == nil {
+		return
+	}
+	p.Step, p.Visit, p.AttemptOrdinal = at.StepID, Revision(at.VisitOrdinal).String(), Revision(at.AttemptOrdinal).String()
+}
+
+// BindStage adds the accepted result's verdict and failure code to a
+// result_accepted transition. The operation's own FailureCode is untouched:
+// a repairable verdict is not an operation failure.
+func (p *ChangedPayload) BindStage(st *Stage) {
+	if st == nil {
+		return
+	}
+	p.Verdict, p.VerdictCode = st.Verdict, st.FailureCode
+}
+
+// BindProgress adds the trusted coordinator's node boundary of an intra-Job
+// progress report.
+func (p *ChangedPayload) BindProgress(node, state, round, outcomeCode string) {
+	p.Node, p.NodeState, p.Round, p.OutcomeCode = node, state, round, outcomeCode
+}
+
+// HasAttempt reports whether the payload carries attempt-bound facts.
+func (p ChangedPayload) HasAttempt() bool { return p.Step != "" }
 
 const EventOperationChanged = "operation.changed"
 
