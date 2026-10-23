@@ -217,3 +217,21 @@ func (s *executionServer) SettleOperation(ctx context.Context, req *controlv1.Se
 	}
 	return &controlv1.SettleOperationResponse{Operation: toView(op), Existing: existing}, nil
 }
+
+// RecordAttemptProgress records the trusted coordinator's node boundary of
+// the current attempt (plan 0005 Phase 2) as one operation.changed event.
+func (s *executionServer) RecordAttemptProgress(ctx context.Context, req *controlv1.RecordAttemptProgressRequest) (*controlv1.RecordAttemptProgressResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	epoch, err := domain.ParseRevision(req.GetExecutionEpoch())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	ev, existing, err := s.exec.RecordAttemptProgress(ctx, cmd, req.GetAttemptId(), req.GetInstanceId(), uint64(epoch), req.GetNode(), req.GetState(), req.GetRound(), req.GetOutcomeCode())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.RecordAttemptProgressResponse{Event: toEvent(ev), Existing: existing}, nil
+}

@@ -154,6 +154,11 @@ func (s *operationServer) view(ctx context.Context, o *domain.Operation) (*contr
 		return nil, err
 	}
 	v.LineageIdentity = toComponentIdentity(id)
+	latest, err := s.ops.LatestProgress(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	v.Progress = toOperationProgress(latest)
 	if o.Kind == domain.KindPreparation && o.Lifecycle == domain.LifecycleWaiting && s.preparations != nil {
 		prep, err := s.preparations.Get(ctx, o.TenantID, o.ID)
 		if err != nil {
@@ -175,7 +180,23 @@ func toEvent(ev domain.Event) *controlv1.OperationEvent {
 		Payload: &controlv1.OperationEvent_OperationChanged{OperationChanged: &controlv1.OperationChangedPayload{
 			Lifecycle: lifecycleToProto[ev.Payload.Lifecycle], Phase: ev.Payload.Phase, Control: controlToProto[ev.Payload.Control],
 			Cleanup: cleanupToProto[ev.Payload.Cleanup], Finance: financeToProto[ev.Payload.Finance], FailureCode: optString(ev.Payload.FailureCode),
+			// Attempt-bound facts (plan 0005 Phase 2); absent members stay absent.
+			Step: optString(ev.Payload.Step), Visit: optString(ev.Payload.Visit), AttemptOrdinal: optString(ev.Payload.AttemptOrdinal),
+			Verdict: verdictToProto[ev.Payload.Verdict], VerdictCode: optString(ev.Payload.VerdictCode),
+			Node: optString(ev.Payload.Node), NodeState: optString(ev.Payload.NodeState), Round: optString(ev.Payload.Round), OutcomeCode: optString(ev.Payload.OutcomeCode),
 		}},
+	}
+}
+
+// toOperationProgress projects the newest attempt-bound event (plan 0005 Phase 2).
+func toOperationProgress(ev *domain.Event) *controlv1.OperationProgress {
+	if ev == nil || !ev.Payload.HasAttempt() {
+		return nil
+	}
+	return &controlv1.OperationProgress{
+		Step: ev.Payload.Step, Visit: ev.Payload.Visit, AttemptOrdinal: ev.Payload.AttemptOrdinal,
+		Node: optString(ev.Payload.Node), NodeState: optString(ev.Payload.NodeState), Round: optString(ev.Payload.Round),
+		EventSeq: domain.Revision(ev.EventSeq).String(),
 	}
 }
 

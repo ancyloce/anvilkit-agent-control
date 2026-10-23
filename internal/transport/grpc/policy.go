@@ -34,7 +34,7 @@ func Policy() identity.Policy {
 	add("GenerationService", []string{"GetGeneration"}, api, workflow)
 	add("GenerationService", []string{"RequestExecutionPermit", "RecordLease", "RecordFunding", "RecordCommandRelay"}, workflow)
 	add("ExecutionService", []string{"OpenAttempt", "PrepareLaunch", "RegisterInstance", "ObserveInstance", "CloseAttempt", "SettleOperation"}, workflow)
-	add("ExecutionService", []string{"AcceptResult", "GetAcceptedStage", "GetInstance"}, workflow, sidecar)
+	add("ExecutionService", []string{"AcceptResult", "GetAcceptedStage", "GetInstance", "RecordAttemptProgress"}, workflow, sidecar)
 	add("DispatchService", []string{"AdmitModel"}, modelProxy)
 	add("DispatchService", []string{"AdmitTool"}, mcp)
 	add("DispatchService", []string{"ObserveDispatch", "ConfirmNotSent"}, modelProxy, mcp)
