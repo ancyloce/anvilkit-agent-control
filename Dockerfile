@@ -6,7 +6,7 @@
 # or local module proxy. The image carries two binaries of one build: the
 # service and its migration Job (cmd/anvilkit-migration), which the chart runs
 # as a separate Job with the migrator role; the service itself never runs DDL.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS build
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG GONOSUMDB=
 ENV GOWORK=off GOFLAGS=-mod=readonly CGO_ENABLED=0 GOPROXY=$GOPROXY GONOSUMDB=$GONOSUMDB
