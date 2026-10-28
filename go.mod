@@ -7,7 +7,7 @@ require (
 	github.com/ThreeDotsLabs/watermill v1.5.3
 	github.com/ThreeDotsLabs/watermill-nats/v2 v2.2.0
 	github.com/ThreeDotsLabs/watermill-sql/v4 v4.1.5
-	github.com/ancyloce/anvilkit-agent-contracts/go v0.1.21
+	github.com/ancyloce/anvilkit-agent-contracts/go v0.1.22
 	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.5
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.5
