@@ -9,20 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/s3errors"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
@@ -115,36 +112,7 @@ func s3Failure(op, key string, err error) error {
 	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrIdempotencyConflict) || errors.Is(err, domain.ErrInvalid) || errors.Is(err, ErrUnavailable) {
 		return err
 	}
-	return fmt.Errorf("%w: %s inventory %s: %s", ErrUnavailable, op, application.DescribeKey(key), classifyS3(err))
-}
-
-func classifyS3(err error) string {
-	var api smithy.APIError
-	var resp *awshttp.ResponseError
-	var netErr net.Error
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	case errors.As(err, &api):
-		code := "api error " + api.ErrorCode()
-		if errors.As(err, &resp) && resp.HTTPStatusCode() > 0 {
-			code += " (http " + strconv.Itoa(resp.HTTPStatusCode()) + ")"
-		}
-		return code
-	// A response error without a status is a transport failure the SDK
-	// wrapped before any answer existed (a refused connection on some
-	// hosts): it is unreachability, not an HTTP outcome.
-	case errors.As(err, &resp) && resp.HTTPStatusCode() > 0:
-		return "http " + strconv.Itoa(resp.HTTPStatusCode())
-	case errors.As(err, &netErr):
-		if netErr.Timeout() {
-			return "timeout"
-		}
-		return "backend unreachable"
-	}
-	return "backend error"
+	return fmt.Errorf("%w: %s inventory %s: %s", ErrUnavailable, op, application.DescribeKey(key), s3errors.Classify(err))
 }
 
 func version(versionID, etag *string) string {
@@ -208,9 +176,7 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, string, error) {
 	}
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.prefix + key)})
 	if err != nil {
-		var noKey *types.NoSuchKey
-		var api smithy.APIError
-		if errors.As(err, &noKey) || (errors.As(err, &api) && (api.ErrorCode() == "NoSuchKey" || api.ErrorCode() == "NotFound")) {
+		if s3errors.Missing(err, "NoSuchKey", "NotFound") {
 			return nil, "", fmt.Errorf("%w: inventory %s", domain.ErrNotFound, application.DescribeKey(key))
 		}
 		return nil, "", s3Failure("get", key, err)

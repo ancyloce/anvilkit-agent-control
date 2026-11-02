@@ -17,20 +17,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/smithy-go"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/s3errors"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
@@ -107,36 +104,13 @@ func failure(op, key string, err error) error {
 	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrInvalid) || errors.Is(err, domain.ErrUnavailable) {
 		return err
 	}
-	return fmt.Errorf("%w: %s %s: %s", domain.ErrUnavailable, op, describe(key), classify(err))
+	return fmt.Errorf("%w: %s %s: %s", domain.ErrUnavailable, op, describe(key), s3errors.Classify(err))
 }
 
-func classify(err error) string {
-	var api smithy.APIError
-	var resp *awshttp.ResponseError
-	var netErr net.Error
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	case errors.As(err, &api):
-		code := "api error " + api.ErrorCode()
-		if errors.As(err, &resp) && resp.HTTPStatusCode() > 0 {
-			code += " (http " + strconv.Itoa(resp.HTTPStatusCode()) + ")"
-		}
-		return code
-	// A response error without a status is a transport failure the SDK
-	// wrapped before any answer existed: unreachability, not an HTTP outcome.
-	case errors.As(err, &resp) && resp.HTTPStatusCode() > 0:
-		return "http " + strconv.Itoa(resp.HTTPStatusCode())
-	case errors.As(err, &netErr):
-		if netErr.Timeout() {
-			return "timeout"
-		}
-		return "backend unreachable"
-	}
-	return "backend error"
-}
+// versionAbsent are the API error codes that mean the exact object version
+// read does not exist: the key or version is unknown, or the version id is
+// one the backend cannot resolve (InvalidArgument).
+var versionAbsent = []string{"NoSuchKey", "NotFound", "NoSuchVersion", "InvalidArgument"}
 
 func validKey(key string) error {
 	if key == "" || strings.Contains(key, "..") || strings.HasPrefix(key, "/") {
@@ -224,11 +198,6 @@ func (s *S3) DownloadCapability(ctx context.Context, key, version string, expire
 	return application.UploadCapability{URL: req.URL, Method: req.Method, Headers: headers, ExpiresAt: expiresAt}, nil
 }
 
-// Read fetches the exact object version and returns its bytes with the
-// size and digest computed from them. A key or version that does not
-// exist is domain.ErrNotFound; an object longer than limit is
-// domain.ErrInvalid (the bytes are not returned); any other failure is
-// domain.ErrUnavailable.
 // Verify streams the exact object version through SHA-256 and the size
 // check without holding its bytes (P1.5, CTL-INF-07).
 func (s *S3) Verify(ctx context.Context, key, version string, limit int64) (domain.ObjectFacts, error) {
@@ -240,9 +209,7 @@ func (s *S3) Verify(ctx context.Context, key, version string, limit int64) (doma
 	}
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.prefix + key), VersionId: aws.String(version)})
 	if err != nil {
-		var noKey *types.NoSuchKey
-		var api smithy.APIError
-		if errors.As(err, &noKey) || (errors.As(err, &api) && (api.ErrorCode() == "NoSuchKey" || api.ErrorCode() == "NotFound" || api.ErrorCode() == "NoSuchVersion" || api.ErrorCode() == "InvalidArgument")) {
+		if s3errors.Missing(err, versionAbsent...) {
 			return domain.ObjectFacts{}, fmt.Errorf("%w: %s version %q", domain.ErrNotFound, describe(key), version)
 		}
 		return domain.ObjectFacts{}, failure("read", key, err)
@@ -268,6 +235,11 @@ func (s *S3) Verify(ctx context.Context, key, version string, limit int64) (doma
 	return domain.ObjectFacts{Size: n, Digest: domain.Digest("sha256:" + hex.EncodeToString(h.Sum(nil))), Version: actual, Head: head.Bytes()}, nil
 }
 
+// Read fetches the exact object version and returns its bytes with the
+// size and digest computed from them. A key or version that does not
+// exist is domain.ErrNotFound; an object longer than limit is
+// domain.ErrInvalid (the bytes are not returned); any other failure is
+// domain.ErrUnavailable.
 func (s *S3) Read(ctx context.Context, key, version string, limit int64) ([]byte, domain.ObjectFacts, error) {
 	if err := validKey(key); err != nil {
 		return nil, domain.ObjectFacts{}, err
@@ -277,9 +249,7 @@ func (s *S3) Read(ctx context.Context, key, version string, limit int64) ([]byte
 	}
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.prefix + key), VersionId: aws.String(version)})
 	if err != nil {
-		var noKey *types.NoSuchKey
-		var api smithy.APIError
-		if errors.As(err, &noKey) || (errors.As(err, &api) && (api.ErrorCode() == "NoSuchKey" || api.ErrorCode() == "NotFound" || api.ErrorCode() == "NoSuchVersion" || api.ErrorCode() == "InvalidArgument")) {
+		if s3errors.Missing(err, versionAbsent...) {
 			return nil, domain.ObjectFacts{}, fmt.Errorf("%w: %s version %q", domain.ErrNotFound, describe(key), version)
 		}
 		return nil, domain.ObjectFacts{}, failure("read", key, err)
