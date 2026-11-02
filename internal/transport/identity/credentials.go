@@ -205,7 +205,7 @@ func (c *clientCreds) OverrideServerName(string) error { return nil }
 // ClientTLSConfig is a standard tls.Config snapshot for non-gRPC clients:
 // the certificate follows the Reloader on every handshake, the roots are
 // the bundle at the time of the call. Connections that outlive a CA
-// retirement are rebuilt by their owner from a fresh snapshot (Reloader
+// retirement must be rebuilt by their owner from a fresh snapshot (Reloader
 // OnChange); HTTPTransport does that per connection.
 func ClientTLSConfig(r *Reloader, serverName string) *tls.Config {
 	m := r.Current()

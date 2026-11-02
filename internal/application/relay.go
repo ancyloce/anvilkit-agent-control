@@ -26,7 +26,8 @@ type Relay struct {
 	// updateTimeout bounds one tracked Update call (P1.4): an Update still
 	// running at the bound stays sent and a later tick settles it.
 	updateTimeout time.Duration
-	// Lag gauges of the last tick per lane (pending intents seen).
+	// lagMu guards lag, the gauge of the pending intents the last tick of
+	// each lane saw.
 	lagMu sync.Mutex
 	lag   map[string]int
 	// reconcile is the optional dispatch reconciliation lane.
@@ -65,10 +66,11 @@ func (r *Relay) setLag(lane string, n int) {
 	r.lagMu.Unlock()
 }
 
-// Run polls until ctx is done. The three lanes — starts/cancels with the
-// intake reconciliation, answer Updates, command Updates — run in their
-// own goroutines (P1.4, B-24): a tenant's hold waiting on a quiescent step
-// never delays another tenant's start, cancel or recovery.
+// Run polls until ctx is done. The three relay lanes — starts/cancels with
+// the intake reconciliation, answer Updates, command Updates — and the
+// optional dispatch and settlement reconcilers run in their own goroutines
+// (P1.4, B-24): a tenant's hold waiting on a quiescent step never delays
+// another tenant's start, cancel or recovery.
 func (r *Relay) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	lane := func(name string, fn func(context.Context) error) {
@@ -165,7 +167,9 @@ func (r *Relay) WithDispatchReconciler(dispatch *Dispatch, queries OutcomeQuery,
 	return r
 }
 
-// Tick runs the three lanes once, in sequence (tests and one-shot callers).
+// Tick runs the three relay lanes once, in sequence (answers, commands,
+// starts), without the intake reconciliation and the optional reconcilers
+// that Run adds (tests and one-shot callers).
 func (r *Relay) Tick(ctx context.Context) error {
 	if err := r.TickAnswers(ctx); err != nil {
 		return err

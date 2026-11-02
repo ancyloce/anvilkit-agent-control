@@ -3,7 +3,8 @@
 // "Repositories and ownership": migrations belong to the service that owns
 // the schema and run through a separate migration Job). It is the single
 // migration-version authority of anvilkit_control; the runtime service
-// never runs DDL and never imports this package.
+// never runs DDL and imports this package only for ExpectedVersion, its
+// schema check (internal/bootstrap/health.go).
 package migrate
 
 import (
@@ -32,7 +33,7 @@ const Domain = "control"
 // 00001_init.sql plus the forward migrations of this build.
 const Latest int64 = 18
 
-// Safety bounds of a migration run (P3.7, plan 0004).
+// Options are the safety bounds of a migration run (P3.7, plan 0004).
 type Options struct {
 	// LockTimeout bounds every statement's wait for a table lock: a DDL
 	// behind a long transaction fails (SQLSTATE 55P03) instead of queueing

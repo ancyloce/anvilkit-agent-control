@@ -59,8 +59,9 @@ prices:
 	require.ErrorContains(t, startPriceBook(ctx, cfg, prices, finance, log), "production price book: dispatch.prices.initial_file")
 }
 
-// TestModuleGraphResolves: every provider of the rewired dispatch chain is
-// present (a dry run: no constructor runs).
+// TestModuleGraphResolves: every dependency of Module, the dispatch chain's
+// authority inputs included, has a provider (a dry run: no constructor
+// runs).
 func TestModuleGraphResolves(t *testing.T) {
 	require.NoError(t, fx.ValidateApp(Module()))
 }

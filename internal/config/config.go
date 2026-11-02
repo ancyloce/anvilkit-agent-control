@@ -74,7 +74,7 @@ type ServerIdentity struct {
 }
 
 // ClientTLS is the transport of an outbound connection whose server is not
-// an AnvilKit workload (Temporal, the OTLP collector): development is
+// an AnvilKit workload (Temporal, NATS, the OTLP collector): development is
 // plaintext (admitted only with development.enabled), tls verifies the
 // server against ca_file and server_name, mtls additionally presents
 // cert_file/key_file.
@@ -154,11 +154,11 @@ const (
 	InventoryS3Backend  = "s3"
 )
 
-// Artifacts is the scoped artifact store of the eight artifact classes
-// (DD-02 §6, P08): an S3-compatible backend with its own bucket and
-// credentials (a permission boundary separate from the inventory), or
-// disabled, in which case every ArtifactService call answers
-// DEPENDENCY_UNAVAILABLE. The bounds are the reviewed limits of one
+// Artifacts is the scoped artifact store of the contract's artifact
+// classes (domain.ArtifactClass; DD-02 §6, P08): an S3-compatible backend
+// with its own bucket and credentials (a permission boundary separate from
+// the inventory), or disabled, in which case every ArtifactService call
+// answers DEPENDENCY_UNAVAILABLE. The bounds are the reviewed limits of one
 // transfer: the largest object, the longest transfer window and the
 // lifetime of one upload capability.
 type Artifacts struct {
@@ -194,11 +194,13 @@ type Relay struct {
 
 // ModelProxy is the Model Proxy placement of the original-identity query of
 // model dispatches (DD-02 §4 "query original ID", P11): with an address,
-// recovery asks the Proxy's GET /api/v1/model-calls/{callId} about an
-// unresolved model dispatch; without one the DEVELOPMENT_ONLY attestation
-// double keeps answering. The identity Control presents: development is a
-// DEVELOPMENT_ONLY bearer token from ANVILKIT_CONTROL_MODEL_PROXY_TOKEN,
-// mtls the workload certificate files (ENV-03). Owner is the sender
+// recovery and the dispatch reconciliation ask the Proxy's
+// GET /api/v1/model-calls/{callId} about an unresolved model dispatch;
+// without one (admitted only under dispatch.development) the
+// DEVELOPMENT_ONLY attestation double answers. The identity Control
+// presents: development is a DEVELOPMENT_ONLY bearer token from
+// ANVILKIT_CONTROL_MODEL_PROXY_TOKEN, mtls the workload certificate files
+// (ENV-03). Owner is the sender
 // identity the Proxy records on its dispatches; a dispatch of another owner
 // is not the Proxy's to answer.
 type ModelProxy struct {
@@ -219,8 +221,9 @@ type ModelProxy struct {
 
 // Profiles carries the reviewed profile parameters of this build: the
 // LocalCheck fixture, the Preparation profile (its clarification trial
-// defaults and its analysis funding) and the Generation profile (its queue,
-// active window, funding, definitions, repair bound and job profiles).
+// defaults and its analysis funding), the Generation profile (its queue,
+// active window, funding, definitions, repair bound and job profiles) and
+// the preview_build and release deadlines.
 type Profiles struct {
 	LocalCheckDeadline time.Duration      `koanf:"local_check_deadline"`
 	Preparation        PreparationProfile `koanf:"preparation"`
@@ -345,8 +348,9 @@ type Prices struct {
 // DispatchDevelopment is the DEVELOPMENT_ONLY source of prices, route
 // authorizations and trusted not-sent issuers (delivery.md P06). Real
 // prices and caps (ENV-06) and real authorization (ENV-07) are deployment
-// inputs; with Enabled false every paid route is denied. It is file-only:
-// no environment variable can enable it.
+// inputs: with Enabled false Control runs on the production inputs of
+// Dispatch (Authority, Evidence, Prices) and model_proxy.address, or does
+// not start. It is file-only: no environment variable can enable it.
 type DispatchDevelopment struct {
 	Enabled          bool                 `koanf:"enabled"`
 	Prices           []PriceFixture       `koanf:"prices"`

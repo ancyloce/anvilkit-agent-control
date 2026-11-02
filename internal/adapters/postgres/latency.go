@@ -49,7 +49,8 @@ func (r *repo) stageLatency(ctx context.Context, ev domain.Event, kind, profileI
 		err := r.db.QueryRow(ctx, "SELECT payload->>'lifecycle' = $2 FROM operation_events WHERE operation_id = $1 AND event_seq = 1",
 			ev.OperationID, string(domain.LifecycleAccepted)).Scan(&accepted)
 		// An operation without its first event (one a recovery restored) is
-		// not observed; a metric never fails the transition it measures.
+		// not observed; a missing first event never fails the transition it
+		// measures.
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !accepted) {
 			return nil
 		}

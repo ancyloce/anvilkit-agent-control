@@ -244,8 +244,9 @@ func checkTar(r io.Reader, limits ArchiveLimits) error {
 		if limits.MaxUncompressed > 0 && total > limits.MaxUncompressed {
 			return fmt.Errorf("%w: %s: declared uncompressed size exceeds the bound %d", ErrInvalid, ReasonArchiveInvalid, limits.MaxUncompressed)
 		}
-		// The entry body is skipped, never extracted; a body longer than
-		// its header claims is a malformed archive.
+		// The entry body is skipped, never extracted; a body shorter than
+		// its header claims is a malformed archive (a longer one fails the
+		// next header read).
 		if _, err := io.Copy(io.Discard, io.LimitReader(tr, h.Size)); err != nil {
 			return fmt.Errorf("%w: %s: tar entry is not readable", ErrInvalid, ReasonArchiveInvalid)
 		}

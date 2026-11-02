@@ -94,7 +94,7 @@ func TestTransferBoundByTheEffectiveDeadline(t *testing.T) {
 		TransferContext{Now: now, Operation: op, Limits: TransferLimits{MaxObjectBytes: 1 << 20, MaxWindow: 2 * time.Hour}})
 	require.NoError(t, err)
 	require.Equal(t, active, tr.Deadline, "the transfer never outlives the effective deadline")
-	// Without a permit the queue deadline is the bound, as before.
+	// Without a permit the queue deadline is the bound.
 	op.ActiveDeadline = nil
 	_, err = NewTransfer(CommandIdentity{TenantID: "tenant_a", CommandID: "z", RequestDigest: Digest("sha256:" + strings.Repeat("1", 64))}, Scope{TenantID: "tenant_a", ActorID: "u"}, req,
 		TransferContext{Now: now, Operation: op, Limits: TransferLimits{MaxObjectBytes: 1 << 20, MaxWindow: 2 * time.Hour}})

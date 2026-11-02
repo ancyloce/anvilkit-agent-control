@@ -154,8 +154,9 @@ func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, scop
 				return fmt.Errorf("%w: disposition names recovery epoch %d, run %s is at epoch %d", domain.ErrStaleExecution, req.RecoveryEpoch, lockedRun.ID, lockedRun.RecoveryEpoch)
 			}
 		case dispatch != nil && req.Decision == domain.DisposeConfirmNotSent:
-			// Allocations (1), operation (2) and dispatch (4) in rank order;
-			// the guard runs under the operation lock before the change.
+			// Cost caps and allocations (1), operation (2) and dispatch (4)
+			// in rank order; the guard runs under the operation lock before
+			// the change.
 			if _, _, err := s.dispatch.ConfirmNotSentLocked(ctx, r, op.ID, dispatch.ID, req.EvidenceRef, guard); err != nil {
 				return err
 			}

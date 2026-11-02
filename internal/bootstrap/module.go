@@ -30,8 +30,9 @@ import (
 
 // The stable registered workflow types (architecture.md "API, events and
 // Temporal"): the LocalCheck fixture, the Preparation and Generation
-// business workflows (P13) and the reconciliation workflow of a recovery
-// run (P07). Every other kind has no registration and is not started.
+// business workflows (P13), the preview build (P20), the release (P21) and
+// the reconciliation workflow of a recovery run (P07). Every other kind has
+// no registration (WorkflowNames) and is not started.
 const (
 	LocalCheckWorkflowName  = "LocalCheckWorkflow"
 	PreparationWorkflowName = "PreparationWorkflow"
@@ -55,9 +56,9 @@ func WorkflowNames() map[domain.OperationKind]string {
 
 // Profiles returns the reviewed operation profiles of this build: the
 // LocalCheck fixture, the Preparation profile and the Generation profile
-// (P13), the preview build (P20) and the release (P21); other kinds are rejected with PROFILE_UNQUALIFIED until their
-// units deliver reviewed profiles. The money values were validated by the
-// configuration.
+// (P13), the preview build (P20) and the release (P21); a kind without a
+// reviewed profile here (refinement) is rejected with PROFILE_UNQUALIFIED.
+// The money values were validated by the configuration.
 func Profiles(cfg config.Config) []domain.Profile {
 	prep, gen := cfg.Profiles.Preparation, cfg.Profiles.Generation
 	prepFunding, _ := domain.ParseMoney(prep.Funding.Currency, prep.Funding.Amount)

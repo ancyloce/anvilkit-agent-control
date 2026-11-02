@@ -316,8 +316,9 @@ func TestSignedNotSentEvidence(t *testing.T) {
 	payload := evidence.NotSent{Class: "not-sent", TenantID: d.TenantID, DispatchID: d.ID, CallID: d.CallID, Owner: d.Owner, ExecutionEpoch: fmt.Sprint(d.ExecutionEpoch), Issuer: "integration-supervisor", SealedAt: time.Now().UTC().Format(time.RFC3339)}
 	ref := evidence.NotSentKey(d.ID)
 	publish := func(body []byte) domain.Digest {
-		// Each attempt publishes under its own inventory root: the
-		// inventory never overwrites an object.
+		// Each attempt removes the previous object from the inventory
+		// root first: the inventory never overwrites an object (another
+		// body under the same key is a conflict).
 		path := filepath.Join(c.inv.Root(), ref)
 		_ = os.Remove(path)
 		_, err := c.inv.Put(ctx, ref, body)
@@ -379,7 +380,7 @@ func TestFinancialSettlementProperty(t *testing.T) {
 			case 1: // a failed send that metered nothing
 				_, _, err = c.dispatch.Observe(ctx, application.Reader{}, a.Dispatch.ID, "proxy", 1, domain.DispatchFailed, reported(domain.Usage{}), "", time.Now())
 				require.NoError(t, err)
-			default: // left prepared-and-authorized, then closed: settled by a failed observation
+			default: // left prepared-and-authorized, then closed: settled by a canceled observation
 				_, _, err = c.dispatch.Observe(ctx, application.Reader{}, a.Dispatch.ID, "proxy", 1, domain.DispatchCanceled, reported(domain.Usage{}), "", time.Now())
 				require.NoError(t, err)
 			}

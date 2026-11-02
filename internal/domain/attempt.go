@@ -214,11 +214,11 @@ type Stage struct {
 }
 
 // AcceptStage validates result acceptance: the instance must be the current
-// physical owner of an attempt that is running under the current epoch and
-// still inside its deadline; the observer's epoch, when stated, must be the
-// operation's current one; the profile must match; exactly one stage per
-// attempt phase is accepted. The stage records the epochs it was accepted
-// under.
+// physical owner of an attempt that is launch-prepared or running under the
+// current epoch and still inside its deadline; the observer's epoch, when
+// stated, must be the operation's current one; the profile must match;
+// exactly one stage per attempt phase is accepted. The stage records the
+// epochs it was accepted under.
 func AcceptStage(op *Operation, at *Attempt, inst *Instance, cmd CommandIdentity, profileID string, verdict Verdict, failureCode string, resultDigest Digest, manifest []byte, observer string, observerEpoch *uint64, now time.Time) (*Stage, error) {
 	if !inst.Current || inst.AttemptID != at.ID {
 		return nil, fmt.Errorf("%w: instance %s is not the current owner of attempt %s", ErrStaleExecution, inst.ID, at.ID)
@@ -231,8 +231,8 @@ func AcceptStage(op *Operation, at *Attempt, inst *Instance, cmd CommandIdentity
 	}
 	if op.FencedForNewDispatch() && op.Control == ControlNone {
 		// A terminal or reconciling operation accepts no further result; a
-		// cancel fence alone still lets the observer's verdict of the
-		// already running instance be recorded.
+		// control intent alone (a cancel or a hold) still lets the
+		// observer's verdict of the already running instance be recorded.
 		return nil, fmt.Errorf("%w: operation %s is %s", ErrStaleExecution, op.ID, op.Lifecycle)
 	}
 	if at.State != AttemptRunning && at.State != AttemptLaunchPrepared {

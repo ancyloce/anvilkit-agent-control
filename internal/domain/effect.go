@@ -31,7 +31,8 @@ const (
 // issued once; retries, timeouts, lease expiry and restarts never recreate
 // it, and an unknown outcome keeps the original identity until an outcome
 // observation, a query of the original identity or an evidence-bound
-// operator disposition resolves it.
+// operator disposition resolves it. Evidence closes a prepared effect as
+// confirmed_not_sent too.
 type EffectState string
 
 const (

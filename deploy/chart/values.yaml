@@ -72,9 +72,11 @@ identity:
   # (grpc.identity.max_connection_age_grace, 1s..24h).
   maxConnectionAgeGrace: 30s
 
-# The top-level DEVELOPMENT_ONLY guard: every development transport below
-# (identity.mode, temporal.tls.mode, telemetry.otlpTls.mode) renders only
-# while this is true; it downgrades nothing by itself.
+# The top-level DEVELOPMENT_ONLY guard: every development mode below
+# (identity.mode, modelProxy.identityMode, temporal.tls.mode,
+# events.nats.tls.mode, telemetry.otlpTls.mode, and
+# config.dispatch.development) renders only while this is true; it
+# downgrades nothing by itself.
 development:
   enabled: false
 
@@ -87,10 +89,11 @@ development:
 # process reads each through its *_FILE variable. The service's KV v2 path
 # holds the keys database-url, inventory-access-key-id,
 # inventory-secret-access-key, artifacts-access-key-id and
-# artifacts-secret-access-key under the role csi.role; the migration Job has
-# its own ServiceAccount, role (csi.migrationRole) and path
-# (csi.migrationPath, key migration-dsn), so neither reads the other's
-# credential.
+# artifacts-secret-access-key (with artifacts.enabled), authority-token
+# (authority.identity token) and nats-creds (events.enabled) under the role
+# csi.role; the migration Job has its own ServiceAccount, role
+# (csi.migrationRole) and path (csi.migrationPath, key migration-dsn), so
+# neither reads the other's credential.
 secrets:
   provider: kubernetes
   csi:
@@ -253,7 +256,8 @@ migration:
 # The reviewed, secret-free configuration file (config.yaml sections):
 # rendered into a ConfigMap and mounted at ANVILKIT_CONTROL_CONFIG. The
 # placement values above override it through the allowlisted environment;
-# the backends are fixed to s3 here (see inventory/artifacts).
+# the chart fixes the inventory backend to s3 and sets the artifact backend
+# from artifacts.enabled (s3 or disabled).
 config:
   grpc:
     listen: 127.0.0.1:9101
@@ -314,8 +318,10 @@ resources:
 # bytes under it (P1.5, CTL-INF-07). Empty leaves the runtime default.
 goMemLimit: 200MiB
 
-# The gRPC health service: SERVING once the listener is up and the relay
-# runs, NOT_SERVING while the server drains.
+# The kubelet probes of the plaintext health listener: startup and
+# readiness ask /readyz (the gRPC listener serves, no drain has begun, the
+# database answers its ping and the schema is at or above the binary's
+# minimum), liveness asks /healthz (the process alone).
 probes:
   startup:
     periodSeconds: 2

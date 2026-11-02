@@ -15,10 +15,11 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/testdb"
 )
 
-// GetInstance (P09) answers the registration the launcher recorded for a
-// Pod, under the launch key it was registered with: an unregistered Pod is
-// not found, another launch key is not found, a duplicate Pod is answered
-// as registered but not current.
+// TestGetInstanceAnswersOnlyTheLaunchersRegistration: GetInstance (P09)
+// answers the registration the launcher recorded for a Pod, under the
+// launch key it was registered with: an unregistered Pod is not found,
+// another launch key is not found, a duplicate Pod is answered as
+// registered but not current.
 func TestGetInstanceAnswersOnlyTheLaunchersRegistration(t *testing.T) {
 	inst := testdb.Start(t)
 	inv, err := inventory.NewFilesystem(filepath.Join(t.TempDir(), "inventory"))

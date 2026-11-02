@@ -56,8 +56,9 @@ type PermitDecision struct {
 	ActiveDeadline *time.Time
 }
 
-// DecidePermit admits a Generation into execution (DD-01 §4): a fenced,
-// terminal or unfunded-brief operation is refused; a passed queue deadline
+// DecidePermit admits a Generation into execution (DD-01 §4): a fenced
+// (terminal included) operation or one whose intake is not confirmed is
+// refused (the caller checks the brief first); a passed queue deadline
 // is refused (the original queue deadline is never extended); an operation
 // already holding its permit keeps it; otherwise a permit is granted when
 // the pool has room, and the first grant sets the active deadline once —
@@ -104,11 +105,11 @@ type Funding struct {
 }
 
 // RecordLease applies a confirmed lease report under a stable occurrence
-// (DD-01 §4): a report older than the last recorded one is the original's
-// reentry (ignored, existing); held or renewed moves the known expiry only
-// forward from a confirmed value; lost fences the operation for good;
-// released ends the lease. An operation whose lease was lost never returns
-// to held.
+// (DD-01 §4): a report at or before the last recorded occurrence is a
+// reentry (ignored, nothing changes); held or renewed moves the known
+// expiry only forward from a confirmed value; lost fences the operation
+// for good; released ends the lease. An operation whose lease was lost
+// never returns to held.
 func (o *Operation) RecordLease(occurrence uint64, state LeaseState, leaseID string, fence uint64, expiresAt *time.Time) (changed bool, err error) {
 	if occurrence == 0 {
 		return false, fmt.Errorf("%w: lease occurrence must be positive", ErrInvalid)

@@ -1,9 +1,10 @@
 // Package artifacts holds the ArtifactStore adapter (DD-02 §6): the scoped
-// object store of the eight artifact classes on an S3-compatible backend
-// through the AWS SDK for Go v2, with its own bucket and credentials,
-// separate from the obligation inventory's permission boundary. Objects
-// are written by the uploader through a presigned, time-bounded PUT and
-// read back by Control by their exact version; nothing here deletes.
+// object store of the artifact classes (domain.ArtifactClass) on an
+// S3-compatible backend through the AWS SDK for Go v2, with its own bucket
+// and credentials, separate from the obligation inventory's permission
+// boundary. Objects are written by the uploader through a presigned,
+// time-bounded PUT and read back by Control by their exact version;
+// nothing here deletes.
 package artifacts
 
 import (
@@ -33,8 +34,9 @@ import (
 )
 
 // S3Config names the artifact backend. The credentials are secrets and
-// arrive only from the environment; they must be a different identity
-// from the inventory's.
+// arrive only from the environment or the mounted secret file their *_file
+// key names (config.InventoryS3); they must be a different identity from
+// the inventory's.
 type S3Config struct {
 	Endpoint        string
 	Region          string
@@ -199,7 +201,8 @@ func (s *S3) DownloadCapability(ctx context.Context, key, version string, expire
 }
 
 // Verify streams the exact object version through SHA-256 and the size
-// check without holding its bytes (P1.5, CTL-INF-07).
+// check without holding its bytes beyond the first domain.ArchiveHeadBytes
+// it returns as ObjectFacts.Head (P1.5, CTL-INF-07).
 func (s *S3) Verify(ctx context.Context, key, version string, limit int64) (domain.ObjectFacts, error) {
 	if err := validKey(key); err != nil {
 		return domain.ObjectFacts{}, err

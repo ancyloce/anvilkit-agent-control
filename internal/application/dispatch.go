@@ -150,14 +150,14 @@ type Admission struct {
 // Admit is the single-use admission of DD-02 §4 for model and tool calls.
 //
 //  1. Current authority for the route is read outside any lock.
-//  2. One transaction, in lock order (allocations, operation, attempt,
-//     instance, dispatch), verifies identity, epoch, fences, deadlines,
-//     price (for a model route the trusted provider/model it binds),
-//     authority or grant, budget and the replacement rule; the same call
-//     and digest returns the existing record (no permission), a changed
-//     digest or a changed binding conflicts, a refusal is recorded as
-//     denied, and the first eligible request reserves the exposure and
-//     records PREPARED.
+//  2. One transaction, in lock order (a tool call's grant policy, the
+//     cost caps and allocations, operation, attempt, instance, dispatch),
+//     verifies identity, epoch, fences, deadlines, price (for a model
+//     route the trusted provider/model it binds), authority or grant,
+//     budget and the replacement rule; the same call and digest returns
+//     the existing record (no permission), a changed digest or a changed
+//     binding conflicts, a refusal is recorded as denied, and the first
+//     eligible request reserves the exposure and records PREPARED.
 //  3. Outside the transaction the immutable obligation is written; an
 //     uncertain write is recorded and grants nothing.
 //  4. A second transaction reacquires the locks of the persisted call's
@@ -373,10 +373,10 @@ func (s *Dispatch) frozenPrice(d *domain.Dispatch) *domain.Price {
 // admissionContext loads the current state under Control's lock ranks:
 // for a tool call the grant policy share-locked first (rank 1, so a
 // revocation fence waits for this decision and every later one reads it),
-// then allocations (1), operation (2), attempt and instance (3). The
-// dispatch itself (4) is locked by the caller when it exists; the price is
-// chosen by the caller (current at step 2, frozen at step 4). Now is read
-// after the locks are held.
+// then the cost caps and allocations (1), operation (2), attempt and
+// instance (3). The dispatch itself (4) is locked by the caller when it
+// exists; the price is chosen by the caller (current at step 2, frozen at
+// step 4). Now is read after the locks are held.
 func (s *Dispatch) admissionContext(ctx context.Context, r Repo, b binding, tenantID string, authority domain.Decision) (domain.AdmissionContext, error) {
 	var grant *domain.GrantPolicy
 	if b.Kind == domain.DispatchTool {
@@ -661,11 +661,12 @@ func (s *Dispatch) ConfirmNotSent(ctx context.Context, cmd domain.CommandIdentit
 }
 
 // ConfirmNotSentLocked applies the not-sent confirmation inside the
-// caller's transaction, taking the locks in rank order (allocations,
-// operation, dispatch); guard, when given, runs under the operation lock
-// before anything changes, so a caller that binds the confirmation to a
-// current authority (a recovery epoch) refuses without a partial change.
-// The evidence must have been verified outside the transaction.
+// caller's transaction, taking the locks in rank order (cost caps and
+// allocations, operation, dispatch); guard, when given, runs under the
+// operation lock before anything changes, so a caller that binds the
+// confirmation to a current authority (a recovery epoch) refuses without
+// a partial change. The evidence must have been verified outside the
+// transaction.
 func (s *Dispatch) ConfirmNotSentLocked(ctx context.Context, r Repo, operationID, dispatchID, evidenceRef string, guard func(*domain.Operation) error) (d *domain.Dispatch, existing bool, err error) {
 	b, err := lockBudget(ctx, r, operationID)
 	if err != nil {

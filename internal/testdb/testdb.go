@@ -1,8 +1,8 @@
 // Package testdb starts a disposable PostgreSQL 17 for Control tests and
 // installs anvilkit_control from the service-owned migration source
 // (internal/migrate) with goose, exactly as the migration Job does. Tests
-// that need it skip when Docker is unavailable and never touch a shared
-// database.
+// that use it run on Docker, skip when ANVILKIT_SKIP_DOCKER_TESTS is set
+// and never touch a shared database.
 package testdb
 
 import (

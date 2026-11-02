@@ -13,8 +13,9 @@ import (
 
 // grantPolicyServer adapts anvilkit.control.v1.GrantPolicyService (DD-08 §2)
 // to the application's registration receipt and revocation barrier. The
-// caller is MCP (plaintext and unauthenticated in DEVELOPMENT_ONLY; the
-// workload identity that restricts it to MCP is ENV-03).
+// caller is MCP: on the mTLS listener Policy admits only its workload
+// identity (P0.1; the production CA is ENV-03); the DEVELOPMENT_ONLY
+// plaintext listener authenticates no caller.
 type grantPolicyServer struct {
 	controlv1.UnimplementedGrantPolicyServiceServer
 	grants *application.GrantPolicies

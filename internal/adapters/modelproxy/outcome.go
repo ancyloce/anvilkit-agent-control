@@ -4,7 +4,7 @@
 // answers what the sender knows about a call — its terminal state, native
 // usage and reference — and never sends. The answer is recorded through the
 // dispatch observation path under the source query:model-proxy and a
-// sequence derived from the record's own revision stamp, so a repeated
+// sequence derived from the record's own updatedAt stamp, so a repeated
 // query is one observation and a moved record a supplemental one. A call
 // the Proxy does not know, or one still in flight, establishes nothing.
 package modelproxy
@@ -44,8 +44,9 @@ type Options struct {
 type TLSFiles struct{ CertFile, KeyFile, CAFile, ServerName string }
 
 // OutcomeQuery answers model dispatches of the Proxy's owner from the Proxy
-// and everything else from the inner query (the DEVELOPMENT_ONLY double of
-// the Pagix declaration, ENV-07).
+// and everything else from the inner query (the DEVELOPMENT_ONLY
+// attestation double in development, application.SenderReported
+// otherwise).
 type OutcomeQuery struct {
 	api     *modelproxyapi.Client
 	owner   string

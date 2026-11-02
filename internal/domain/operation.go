@@ -125,8 +125,8 @@ type ClarificationBounds struct {
 }
 
 // Profile is a reviewed operation profile. Only reviewed profiles can be
-// accepted; the initial set is fixed by configuration and holds the
-// LocalCheck fixture, the Preparation profile and the Generation profile.
+// accepted; the set is fixed by the build (bootstrap.Profiles, its values
+// from configuration).
 type Profile struct {
 	ID                string
 	Kind              OperationKind
@@ -134,9 +134,10 @@ type Profile struct {
 	// StepID and JobProfileID bind the single fixed step of this profile.
 	StepID       string
 	JobProfileID string
-	// MultiStep profiles (Preparation, Generation) settle their business
-	// outcome through SettleOperation; a definite attempt close does not
-	// end them (DD-01 §2).
+	// MultiStep profiles (every profile of bootstrap.Profiles but the
+	// single-attempt LocalCheck fixture) settle their business outcome
+	// through SettleOperation; a definite attempt close does not end them
+	// (DD-01 §2).
 	MultiStep bool
 	// Clarification bounds a Preparation's grouped question rounds.
 	Clarification ClarificationBounds
@@ -159,7 +160,7 @@ type Profile struct {
 	// the first is the default, a tracked change moves to another.
 	Definitions []string
 	// SupportsControl says the profile supports hold, resume and
-	// change_definition; the initial Preparation/LocalCheck profiles do not.
+	// change_definition; of the reviewed profiles only Generation's does.
 	SupportsControl bool
 	// MaxRepairs bounds the independently classified repair rounds of a
 	// Generation; CodegenProfileID and ValidatorProfileID are the reviewed
@@ -252,8 +253,8 @@ type Operation struct {
 	DefinitionActivation string
 	// Preparation is the accepted intake of a Preparation (nil otherwise).
 	Preparation *PreparationIntake
-	// CandidateEffectID names the registered candidate's effect once a
-	// Generation reached candidate_ready.
+	// CandidateEffectID names the effect of a Generation's first candidate
+	// registration (BindsLineage), recorded when that effect is prepared.
 	CandidateEffectID string
 }
 
@@ -414,15 +415,16 @@ func (o *Operation) ChangedPayload() ChangedPayload {
 }
 
 // FencedForNewDispatch reports whether new launches or sends are denied:
-// any control intent, a terminal lifecycle or unresolved reconciliation
-// fences them; issued effects and costs are kept.
+// any control intent, a terminal lifecycle, unresolved reconciliation or a
+// lost lease fences them; issued effects and costs are kept.
 func (o *Operation) FencedForNewDispatch() bool {
 	return o.Control != ControlNone || o.Lifecycle.Terminal() || o.Lifecycle == LifecycleReconciling || o.Lease.State == LeaseLost
 }
 
 // SendersQuiescent reports whether nothing can still act for the operation:
-// no open attempt and no unresolved cleanup. Only then may a cancel be
-// applied at once; an uncertain cleanup keeps it pending.
+// no open attempt, no reconciliation, no unknown cleanup and no unknown
+// exposure. Only then may a cancel be applied at once; an uncertain
+// cleanup keeps it pending.
 func (o *Operation) SendersQuiescent(openAttempt bool) bool {
 	return !openAttempt && o.Lifecycle != LifecycleReconciling && o.Cleanup != CleanupUnknown && o.Finance != FinanceExposureUnknown
 }

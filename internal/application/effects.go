@@ -389,9 +389,12 @@ func (s *Effects) QueryOriginal(ctx context.Context, tenantID, effectID string) 
 	return e, report, err
 }
 
-// SendersQuiescent extends the operation's quiescence with unresolved
-// effects: a consumed permit whose outcome is unknown means a writer may
-// still be acting.
+// unresolvedEffects reports whether a sender may still act for the
+// operation beyond its open attempt, which callers pass to
+// domain.Operation.SendersQuiescent and the settlement checks: an effect
+// whose permit was consumed and whose outcome is not yet definite
+// (permitted or unknown) means a writer may still be acting, and so does
+// a dispatch that is prepared, authorized or unknown.
 func unresolvedEffects(ctx context.Context, r Repo, operationID string) (bool, error) {
 	unresolved, err := r.HasUnresolvedEffect(ctx, operationID)
 	if err != nil || unresolved {

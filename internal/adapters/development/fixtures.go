@@ -1,11 +1,15 @@
 // Package development holds the DEVELOPMENT_ONLY sources of pricing,
-// commercial authority and not-sent evidence for the dispatch admission
-// chain (delivery.md P06, ENV-06/ENV-07). They exist so the admission
-// rules can be verified end to end before the real inputs are available;
-// with the fixtures disabled every paid route is denied. Nothing here is a
-// production adapter: real prices, an IdP/Pagix decision and a qualified
-// evidence source replace them, and no test against these fixtures claims a
-// provider, authorization or evidence qualification.
+// commercial authority, not-sent and disposition evidence and the
+// original-identity query for the dispatch admission chain (delivery.md
+// P06, ENV-06/ENV-07). They exist so the admission rules can be verified
+// end to end without the real inputs, and are reachable only under
+// dispatch.development.enabled (internal/bootstrap/authority.go). Nothing
+// here is a production adapter: outside development the database price
+// book (application.StoredPrices), the declared decision endpoint
+// (internal/adapters/authority), signed evidence (internal/adapters/evidence)
+// and the Model Proxy query (internal/adapters/modelproxy) replace them, and
+// no test against these fixtures claims a provider, authorization or
+// evidence qualification.
 package development
 
 import (
@@ -83,8 +87,9 @@ func NewAuthority(routes []RouteAuthorization, freshness time.Duration, clock do
 }
 
 // Check answers AuthorizationService questions from the same fixture: a
-// model-route execution as CheckExecution; any other resource is allowed
-// only for a tenant listed with the route "*" (DEVELOPMENT_ONLY).
+// model-route execution as CheckExecution; any other question (another
+// resource, or a disclosure) is allowed only for a tenant listed with the
+// route "*" (DEVELOPMENT_ONLY).
 func (a *Authority) Check(ctx context.Context, q domain.AuthorizationQuery) (domain.Decision, error) {
 	if q.ResourceType == "model-route" && !q.Disclosure {
 		return a.CheckExecution(ctx, q.Scope, q.ResourceID)
@@ -100,8 +105,8 @@ func (a *Authority) CheckExecution(_ context.Context, scope domain.Scope, routeI
 	return domain.Decision{Allow: false, Revision: "development-fixture", ReasonCode: "ROUTE_NOT_AUTHORIZED", FreshUntil: now.Add(a.freshness)}, nil
 }
 
-// ObjectReader reads published inventory objects (the filesystem inventory
-// in development, a qualified object store in production).
+// ObjectReader reads published inventory objects (application.Inventory:
+// the filesystem or an S3 placement).
 type ObjectReader interface {
 	Get(ctx context.Context, key string) (body []byte, version string, err error)
 }
@@ -167,9 +172,11 @@ func (e *NotSentEvidence) VerifyNotSent(ctx context.Context, d *domain.Dispatch,
 
 // OutcomeAttestation is the object a controlled upstream double publishes
 // under outcome/<class>/<obligationId> to answer the original-identity
-// query of an obligation. It stands in for the Model Proxy (P11) and Pagix
-// (ENV-07) query-by-identity declarations, which do not exist yet; nothing
-// read from it is a claim about a real upstream.
+// query of an obligation in development: model dispatches the Model Proxy
+// does not answer (modelproxy.OutcomeQuery answers its owner's), tool
+// dispatches and business writes, whose outcomes outside development their
+// senders report (application.SenderReported). Nothing read from it is a
+// claim about a real upstream.
 type OutcomeAttestation struct {
 	Class           string            `json:"class"`
 	ObligationClass string            `json:"obligationClass"`

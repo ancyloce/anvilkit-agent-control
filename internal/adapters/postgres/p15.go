@@ -8,9 +8,10 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
 
-// P1.5 repository methods: the PREPARED dispatches of a closing attempt,
-// the unresolved dispatches of the periodic reconciler and the recovery
-// epoch sequence.
+// P1.5/P1.6 repository methods: the PREPARED dispatches of a closing
+// attempt, the unresolved dispatches of the periodic reconciler, the
+// recovery epoch sequence, whether any admission closure is open, and the
+// settlements the settlement reconciler re-applies (P1.6).
 
 func (r *repo) ListPreparedDispatchesByAttempt(ctx context.Context, attemptID string) ([]*domain.Dispatch, error) {
 	rows, err := r.q.ListPreparedDispatchesByAttempt(ctx, attemptID)

@@ -16,11 +16,13 @@ import (
 // inventory object under the run's epoch (fenced, reconciling, exposure
 // retained), then the original outcome of a dispatch or effect is queried
 // through the outcome port and recorded as an observation. A job-launch
-// finding waits for the trusted launcher's evidence (RecordOutcome); an
-// intake finding is settled by its restoration, since the restored
-// operation admits nothing under the old epoch and its sends and writes
-// are findings of their own. An outcome the upstream cannot establish
-// leaves the finding unresolved and the scope restricted.
+// finding settles from Control's own records when they carry definite
+// cleanup evidence (settleLaunchRecords) and otherwise waits for the
+// trusted launcher's evidence (RecordOutcome); an intake finding is
+// settled by its restoration, since the restored operation admits nothing
+// under the old epoch and its sends and writes are findings of their own.
+// An outcome the upstream cannot establish leaves the finding unresolved
+// and the scope restricted.
 func (s *Recovery) Reconcile(ctx context.Context, runID, findingID string) (*domain.RecoveryFinding, error) {
 	var f *domain.RecoveryFinding
 	var run *domain.RecoveryRun
@@ -453,8 +455,9 @@ type LaunchOutcome struct {
 	Stopped bool
 }
 
-// LaunchEvidence names what a RecordOutcome call records on the finding:
-// the outcome word and the evidence reference of an observed launch.
+// The outcome words and the evidence-reference prefix RecordOutcome records
+// on a job-launch finding: an observed launch, a stopped Job, and the
+// "job:" reference of the observed Job.
 const (
 	launchOutcomeObserved = "observed"
 	launchOutcomeStopped  = "job_stopped"

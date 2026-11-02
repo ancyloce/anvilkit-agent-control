@@ -23,8 +23,8 @@ type Reloader struct {
 	log      *slog.Logger
 	now      func() time.Time
 	current  atomic.Pointer[Material]
-	// failures counts rejected candidates since the last successful load;
-	// it is the failure signal of an operator-visible metric or log.
+	// failures counts rejected candidates since the last successful load
+	// (Failures); every rejection is also logged as a warning.
 	failures atomic.Int64
 	mu       sync.Mutex
 	onChange []func(previous, current *Material)

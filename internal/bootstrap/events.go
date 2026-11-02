@@ -134,9 +134,9 @@ func startEvents(lc fx.Lifecycle, cfg config.Config, pool *pgxpool.Pool, notifie
 	return nil
 }
 
-// retainOutbox reports the forwarding lag every poll-bounded tick and
-// deletes acknowledged rows past the retention every retention interval,
-// a bounded batch at a time.
+// retainOutbox reports the forwarding lag every 15 s and deletes
+// acknowledged rows past the retention every retention interval, a bounded
+// batch at a time.
 func retainOutbox(ctx context.Context, pool *pgxpool.Pool, e config.Events, m eventMetrics, log *slog.Logger) {
 	lagTick := time.NewTicker(15 * time.Second)
 	defer lagTick.Stop()

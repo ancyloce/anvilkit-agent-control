@@ -1,8 +1,9 @@
 # Independent verification of anvilkit-agent-control from this repository
 # alone: build, vet, test (Docker-backed PostgreSQL 17 and MinIO tests through
-# Testcontainers), the race check of the application and transport, the sqlc
-# drift check, the image from the repository root, and the chart's lint and
-# render. GOWORK=off: the contract module is a versioned requirement.
+# Testcontainers), the race check of the application, transport and domain
+# packages, the sqlc drift check, the image from the repository root, and
+# the chart's lint and render. GOWORK=off: the contract module is a
+# versioned requirement.
 name: ci
 on:
   push:

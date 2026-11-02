@@ -57,9 +57,12 @@ func (s *Operations) Profile(id string) (domain.Profile, error) {
 // A Preparation carries its intake: the prompt must be a finalized prompt
 // artifact of the caller's tenant holding the declared digest (a transfer
 // bound to no operation, since the operation does not exist yet). A
-// Generation binds a brief: the subject's brief must be the current brief
-// of a succeeded preparation of the same tenant; a superseded brief starts
-// no generation.
+// Generation or refinement binds a brief: the subject's brief must be the
+// current brief of a succeeded preparation of the same tenant; a
+// superseded brief starts no generation. A preview build names a finalized
+// source artifact of the tenant (verifySourceArtifact) and a release the
+// exact saved or registered revision of a source operation
+// (releaseSource).
 func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, kind domain.OperationKind, subject domain.Subject, intake *domain.PreparationIntake) (op *domain.Operation, existing bool, err error) {
 	if scope.TenantID != cmd.TenantID {
 		return nil, false, fmt.Errorf("%w: command tenant differs from scope", domain.ErrInvalid)
@@ -423,8 +426,10 @@ func (s *Operations) ListEvents(ctx context.Context, scope domain.Scope, operati
 
 // SubmitCommand records a tracked control command. Acceptance is not
 // application: cancel installs a fence and becomes applied only when the
-// senders are known quiescent (no open attempt) or when the Workflow
-// closes the attempt later.
+// senders are known quiescent (no open attempt, unresolved effect or
+// unsettled dispatch, and nothing reconciling or unknown:
+// domain.Operation.SendersQuiescent) or when the Workflow closes the
+// attempt later.
 func (s *Operations) SubmitCommand(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, operationID string, kind domain.CommandKind, expected domain.Revision, targetActivation string) (c *domain.Command, existing bool, err error) {
 	if scope.TenantID != cmd.TenantID {
 		return nil, false, fmt.Errorf("%w: command tenant differs from scope", domain.ErrInvalid)

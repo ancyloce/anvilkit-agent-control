@@ -60,8 +60,9 @@ func (c *CostCap) headroomFor(spend, exposure int64) error {
 	return nil
 }
 
-// Reserve, Release, Charge and Restore follow the allocation they shadow;
-// they never check the cap (admission does) and never go negative.
+// Reserve, Release and Charge follow the allocation they shadow (a
+// restored reservation is mirrored through Reserve); they never check the
+// cap (admission does) and never go negative.
 func (c *CostCap) Reserve(amount int64) error {
 	next, ok := addInt64(c.Reserved, amount)
 	if !ok || amount < 0 {

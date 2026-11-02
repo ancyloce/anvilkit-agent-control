@@ -123,10 +123,13 @@ func (s *Execution) OpenAttempt(ctx context.Context, cmd domain.CommandIdentity,
 	return at, existing, err
 }
 
-// bootstrapGate denies an attempt of a queued profile (a Generation)
-// whose bootstrap is incomplete: no active execution permit, no funding
-// occurrence or no confirmed lease covering now (DD-01 §4: admission,
-// funding and lease before authored execution).
+// bootstrapGate denies an attempt of a multi-step profile while the
+// operation's exposure is unknown or a dispatch or effect of it is
+// unresolved (unresolvedEffects), and an attempt of a queued profile (a
+// Generation) whose bootstrap is incomplete: no active execution permit,
+// no funding occurrence or no confirmed lease covering now (DD-01 §4:
+// admission, funding and lease before authored execution). A single-step
+// profile passes.
 func (s *Execution) bootstrapGate(ctx context.Context, r Repo, op *domain.Operation, now time.Time) error {
 	profile := s.profiles[op.Subject.ProfileID]
 	if !profile.MultiStep {
@@ -573,8 +576,10 @@ func (s *Execution) GetAcceptedStage(ctx context.Context, attemptID, tenantID, o
 // settles the operation lifecycle and any pending cancel commands. A close
 // of an already closed attempt returns the original for the same outcome
 // and conflicts for a different one, except when it carries later cleanup
-// evidence for a cleanup recorded as unknown: that settles the reconciling
-// operation (and its pending cancel) under the same attempt identity.
+// evidence for a cleanup recorded as unknown, or repeats a definite
+// outcome and cleanup for a reconciling operation whose obligations have
+// all resolved since: that settles the reconciling operation (and its
+// pending cancel) under the same attempt identity.
 func (s *Execution) CloseAttempt(ctx context.Context, cmd domain.CommandIdentity, attemptID string, outcome domain.AttemptOutcome, cleanup domain.CleanupState, failureCode string) (at *domain.Attempt, op *domain.Operation, existing bool, err error) {
 	now := s.clock.Now()
 	err = s.store.Tx(ctx, func(r Repo) error {

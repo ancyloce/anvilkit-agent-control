@@ -13,8 +13,8 @@ import (
 
 // Finance is the operator administration of the price book, the budget
 // pools and the cost caps, and the financial settlement of terminal
-// operations (P2.1, DD-02 §3, ENV-06). Every mutation is decided on the
-// operator's verified roles (P0.3): money-setting commands need the
+// operations (P2.1, DD-02 §3, ENV-06). Every operator command is decided
+// on the operator's verified roles (P0.3): money-setting commands need the
 // platform_operator role; an operator of a tenant may read that tenant's
 // pools and caps.
 type Finance struct {
@@ -249,7 +249,8 @@ func (f *Finance) CreatePool(ctx context.Context, cmd domain.CommandIdentity, sc
 }
 
 // AdjustPool sets a pool's cap conditionally on its revision; a cap below
-// the allocated amount fences new allocations and returns nothing.
+// the allocated amount fences new allocations and takes nothing back from
+// the existing ones.
 func (f *Finance) AdjustPool(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, poolID string, expected uint64, capAmount domain.Money) (*domain.BudgetPool, error) {
 	if err := financeWriter(scope, cmd, ActionFundPool); err != nil {
 		return nil, err

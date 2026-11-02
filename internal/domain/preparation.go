@@ -209,7 +209,8 @@ func (c ComponentIdentity) String() string {
 // brief artifact, the requirements digest, the source revisions and the
 // brand/asset content digests to the preparation operation and its
 // revision, and carries the component identity the brief allocates (nil
-// for a brief frozen before P0.8). A superseded brief starts no generation.
+// for a brief that allocates none, such as one frozen before P0.8). A
+// superseded brief starts no generation.
 type Brief struct {
 	ID                 string
 	OperationID        string

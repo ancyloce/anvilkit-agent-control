@@ -506,9 +506,9 @@ func sortedRefs(in []ArtifactDigestRef) []ArtifactDigestRef {
 	return out
 }
 
-// Canonical subjects of the release's guarded mutations: the effect's
-// canonical subject names the subject digest and the target, so a permit
-// can be checked against the recorded release.
+// ReleaseEffectSubject is the canonical subject of a release's guarded
+// mutation: it names the subject digest and the target, so a permit can be
+// checked against the recorded release.
 func ReleaseEffectSubject(subjectDigest Digest, target string) string {
 	return "release:" + string(subjectDigest) + ":" + target
 }

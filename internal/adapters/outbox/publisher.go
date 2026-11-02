@@ -84,7 +84,7 @@ type row struct {
 }
 
 // Unwrap reads the event envelope and its destination subject out of a
-// stored outbox row's payload (verification and the operator's tools).
+// stored outbox row's payload (the tests that verify the stored rows).
 func Unwrap(stored []byte) (domain.Envelope, string, error) {
 	var r row
 	if err := json.Unmarshal(stored, &r); err != nil {

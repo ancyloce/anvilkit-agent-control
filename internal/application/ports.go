@@ -316,10 +316,10 @@ type InventoryPage struct {
 // one upload of exactly the declared bytes under the key (no request is
 // made); Read returns the bytes and facts of the exact object version,
 // domain.ErrNotFound when the key or version does not exist, and
-// domain.ErrInvalid when the object exceeds the limit. Both are called
-// outside every database lock. Nothing here deletes: accepted objects and
-// their audit stay (garbage collection of proven-unreferenced objects is a
-// later reviewed retention task).
+// domain.ErrInvalid when the object exceeds the limit. Every method is
+// called outside every database lock. Nothing here deletes: accepted
+// objects and their audit stay (garbage collection of proven-unreferenced
+// objects is a later reviewed retention task).
 type ArtifactStore interface {
 	UploadCapability(ctx context.Context, key, mediaType string, size int64, expiresAt time.Time) (UploadCapability, error)
 	Read(ctx context.Context, key, version string, limit int64) ([]byte, domain.ObjectFacts, error)
@@ -343,8 +343,9 @@ type UploadCapability struct {
 }
 
 // WorkflowRelay starts and cancels business workflows by operation
-// identity. Both calls are idempotent per identity; Control never chooses
-// the next business action.
+// identity, starts recovery runs and relays tracked Updates. Every call is
+// idempotent per identity (operation, run, answer or command id); Control
+// never chooses the next business action.
 type WorkflowRelay interface {
 	// Start starts the registered workflow of the operation kind with the
 	// operation id as the Workflow ID; idempotent per identity.
@@ -429,9 +430,10 @@ type AuthorizationSource interface {
 // (DD-06 §2 query-by-identity, DD-02 §4 "query original ID"): what the
 // upstream or the sender knows about the call or mutation. Known false
 // with a nil error means the upstream has no record; an error means the
-// query could not be made, which establishes nothing. The production
-// adapters are Model Proxy (P11) and Pagix (ENV-07) declarations; the
-// development adapter is an explicitly labeled controlled double.
+// query could not be made, which establishes nothing. In production the
+// Model Proxy (P11) answers model dispatches and SenderReported the rest
+// (tool calls and Pagix business writes are reported by their senders);
+// the development adapter is an explicitly labeled controlled double.
 type OutcomeQuery interface {
 	QueryDispatch(ctx context.Context, d *domain.Dispatch) (DispatchOutcomeReport, error)
 	QueryEffect(ctx context.Context, e *domain.Effect) (EffectOutcomeReport, error)

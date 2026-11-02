@@ -13,8 +13,9 @@ import (
 // (DD-01 §3, delivery.md P13-02): grouped question rounds with their
 // immutable absolute expiry, one accepted answer per question set revision
 // committed with its Update relay intent, and the frozen brief. Every
-// mutation runs under the operation lock (rank 2) with the clock read
-// after it; nothing here touches the network.
+// record mutation runs under the operation lock (rank 2) with the clock
+// read after it; the relay's mark (RecordAnswerRelay) locks only the
+// answer. Nothing here touches the network.
 type Preparations struct {
 	store    Store
 	profiles map[string]domain.Profile

@@ -9,9 +9,8 @@ import (
 
 // Control's domain events (P2.8, contracts/events/events.schema.json and
 // the event catalog of contracts.md): operation.changed is the only type
-// Control publishes. attempt.result-accepted was removed from the catalog
-// with its consumer role (no Knowledge projection follows accepted
-// results).
+// Control publishes. The catalog has no attempt.result-accepted type: no
+// Knowledge projection follows accepted results.
 const (
 	EventProducer           = "anvilkit-agent-control"
 	SubjectOperationChanged = "anvilkit.control.operation.changed"

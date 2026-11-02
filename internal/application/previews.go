@@ -98,10 +98,10 @@ type OperationSource struct {
 	Revision string
 }
 
-// Source answers the source of a generation (its latest certified source
-// and the revision its candidate registration answered) or of a preview
-// build (its edited source and the revision its save created, else its
-// base), for an operation of the tenant.
+// Source answers the source of a generation or refinement (its latest
+// certified source and the revision its candidate registration answered)
+// or of a preview build (its edited source and the revision its save
+// created, else its base), for an operation of the tenant.
 func (s *Previews) Source(ctx context.Context, tenantID, operationID string) (OperationSource, error) {
 	var out OperationSource
 	err := s.store.Read(ctx, func(r Repo) error {
@@ -118,8 +118,8 @@ func (s *Previews) Source(ctx context.Context, tenantID, operationID string) (Op
 // resolveSource answers an operation's source and whether the revision is
 // one the source authority named for these bytes (saved): a preview
 // build's edited source with the revision its save created (else its
-// base, not saved), or a generation's latest certified source with the
-// revision its candidate registration answered.
+// base, not saved), or a generation's or refinement's latest certified
+// source with the revision its candidate registration answered.
 func resolveSource(ctx context.Context, r Repo, op *domain.Operation) (out OperationSource, saved bool, err error) {
 	out.Lineage = op.Subject.SubjectDigest
 	switch op.Kind {

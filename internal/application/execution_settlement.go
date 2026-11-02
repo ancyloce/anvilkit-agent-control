@@ -10,9 +10,12 @@ import (
 )
 
 // settleTerminal records what a terminal operation settles beside its
-// projection: an applied cancel settles the pending cancel commands and
-// every terminal operation releases its execution permit (the pool's
-// capacity is freed by the evidence of the close, never by a TTL).
+// projection: an applied cancel settles the pending cancel commands and a
+// terminal operation releases its execution permit once no attempt is
+// open and no obligation is unresolved (no unsettled dispatch or effect,
+// no attempt of unknown outcome or cleanup, no unknown cleanup or
+// exposure); the pool's capacity is freed by the evidence of the close,
+// never by a TTL.
 func settleTerminal(ctx context.Context, r Repo, op *domain.Operation, now time.Time) error {
 	if op.Lifecycle.Terminal() {
 		open, err := r.HasOpenAttempt(ctx, op.ID)
@@ -43,7 +46,8 @@ func settleTerminal(ctx context.Context, r Repo, op *domain.Operation, now time.
 
 // obligationsOpen reports whether an obligation of the operation keeps its
 // settlement reconciling: an unresolved dispatch or effect, an attempt
-// whose cleanup is unknown, an unknown financial exposure or cleanup.
+// whose outcome or cleanup is unknown, an unknown financial exposure or
+// cleanup.
 func obligationsOpen(ctx context.Context, r Repo, op *domain.Operation) (unresolved, unknownAttempt bool, err error) {
 	if unresolved, err = unresolvedEffects(ctx, r, op.ID); err != nil {
 		return false, false, err
@@ -153,8 +157,10 @@ func (s *Execution) ReconcileSettlements(ctx context.Context, limit int) (int, e
 
 // SettleOperation records the business outcome of a multi-step operation
 // (DD-01 §2) under the same command identity: the same command returns the
-// original; a terminal operation answers its state; an operation whose
-// cleanup is unknown settles through reconciliation instead.
+// original; a terminal operation answers its state; an open attempt
+// refuses; an operation with an open obligation (obligationsOpen) stores
+// the intent and stays reconciling until, once the obligations resolve,
+// the same command repeated or SettleFromIntent settles it.
 func (s *Execution) SettleOperation(ctx context.Context, cmd domain.CommandIdentity, operationID string, outcome domain.OperationOutcome, failureCode, phase string) (op *domain.Operation, existing bool, err error) {
 	now := s.clock.Now()
 	err = s.store.Tx(ctx, func(r Repo) error {
@@ -213,10 +219,11 @@ func (s *Execution) SettleOperation(ctx context.Context, cmd domain.CommandIdent
 				if unknownAttempt {
 					o.Cleanup = domain.CleanupUnknown
 				}
-				// An unresolved obligation (an unknown dispatch or effect)
-				// keeps the operation reconciling under the stated phase:
-				// settlement continues, it never disappears behind a
-				// completed flag (DD-01 §2).
+				// An open obligation (an unresolved dispatch or effect, an
+				// unknown cleanup or exposure) keeps the operation
+				// reconciling under the stated phase: settlement
+				// continues, it never disappears behind a completed flag
+				// (DD-01 §2).
 				o.Lifecycle, o.FailureCode = domain.LifecycleReconciling, "EFFECT_UNCERTAIN"
 				if phase != "" {
 					o.Phase = phase

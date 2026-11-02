@@ -16,7 +16,7 @@ import (
 )
 
 // pgImage is the business PostgreSQL line of the baseline (technology.md:
-// PostgreSQL 17.11). The exact patch is whatever the pinned image resolves to.
+// PostgreSQL 17.11). The exact patch is whatever the 17-alpine tag resolves to.
 const pgImage = "postgres:17-alpine"
 
 // TestControlSchema proves, on a real PostgreSQL, that anvilkit_control

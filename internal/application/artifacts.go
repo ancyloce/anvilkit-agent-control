@@ -12,16 +12,18 @@ import (
 )
 
 // Artifacts implements the scoped artifact transfer of DD-02 §6 over the
-// eight artifact classes of the contract: Begin binds scope, class,
-// expected digest and size and deadline and hands out an opaque handle
-// (and, to the trusted caller, the upload capability); Resolve turns a
-// candidate's handle into the capability for the current physical
-// instance of the transfer's attempt; Finalize reads the exact object
-// version the uploader named, outside every lock, verifies its bytes,
-// size and digest (and the containment of an archive), then revalidates
-// the scope, epochs and deadline under the transfer lock and commits; Get
-// reads inside the caller's scope. Every object key stays in this service
-// and its store; callers and logs see handles and transfer ids only.
+// artifact classes of the contract (domain.ArtifactClasses): Begin binds
+// scope, class, expected digest and size and deadline and hands out an
+// opaque handle (and, to the trusted caller, the upload capability);
+// Resolve turns a candidate's handle into the capability for the current
+// physical instance of the transfer's attempt; Finalize reads the exact
+// object version the uploader named, outside every lock, verifies its
+// bytes, size and digest (and the containment of an archive), then
+// revalidates the scope, epochs and deadline under the transfer lock and
+// commits; Get reads inside the caller's scope; Read issues a trusted
+// reader the download capability of a finalized artifact. Every object
+// key stays in this service and its store; callers and logs see handles
+// and transfer ids only.
 type Artifacts struct {
 	slotsOnce sync.Once
 	slots     chan struct{}
@@ -44,9 +46,9 @@ type ArtifactLimits struct {
 	FinalizeConcurrency int
 }
 
-// NewArtifacts builds the service; a nil objects store leaves every
-// transfer call answering domain.ErrUnavailable (the store is a
-// deployment input).
+// NewArtifacts builds the service; a nil objects store leaves Begin,
+// Resolve, Finalize and Read answering domain.ErrUnavailable (the store
+// is a deployment input) while Get still reads the recorded transfers.
 func NewArtifacts(store Store, objects ArtifactStore, limits ArtifactLimits, clock domain.Clock, log *slog.Logger) *Artifacts {
 	if limits.MaxObjectBytes <= 0 {
 		limits.MaxObjectBytes = 64 << 20
@@ -285,10 +287,11 @@ func (s *Artifacts) Get(ctx context.Context, scope domain.Scope, transferID, han
 //     stale; a begun one past its deadline is expired here.
 //  2. Outside every lock the named object version is read from the store
 //     and its size and digest established from the bytes themselves; a
-//     source artifact, and any bytes carrying an archive signature, are
-//     inspected for containment from the bytes, never from the declared
-//     media type. A version that does not exist leaves the transfer begun
-//     (the upload is incomplete), any verified mismatch rejects it
+//     source artifact, an object declared with an archive media type and
+//     any bytes carrying an archive signature are inspected for
+//     containment from the bytes, so declaring another media type never
+//     skips the check. A version that does not exist leaves the transfer
+//     begun (the upload is incomplete), any verified mismatch rejects it
 //     permanently.
 //  3. Under the transfer lock (and the operation and attempt locks of a
 //     bound transfer, in rank order) the scope, epochs and deadline are
@@ -544,13 +547,14 @@ func BindOutputs(ctx context.Context, r Repo, op *domain.Operation, at *domain.A
 // Read issues a trusted reader the scoped download capability of a
 // finalized artifact under an authorized relationship to the reading
 // operation (P13-04): the artifact is the operation's own prompt, an
-// accepted answer of it, the brief its subject binds, or an artifact bound
-// by an accepted stage of one of its attempts. A reading physical instance
-// (a Job's trusted sidecar) must be the current instance of an executing
-// attempt of that operation under the current epoch, inside the deadline
-// and with the operation not fenced. The capability names the exact
-// object version the transfer was finalized with; the caller verifies the
-// bytes against the digest and size answered. Candidates never see it.
+// accepted answer of it, the brief its subject binds, the source a preview
+// build or release names, or an artifact bound by an accepted stage of one
+// of its attempts. A reading physical instance (a Job's trusted sidecar)
+// must be the current instance of an executing attempt of that operation
+// under the current epoch, inside the deadline and with the operation not
+// fenced. The capability names the exact object version the transfer was
+// finalized with; the caller verifies the bytes against the digest and
+// size answered. Candidates never see it.
 //
 // tenantID is the tenant the reader acts for: the artifact and the reading
 // operation must both be of it, otherwise neither is found (P0.2).
@@ -629,9 +633,10 @@ func readerAuthority(ctx context.Context, r Repo, op *domain.Operation, instance
 }
 
 // artifactRelationship establishes that the operation may read the
-// artifact: its prompt, an accepted answer, the brief its subject binds
-// or an artifact an accepted stage of one of its attempts binds. A
-// finalized transfer that no accepted record names is not an input.
+// artifact: its prompt, an accepted answer, the brief its subject binds,
+// the source handle of a preview build or release, or an artifact an
+// accepted stage of one of its attempts binds. A finalized transfer that
+// no accepted record names is not an input.
 func artifactRelationship(ctx context.Context, r Repo, op *domain.Operation, t *domain.Transfer) error {
 	if t.TenantID != op.TenantID {
 		return domain.ErrNotFound

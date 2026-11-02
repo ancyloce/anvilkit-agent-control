@@ -144,9 +144,9 @@ func toClarification(qs *domain.QuestionSet) *controlv1.Clarification {
 	return c
 }
 
-// view projects the operation and, for a waiting preparation, its open
-// question set; for a preview build or a release, the component identity
-// allocated to its lineage (P0.8).
+// view projects the operation with its newest attempt-bound progress and,
+// for a waiting preparation, its open question set; for a preview build or
+// a release, the component identity allocated to its lineage (P0.8).
 func (s *operationServer) view(ctx context.Context, o *domain.Operation) (*controlv1.OperationView, error) {
 	v := toView(o)
 	id, err := s.ops.LineageIdentity(ctx, o)

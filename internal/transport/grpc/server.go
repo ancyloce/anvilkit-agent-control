@@ -68,7 +68,8 @@ type Dependencies struct {
 	Notifier application.EventNotifier
 	// DefaultDeadline bounds unary RPCs without a caller deadline; zero disables it.
 	DefaultDeadline time.Duration
-	// MaxConnectionAge makes clients re-balance across replicas (zero: 1h).
+	// MaxConnectionAge makes clients re-balance across replicas (zero: the
+	// Identity's MaxConnectionAge on an mTLS listener, otherwise 1h).
 	MaxConnectionAge time.Duration
 	// MaxConnectionAgeGrace is how long an aged connection keeps its open
 	// streams (zero: 30s).

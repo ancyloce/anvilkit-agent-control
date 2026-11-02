@@ -26,7 +26,8 @@ import (
 
 // S3Config names the backend, the bucket and the key prefix of the
 // obligation inventory. The credentials are secrets and arrive only from
-// the environment. Endpoint is the S3 API of the backend (an RGW
+// the environment or the mounted secret file their *_file key names
+// (config.InventoryS3). Endpoint is the S3 API of the backend (an RGW
 // endpoint, or an S3-compatible development store); PathStyle addresses
 // the bucket in the path, which RGW and MinIO deployments commonly need.
 type S3Config struct {

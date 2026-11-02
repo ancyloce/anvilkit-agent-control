@@ -15,9 +15,9 @@ import (
 )
 
 // recoveryServer adapts anvilkit.control.v1.RecoveryService to the
-// rollback-window reconciliation (DD-02 §5). It runs on the reserved
-// control pool: recovery is an operator path that generation traffic must
-// never starve.
+// rollback-window reconciliation (DD-02 §5). It runs on the control pool,
+// independent of the execution pool: recovery is an operator path that
+// generation traffic must never starve.
 type recoveryServer struct {
 	controlv1.UnimplementedRecoveryServiceServer
 	recovery *application.Recovery

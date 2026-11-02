@@ -429,7 +429,7 @@ func TestDataPlaneTLS(t *testing.T) {
 	_, err = config.LoadFrom(write(t, minimal+"artifacts:\n  backend: disabled\n"), plainArtifacts)
 	require.NoError(t, err, "a disabled artifact store reaches no endpoint")
 
-	// The Temporal transport: plaintext only under the guard (P0.1, kept).
+	// The Temporal transport: plaintext only under the guard (P0.1).
 	const plainTemporal = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    mode: development\n"
 	_, err = config.LoadFrom(write(t, plainTemporal), env)
 	require.ErrorContains(t, err, "temporal.tls.mode development (plaintext) requires development.enabled")

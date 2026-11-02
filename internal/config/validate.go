@@ -138,8 +138,6 @@ func (c Config) validate() error {
 	if c.Profiles.LocalCheckDeadline < time.Minute || c.Profiles.LocalCheckDeadline > 24*time.Hour {
 		errs = append(errs, fmt.Errorf("profiles.local_check_deadline %s outside [1m, 24h]", c.Profiles.LocalCheckDeadline))
 	}
-	// The relay must poll more often than the shortest operation deadline
-	// can elapse, otherwise a confirmed intake could wait past its clock.
 	p := c.Profiles.Preparation
 	if p.MaxRounds < 1 || p.MaxRounds > 8 || p.MaxQuestions < 1 || p.MaxQuestions > 16 {
 		errs = append(errs, fmt.Errorf("profiles.preparation max_rounds %d / max_questions %d outside [1, 8] / [1, 16]", p.MaxRounds, p.MaxQuestions))
@@ -169,6 +167,8 @@ func (c Config) validate() error {
 	if len(g.Definitions) == 0 || g.CodegenProfile == "" || g.ValidatorProfile == "" {
 		errs = append(errs, errors.New("profiles.generation needs definitions, codegen_profile and validator_profile"))
 	}
+	// The relay must poll at least ten times within the LocalCheck deadline,
+	// otherwise a confirmed intake could wait past its clock.
 	if c.Relay.Interval*10 > c.Profiles.LocalCheckDeadline {
 		errs = append(errs, fmt.Errorf("relay.interval %s is too coarse for profiles.local_check_deadline %s", c.Relay.Interval, c.Profiles.LocalCheckDeadline))
 	}

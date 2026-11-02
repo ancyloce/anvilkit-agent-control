@@ -31,9 +31,9 @@ type health struct {
 	ready    func() bool
 	stopping atomic.Bool
 	// P1.4 (CTL-INF-05): readiness also needs the database (pinged every
-	// interval) and, since P3.1 (MIG-02), a schema at or above the
-	// binary's minimum version (checked at start and every interval until
-	// it holds); liveness (/healthz) stays the process alone.
+	// interval) and a schema at or above the binary's minimum version
+	// (P3.1, MIG-02; checked at start and every interval until it holds);
+	// liveness (/healthz) stays the process alone.
 	ping         func(context.Context) error
 	interval     time.Duration
 	timeout      time.Duration

@@ -52,10 +52,10 @@ func (s *Store) Read(ctx context.Context, fn func(application.Repo) error) error
 }
 
 // Pool exposes the connection pool to adapters that need a dedicated
-// connection (the notifier).
+// connection.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// Ping is used by readiness.
+// Ping pings the pool.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 type repo struct {

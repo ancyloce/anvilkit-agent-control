@@ -1,6 +1,8 @@
 // Package domain holds Control's pure business rules: identities, the
 // operation/attempt state machines and the errors the transport maps to
-// gRPC codes. It imports no Fx, gRPC, SQL driver or clock source.
+// gRPC codes. It imports no Fx, gRPC or SQL driver, and its rules read no
+// clock: the time is an argument (SystemClock is the Clock the application
+// layer is given).
 package domain
 
 import (
@@ -33,16 +35,20 @@ var (
 	ErrEffectUncertain = errors.New("effect uncertain")
 	// ErrCapacityExhausted: the reserved capacity pool is full.
 	ErrCapacityExhausted = errors.New("capacity exhausted")
-	// ErrIntegrity: stored bytes no longer verify against their recorded
-	// digest; the record must not be served as the accepted result.
+	// ErrIntegrity: stored state contradicts its own record (bytes that no
+	// longer verify against their recorded digest, an inventory record that
+	// does not decode or names another binding, a release target that is no
+	// effect of the release); it is never served or reconciled as valid.
 	ErrIntegrity = errors.New("integrity failure")
 	// ErrBudgetExhausted: an allocation or its pool cannot cover the amount.
 	ErrBudgetExhausted = errors.New("budget exhausted")
 	// ErrForbidden: current authority (commercial evidence, grant policy)
 	// denies the action.
 	ErrForbidden = errors.New("forbidden")
-	// ErrEvidenceInsufficient: the evidence offered for a not-sent
-	// confirmation is not independently checkable; the call stays unknown.
+	// ErrEvidenceInsufficient: the evidence offered does not settle the
+	// obligation (a not-sent confirmation that is not independently
+	// checkable, a definite outcome without its usage or receipt); the call
+	// or effect keeps its state.
 	ErrEvidenceInsufficient = errors.New("evidence insufficient")
 	// ErrUnavailable: a dependency the request needs (an object store, an
 	// upstream) is not configured or cannot answer; nothing was decided.
@@ -96,10 +102,13 @@ type Scope struct {
 }
 
 // RoleOperator is the role of a user who may run recovery, dispose
-// obligations and act on operations of every project of the tenant.
+// obligations, read the tenant's finance records and act on operations of
+// every project of the tenant.
 const RoleOperator = "operator"
 
-// RolePlatformOperator may begin a recovery run of every tenant ("*").
+// RolePlatformOperator may begin a recovery run of every tenant ("*"),
+// publish prices, fund pools and set cost caps, and read the finance
+// records of every tenant.
 const RolePlatformOperator = "platform_operator"
 
 // HasRole reports whether the scope holds the verified role.

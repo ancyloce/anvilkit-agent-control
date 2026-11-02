@@ -27,6 +27,7 @@ const (
 // AUTHORIZED means the permission was consumed, not that bytes were sent;
 // only the request that moved prepared to authorized was told so. Nothing
 // ever moves a call back to prepared or issues a second permission.
+// Evidence closes a prepared call as confirmed_not_sent too.
 type DispatchState string
 
 const (
@@ -98,8 +99,8 @@ func (d *Dispatch) Terminal() bool {
 }
 
 // Settled reports whether the reservation of the call has been released or
-// converted: only an observed or confirmed-not-sent call no longer holds
-// exposure.
+// converted: only an observed, confirmed-not-sent or denied call no longer
+// holds exposure.
 func (d *Dispatch) Settled() bool {
 	return d.State == DispatchObserved || d.State == DispatchConfirmedNotSent || d.State == DispatchDenied
 }

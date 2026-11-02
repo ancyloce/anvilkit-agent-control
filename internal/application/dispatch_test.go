@@ -38,9 +38,9 @@ const (
 var usd = func(amount int64) domain.Money { return domain.Money{Currency: "USD", Amount: amount} }
 
 // fixturePrices are DEVELOPMENT_ONLY observations for one model route
-// (bound to its trusted provider/model) and one tool route (per-million
-// unit prices at scale 6). Every unit price is multiplied by factor so a
-// second observation of the same route can be told apart in the ledger.
+// (bound to its trusted provider/model) and two tool routes, one priced and
+// one free (per-million unit prices at scale 6). Unit prices are multiplied
+// by factor so a second observation of a route can be told apart.
 func fixturePrices(t *testing.T, revision string, factor int64) application.PriceBook {
 	t.Helper()
 	perMillion := map[domain.UsageCategory]int64{domain.UsageInput: 3_000_000 * factor, domain.UsageOutput: 15_000_000 * factor, domain.UsageReasoning: 15_000_000 * factor, domain.UsageCachedInput: 300_000 * factor}
@@ -178,9 +178,9 @@ func (h *hookedInventory) setHook(fn func(key string)) {
 	h.onPut = fn
 }
 
-// assertNoLocksHeld takes NOWAIT row locks on the dispatch, its operation
-// and its allocations from another connection: any lock still held by the
-// admission would make the probe fail with lock_not_available.
+// assertNoLocksHeld takes NOWAIT row locks on the dispatch, its operation,
+// its allocations and its attempt from another connection: any lock still
+// held by the admission would make the probe fail with lock_not_available.
 func (h *hookedInventory) assertNoLocksHeld(ctx context.Context, key string) {
 	var id string
 	if _, err := fmt.Sscanf(key, "model-dispatch/%s", &id); err != nil {
