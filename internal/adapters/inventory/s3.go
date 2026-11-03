@@ -9,36 +9,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/s3client"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/s3errors"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
 
 // S3Config names the backend, the bucket and the key prefix of the
-// obligation inventory. The credentials are secrets and arrive only from
-// the environment or the mounted secret file their *_file key names
-// (config.InventoryS3). Endpoint is the S3 API of the backend (an RGW
-// endpoint, or an S3-compatible development store); PathStyle addresses
-// the bucket in the path, which RGW and MinIO deployments commonly need.
-type S3Config struct {
-	Endpoint        string
-	Region          string
-	Bucket          string
-	Prefix          string
-	PathStyle       bool
-	AccessKeyID     string
-	SecretAccessKey string
-}
+// obligation inventory (s3client.Config).
+type S3Config = s3client.Config
 
 // S3 is the obligation inventory on an S3-compatible backend through the
 // AWS SDK for Go v2. Conditional creation uses the If-None-Match: *
@@ -47,49 +33,16 @@ type S3Config struct {
 // Versions are the backend's VersionId when the bucket is versioned,
 // otherwise the ETag. Listing uses ListObjectsV2 continuation tokens so an
 // interrupted enumeration resumes from its cursor.
-//
-// The SDK's request checksum calculation and response validation are set
-// to WhenRequired: the default WhenSupported adds CRC-based trailers that
-// S3-compatible backends do not uniformly accept.
 type S3 struct {
 	client *s3.Client
 	bucket string
 	prefix string
 }
 
-// s3RequestTimeout bounds one request to the S3 backend.
-const s3RequestTimeout = 60 * time.Second
-
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
-	if cfg.Bucket == "" || cfg.Endpoint == "" || cfg.Region == "" {
-		return nil, fmt.Errorf("%w: inventory s3 needs an endpoint, a region and a bucket", domain.ErrInvalid)
-	}
-	if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
-		return nil, fmt.Errorf("%w: inventory s3 credentials are missing", domain.ErrInvalid)
-	}
-	awsCfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(cfg.Region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, "")),
-		config.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
-		config.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
-		// The SDK's own retry loop would repeat a conditional create whose
-		// first answer was lost; the application reenters the same key and
-		// body under its own rules instead.
-		config.WithRetryMaxAttempts(1),
-	)
+	client, prefix, err := s3client.New(ctx, "inventory s3", cfg)
 	if err != nil {
 		return nil, err
-	}
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(cfg.Endpoint)
-		o.UsePathStyle = cfg.PathStyle
-		// Every request to the backend is bounded (P1.4): a hung store
-		// never holds a Control transaction's caller open.
-		o.HTTPClient = &http.Client{Timeout: s3RequestTimeout}
-	})
-	prefix := strings.Trim(cfg.Prefix, "/")
-	if prefix != "" {
-		prefix += "/"
 	}
 	return &S3{client: client, bucket: cfg.Bucket, prefix: prefix}, nil
 }

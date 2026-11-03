@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 
+	"go.uber.org/fx"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -36,8 +38,9 @@ func serverIdentity(cfg config.Config, log *slog.Logger) (*grpctransport.Identit
 
 // clientCredentials is the gRPC transport credential of an outbound
 // connection (Temporal, OTLP) under a ClientTLS section. The mtls form
-// rotates with its own files; tls verifies against the bundle read once.
-func clientCredentials(name string, t config.ClientTLS, development bool, log *slog.Logger) (credentials.TransportCredentials, error) {
+// rotates with its own files, polled from start to stop of the process
+// lifecycle; tls verifies against the bundle read once.
+func clientCredentials(lc fx.Lifecycle, name string, t config.ClientTLS, development bool, log *slog.Logger) (credentials.TransportCredentials, error) {
 	switch t.Mode {
 	case "development":
 		if !development {
@@ -56,19 +59,27 @@ func clientCredentials(name string, t config.ClientTLS, development bool, log *s
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		r.Start()
 		creds, err := identity.NewClientCredentials(r, t.ServerName)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
+		followLifecycle(lc, r)
 		return creds, nil
 	}
 	return nil, fmt.Errorf("%s: unknown mode %q", name, t.Mode)
 }
 
+// followLifecycle polls r from the start to the stop of the process.
+func followLifecycle(lc fx.Lifecycle, r *identity.Reloader) {
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error { r.Start(); return nil },
+		OnStop:  func(context.Context) error { r.Stop(); return nil },
+	})
+}
+
 // clientTransport is clientCredentials as a dial option (Temporal).
-func clientTransport(name string, t config.ClientTLS, development bool, log *slog.Logger) (grpc.DialOption, error) {
-	c, err := clientCredentials(name, t, development, log)
+func clientTransport(lc fx.Lifecycle, name string, t config.ClientTLS, development bool, log *slog.Logger) (grpc.DialOption, error) {
+	c, err := clientCredentials(lc, name, t, development, log)
 	if err != nil {
 		return nil, err
 	}

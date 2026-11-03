@@ -37,7 +37,7 @@ func newTracer(lc fx.Lifecycle, cfg config.Config) (trace.Tracer, error) {
 	if cfg.Telemetry.OTLPEndpoint == "" {
 		return noop.NewTracerProvider().Tracer(serviceName), nil
 	}
-	creds, err := clientCredentials("telemetry.otlp_tls", cfg.Telemetry.OTLPTLS, cfg.Development.Enabled, slog.Default())
+	creds, err := clientCredentials(lc, "telemetry.otlp_tls", cfg.Telemetry.OTLPTLS, cfg.Development.Enabled, slog.Default())
 	if err != nil {
 		return nil, err
 	}

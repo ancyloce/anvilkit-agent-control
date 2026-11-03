@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 
@@ -51,7 +53,11 @@ func startEvents(lc fx.Lifecycle, cfg config.Config, pool *pgxpool.Pool, notifie
 		log.Warn("DEVELOPMENT_ONLY: event publication disabled; operation events accumulate in the outbox and reach no consumer")
 		return nil
 	}
-	var natsTLS *tls.Config
+	var (
+		natsTLS      *tls.Config
+		natsRoots    func() (*x509.CertPool, error)
+		natsIdentity *identity.Reloader
+	)
 	switch e.NATS.TLS.Mode {
 	case "development":
 		if !cfg.Development.Enabled {
@@ -69,14 +75,17 @@ func startEvents(lc fx.Lifecycle, cfg config.Config, pool *pgxpool.Pool, notifie
 		if err != nil {
 			return fmt.Errorf("events.nats.tls: %w", err)
 		}
-		r.Start()
+		// The certificate (ClientTLSConfig) and the roots (natsRoots) are
+		// read from r at every connect and reconnect handshake.
 		natsTLS = identity.ClientTLSConfig(r, e.NATS.TLS.ServerName)
+		natsRoots = func() (*x509.CertPool, error) { return r.Current().Pool, nil }
+		natsIdentity = r
 	default:
 		return fmt.Errorf("events.nats.tls: unknown mode %q", e.NATS.TLS.Mode)
 	}
 	m := newEventMetrics(reg)
 	nc, err := outbox.Connect(outbox.NATSConfig{
-		URL: e.NATS.URL, Name: e.NATS.Name, PublishTimeout: e.NATS.PublishTimeout, TLS: natsTLS,
+		URL: e.NATS.URL, Name: e.NATS.Name, PublishTimeout: e.NATS.PublishTimeout, TLS: natsTLS, RootCAs: natsRoots,
 		CredsFile: e.NATS.CredsFile, CredsNKey: e.NATS.CredsKind == config.NATSCredsNKey,
 	})
 	if err != nil {
@@ -131,7 +140,37 @@ func startEvents(lc fx.Lifecycle, cfg config.Config, pool *pgxpool.Pool, notifie
 			return err
 		},
 	})
+	if natsIdentity != nil {
+		// Appended after the hook above, so it stops polling before the
+		// connection closes.
+		followNATSTrust(natsIdentity, nc, log)
+		followLifecycle(lc, natsIdentity)
+	}
 	return nil
+}
+
+// followNATSTrust reconnects nc when a reload retires the root that
+// verified its server, so the connection is rebuilt under the current
+// bundle (NATSConfig.RootCAs); a connection whose root is still trusted is
+// kept, and one that is not connected verifies under the current bundle
+// when it reconnects. The reconnect is the client's ordinary one:
+// publications in flight are buffered or fail and are redelivered by the
+// forwarder (Nats-Msg-Id absorbs a duplicate).
+func followNATSTrust(r *identity.Reloader, nc *nats.Conn, log *slog.Logger) {
+	r.OnChange(func(_, current *identity.Material) {
+		state, err := nc.TLSConnectionState()
+		if err != nil {
+			return
+		}
+		if chains := state.VerifiedChains; len(chains) > 0 && len(chains[0]) > 0 && current.TrustsRoot(chains[0][len(chains[0])-1]) {
+			return
+		}
+		if err := nc.ForceReconnect(); err != nil {
+			log.Warn("NATS reconnect after a trust retirement failed; the connection keeps its retired trust", "error", err)
+			return
+		}
+		log.Info("NATS connection of retired trust reconnecting under the current bundle")
+	})
 }
 
 // retainOutbox reports the forwarding lag every 15 s and deletes

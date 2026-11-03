@@ -124,8 +124,8 @@ func Module() fx.Option {
 				return application.NewArtifacts(store, objects, application.ArtifactLimits{MaxObjectBytes: cfg.Artifacts.MaxObjectBytes, MaxWindow: cfg.Artifacts.MaxWindow, CapabilityTTL: cfg.Artifacts.CapabilityTTL, FinalizeConcurrency: cfg.Artifacts.FinalizeConcurrency}, clock, log)
 			},
 			func() application.ManifestValidator { return jobs.Contract{} },
-			func(cfg config.Config, log *slog.Logger) (client.Client, error) {
-				transport, err := clientTransport("temporal.tls", cfg.Temporal.TLS, cfg.Development.Enabled, log)
+			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (client.Client, error) {
+				transport, err := clientTransport(lc, "temporal.tls", cfg.Temporal.TLS, cfg.Development.Enabled, log)
 				if err != nil {
 					return nil, err
 				}
@@ -203,7 +203,7 @@ func Module() fx.Option {
 					return nil, err
 				}
 				if reloader != nil {
-					lc.Append(fx.Hook{OnStart: func(context.Context) error { reloader.Start(); return nil }, OnStop: func(context.Context) error { reloader.Stop(); return nil }})
+					followLifecycle(lc, reloader)
 				}
 				return grpctransport.NewServerWithIdentity(cfg.GRPC.Listen, id,
 					grpctransport.Capacity{Control: cfg.GRPC.ControlCapacity, Execution: cfg.GRPC.ExecutionCapacity, Streams: cfg.GRPC.StreamCapacity, StreamPerTenant: cfg.GRPC.StreamPerTenant, CommandReserve: cfg.GRPC.CommandReserve},

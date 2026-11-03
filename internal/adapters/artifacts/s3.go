@@ -24,28 +24,17 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/s3client"
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/s3errors"
 	"github.com/ancyloce/anvilkit-agent-control/internal/application"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
 
-// S3Config names the artifact backend. The credentials are secrets and
-// arrive only from the environment or the mounted secret file their *_file
-// key names (config.InventoryS3); they must be a different identity from
-// the inventory's.
-type S3Config struct {
-	Endpoint        string
-	Region          string
-	Bucket          string
-	Prefix          string
-	PathStyle       bool
-	AccessKeyID     string
-	SecretAccessKey string
-}
+// S3Config names the artifact backend (s3client.Config); its credentials
+// must be a different identity from the inventory's.
+type S3Config = s3client.Config
 
 // S3 is the artifact store on a versioned S3-compatible bucket.
 type S3 struct {
@@ -55,36 +44,10 @@ type S3 struct {
 	prefix  string
 }
 
-// s3RequestTimeout bounds one request to the S3 backend.
-const s3RequestTimeout = 60 * time.Second
-
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
-	if cfg.Bucket == "" || cfg.Endpoint == "" || cfg.Region == "" {
-		return nil, fmt.Errorf("%w: artifacts s3 needs an endpoint, a region and a bucket", domain.ErrInvalid)
-	}
-	if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
-		return nil, fmt.Errorf("%w: artifacts s3 credentials are missing", domain.ErrInvalid)
-	}
-	awsCfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(cfg.Region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, "")),
-		config.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
-		config.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
-		config.WithRetryMaxAttempts(1),
-	)
+	client, prefix, err := s3client.New(ctx, "artifacts s3", cfg)
 	if err != nil {
 		return nil, err
-	}
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(cfg.Endpoint)
-		o.UsePathStyle = cfg.PathStyle
-		// Every request to the backend is bounded (P1.4): a hung store
-		// never holds a Control transaction's caller open.
-		o.HTTPClient = &http.Client{Timeout: s3RequestTimeout}
-	})
-	prefix := strings.Trim(cfg.Prefix, "/")
-	if prefix != "" {
-		prefix += "/"
 	}
 	return &S3{client: client, presign: s3.NewPresignClient(client), bucket: cfg.Bucket, prefix: prefix}, nil
 }

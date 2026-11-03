@@ -128,11 +128,6 @@ func (u Usage) Get(c UsageCategory) uint64 {
 	return 0
 }
 
-// Max is the per-category running maximum of two cumulative reports.
-func (u Usage) Max(o Usage) Usage {
-	return Usage{Input: max(u.Input, o.Input), Output: max(u.Output, o.Output), Reasoning: max(u.Reasoning, o.Reasoning), CachedInput: max(u.CachedInput, o.CachedInput)}
-}
-
 // Price is one immutable pricing observation: it binds a route of a
 // dispatch kind — for a model route the trusted provider and model it
 // reaches — a currency, an effective interval and the price of every

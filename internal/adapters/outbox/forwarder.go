@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"time"
 
@@ -26,6 +27,10 @@ type NATSConfig struct {
 	// TLS is the verified transport (nil under the DEVELOPMENT_ONLY
 	// plaintext foundation, admitted by the configuration guard only).
 	TLS *tls.Config
+	// RootCAs, when set, supplies the roots of every connect and reconnect
+	// handshake in place of TLS.RootCAs (the rotating workload bundle), so
+	// a reconnect verifies the server under the current trust.
+	RootCAs func() (*x509.CertPool, error)
 	// CredsFile is the mounted client credential, a user .creds file or,
 	// with CredsNKey, a bare NKey user seed; empty only under the
 	// DEVELOPMENT_ONLY foundation.
@@ -41,6 +46,9 @@ func Connect(cfg NATSConfig) (*nats.Conn, error) {
 	opts := []nats.Option{nats.Name(cfg.Name), nats.Timeout(cfg.PublishTimeout), nats.MaxReconnects(-1), nats.RetryOnFailedConnect(false)}
 	if cfg.TLS != nil {
 		opts = append(opts, nats.Secure(cfg.TLS))
+	}
+	if cfg.RootCAs != nil {
+		opts = append(opts, nats.ClientTLSConfig(nil, cfg.RootCAs))
 	}
 	switch {
 	case cfg.CredsFile == "":
