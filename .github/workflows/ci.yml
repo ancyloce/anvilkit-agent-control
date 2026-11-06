@@ -59,9 +59,22 @@ jobs:
           --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
           --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
           --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
+          --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
       - run: >-
           helm template anvilkit-agent-control deploy/chart --set database.secret.name=control-database --set temporal.address=temporal:7233
           --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
           --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
           --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
-          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443 > /dev/null
+          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
+          --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001 > /dev/null
+      - name: Refuse a tag-only image outside development (RB-S10)
+        run: |
+          sets=(--set database.secret.name=control-database --set temporal.address=temporal:7233
+            --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
+            --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
+            --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
+            --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443)
+          if out=$(helm template anvilkit-agent-control deploy/chart "${sets[@]}" 2>&1); then echo "rendered a tag-only image outside development"; exit 1; fi
+          echo "$out" | grep -q "image.digest is required outside development" || { echo "$out"; exit 1; }
+          # The development guard keeps the tag (DEVELOPMENT_ONLY).
+          helm template anvilkit-agent-control deploy/chart "${sets[@]}" --set development.enabled=true > /dev/null
