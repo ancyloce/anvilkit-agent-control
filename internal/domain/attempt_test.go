@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,5 +100,24 @@ func TestSettleCloseKeepsCancelPendingWhileCleanupUnknown(t *testing.T) {
 	SettleClose(op4, at4, st, OutcomeCompleted, CleanupComplete, "", false)
 	if op4.Lifecycle != LifecycleSucceeded {
 		t.Fatalf("certified with complete cleanup: %s", op4.Lifecycle)
+	}
+}
+
+// RB-S07: an instance is registered only for the image the launch was
+// inventoried for. The Workflow reports the digest the node observed running,
+// and a different one is refused as STALE_EXECUTION.
+func TestNewInstanceRefusesAnObservedImageThatDiffersFromTheLaunch(t *testing.T) {
+	launched := Digest("sha256:" + strings.Repeat("a", 64))
+	l := &Launch{ID: "lch_1", AttemptID: "att_1", LaunchKey: "lc-1", Backend: "kind", ImageDigest: launched, LaunchEpoch: 1}
+	now := time.Now()
+	if _, err := NewInstance(l, "job-1", "pod-1", Digest("sha256:"+strings.Repeat("b", 64)), false, now); !errors.Is(err, ErrStaleExecution) {
+		t.Fatalf("a different observed image: got %v, want ErrStaleExecution", err)
+	}
+	if _, err := NewInstance(l, "job-1", "pod-1", "", false, now); !errors.Is(err, ErrStaleExecution) {
+		t.Fatalf("no observed image: got %v, want ErrStaleExecution", err)
+	}
+	inst, err := NewInstance(l, "job-1", "pod-1", launched, false, now)
+	if err != nil || !inst.Current || inst.ImageDigest != launched {
+		t.Fatalf("the launched image observed: got %+v, %v", inst, err)
 	}
 }
