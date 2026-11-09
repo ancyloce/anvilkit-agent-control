@@ -47,6 +47,7 @@ func TestControlSchema(t *testing.T) {
 	for _, stmt := range []string{
 		fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD 'app'", app),
 		fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD 'migrator'", migrator),
+		"CREATE ROLE anvilkit_control_retention LOGIN PASSWORD 'retention'",
 		fmt.Sprintf("CREATE DATABASE %s OWNER %s", dbName, migrator),
 	} {
 		_, err := admin.ExecContext(ctx, stmt)
@@ -141,6 +142,17 @@ func TestControlSchema(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege('anvilkit_control_app', 'lineage_identities', 'INSERT'), has_table_privilege('anvilkit_control_app', 'lineage_identities', 'UPDATE')`).Scan(&insert, &update))
 	require.True(t, insert)
 	require.False(t, update)
+	// 00019 (RB-A27): the retention identity reads operations and deletes
+	// their events, nothing else; the app role still never deletes one.
+	var retDelete, retInsert, retUpdate, appDelete bool
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege('anvilkit_control_retention', 'operation_events', 'DELETE'),
+		has_table_privilege('anvilkit_control_retention', 'operation_events', 'INSERT'),
+		has_table_privilege('anvilkit_control_retention', 'operations', 'UPDATE'),
+		has_table_privilege('anvilkit_control_app', 'operation_events', 'DELETE')`).Scan(&retDelete, &retInsert, &retUpdate, &appDelete))
+	require.True(t, retDelete)
+	require.False(t, retInsert)
+	require.False(t, retUpdate)
+	require.False(t, appDelete)
 }
 
 // grantPolicyBarrier: 00010 keeps one registration per (tenant, command),

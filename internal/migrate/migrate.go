@@ -31,7 +31,7 @@ const Domain = "control"
 
 // Latest is the migration version an empty database reaches from
 // 00001_init.sql plus the forward migrations of this build.
-const Latest int64 = 18
+const Latest int64 = 19
 
 // Options are the safety bounds of a migration run (P3.7, plan 0004).
 type Options struct {
