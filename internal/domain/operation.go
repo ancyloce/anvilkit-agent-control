@@ -492,7 +492,7 @@ type CancelDecision struct {
 // and an active operation installs the fence first.
 func (o *Operation) DecideCancel(expected Revision, sendersQuiescent bool) (CancelDecision, error) {
 	if expected != o.Revision {
-		return CancelDecision{}, fmt.Errorf("%w: expected %d, current %d", ErrRevisionConflict, expected, o.Revision)
+		return CancelDecision{}, NewRevisionConflict(uint64(expected), uint64(o.Revision), "expected %d, current %d", expected, o.Revision)
 	}
 	switch {
 	case o.Lifecycle.Terminal():

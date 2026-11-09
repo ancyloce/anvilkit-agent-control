@@ -103,7 +103,7 @@ func ApplyPreview(op *Operation, cur *Preview, r PreviewRecord, now time.Time) (
 		}
 	}
 	if r.ExpectedRevision != rev {
-		return nil, false, fmt.Errorf("%w: preview of %s is at revision %d, the record expects %d", ErrRevisionConflict, op.ID, rev, r.ExpectedRevision)
+		return nil, false, NewRevisionConflict(r.ExpectedRevision, rev, "preview of %s is at revision %d, the record expects %d", op.ID, rev, r.ExpectedRevision)
 	}
 	if !slices.Contains(previewNext[state], r.State) {
 		return nil, false, fmt.Errorf("%w: preview of %s cannot move from %q to %q", ErrInvalid, op.ID, state, r.State)

@@ -165,7 +165,7 @@ type ControlDecision struct {
 // Nothing here resets a deadline, a budget or an accepted effect.
 func (o *Operation) DecideControl(profile Profile, kind CommandKind, expected Revision, target string, now time.Time) (ControlDecision, error) {
 	if expected != o.Revision {
-		return ControlDecision{}, fmt.Errorf("%w: expected %d, current %d", ErrRevisionConflict, expected, o.Revision)
+		return ControlDecision{}, NewRevisionConflict(uint64(expected), uint64(o.Revision), "expected %d, current %d", expected, o.Revision)
 	}
 	if !profile.SupportsControl {
 		return ControlDecision{Outcome: OutcomeRejected, ReasonCode: "UNSUPPORTED_BY_PROFILE"}, nil

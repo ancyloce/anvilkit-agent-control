@@ -369,7 +369,7 @@ func ApplyRelease(op *Operation, cur *Release, r ReleaseRecord, cert *ReleaseCer
 		}
 	}
 	if r.ExpectedRevision != rev {
-		return nil, false, fmt.Errorf("%w: release of %s is at revision %d, the record expects %d", ErrRevisionConflict, op.ID, rev, r.ExpectedRevision)
+		return nil, false, NewRevisionConflict(r.ExpectedRevision, rev, "release of %s is at revision %d, the record expects %d", op.ID, rev, r.ExpectedRevision)
 	}
 	if !slices.Contains(releaseNext[state], r.State) {
 		return nil, false, fmt.Errorf("%w: release of %s cannot move from %q to %q", ErrInvalid, op.ID, state, r.State)

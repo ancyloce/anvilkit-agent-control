@@ -135,7 +135,7 @@ func NewAnswer(op *Operation, qs *QuestionSet, t *Transfer, cmd CommandIdentity,
 		return nil, fmt.Errorf("%w: operation %s is %s (%s)", ErrStaleExecution, op.ID, op.Lifecycle, op.Control)
 	}
 	if qs.Revision != revision {
-		return nil, fmt.Errorf("%w: question set %s is at revision %d, the answer names %d", ErrRevisionConflict, qs.ID, qs.Revision, revision)
+		return nil, NewRevisionConflict(revision, qs.Revision, "question set %s is at revision %d, the answer names %d", qs.ID, qs.Revision, revision)
 	}
 	if qs.State != QuestionSetOpen {
 		return nil, fmt.Errorf("%w: question set %s is %s", ErrStaleExecution, qs.ID, qs.State)

@@ -22,6 +22,7 @@ var (
 	// ErrIdempotencyConflict: same command identity with a different digest.
 	ErrIdempotencyConflict = errors.New("idempotency conflict")
 	// ErrRevisionConflict: expected revision does not match the current one.
+	// Where both revisions are known it is a *RevisionConflict.
 	ErrRevisionConflict = errors.New("revision conflict")
 	// ErrStaleExecution: the operation, attempt or instance is fenced, not
 	// current, or terminal for the requested action.
@@ -54,6 +55,27 @@ var (
 	// upstream) is not configured or cannot answer; nothing was decided.
 	ErrUnavailable = errors.New("dependency unavailable")
 )
+
+// RevisionConflict is an ErrRevisionConflict that knows both revisions: the
+// one the caller expected and the one the record is at. The transport carries
+// them to the public error's details.expectedRevision and
+// details.currentRevision (RB-A23); the message is the text the plain error
+// had ("revision conflict: " and the detail).
+type RevisionConflict struct {
+	Expected, Current uint64
+	msg               string
+}
+
+// NewRevisionConflict builds the conflict; format and args are the detail
+// after "revision conflict: ".
+func NewRevisionConflict(expected, current uint64, format string, args ...any) error {
+	return &RevisionConflict{Expected: expected, Current: current, msg: ErrRevisionConflict.Error() + ": " + fmt.Sprintf(format, args...)}
+}
+
+func (e *RevisionConflict) Error() string { return e.msg }
+
+// Unwrap makes errors.Is(err, ErrRevisionConflict) hold.
+func (e *RevisionConflict) Unwrap() error { return ErrRevisionConflict }
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
