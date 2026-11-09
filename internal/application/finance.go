@@ -265,7 +265,7 @@ func (f *Finance) AdjustPool(ctx context.Context, cmd domain.CommandIdentity, sc
 			return err
 		}
 		if locked.Revision != expected {
-			return fmt.Errorf("%w: pool %s is at revision %d, not %d", domain.ErrRevisionConflict, poolID, locked.Revision, expected)
+			return domain.NewRevisionConflict(expected, locked.Revision, "pool %s is at revision %d, not %d", poolID, locked.Revision, expected)
 		}
 		if locked.Currency != capAmount.Currency {
 			return fmt.Errorf("%w: pool %s is in %s", domain.ErrInvalid, poolID, locked.Currency)
@@ -333,7 +333,7 @@ func (f *Finance) SetCostCap(ctx context.Context, cmd domain.CommandIdentity, sc
 			return err
 		}
 		if expected != nil && locked.Revision != *expected {
-			return fmt.Errorf("%w: cost cap %s is at revision %d, not %d", domain.ErrRevisionConflict, locked.ID, locked.Revision, *expected)
+			return domain.NewRevisionConflict(*expected, locked.Revision, "cost cap %s is at revision %d, not %d", locked.ID, locked.Revision, *expected)
 		}
 		locked.Cap, locked.UpdatedBy, locked.UpdatedAt = capAmount.Amount, cmd.ActorID, now
 		locked.Revision++
