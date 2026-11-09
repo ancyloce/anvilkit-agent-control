@@ -423,6 +423,32 @@ type Events struct {
 	NATS              NATS          `koanf:"nats"`
 }
 
+// Retention deletes operation events (RB-A27) under the retention identity
+// (anvilkit_control_retention, granted by migration 00019: SELECT on
+// operations, SELECT and DELETE on operation_events, nothing else), never
+// the app role. OperationEvents is the retention period, the data owner's
+// input (ENV-09): the events of an operation that is terminal, settled,
+// with its cleanup resolved and unchanged for that long are deleted before
+// the newest attempt-bound event its snapshot projects; a cursor before the
+// kept events then answers RESET_REQUIRED. Every Interval it prunes Batch
+// operations per pass until a pass finds fewer.
+// The database URL (ANVILKIT_CONTROL_RETENTION_DATABASE_URL or _FILE) is
+// required outside development; without it (development only) every event
+// is kept.
+type Retention struct {
+	Database        RetentionDatabase `koanf:"database"`
+	OperationEvents time.Duration     `koanf:"operation_events"`
+	Interval        time.Duration     `koanf:"interval"`
+	Batch           int               `koanf:"batch"`
+}
+
+// RetentionDatabase is the retention identity's connection: URL (env-only)
+// or URLFile, a mounted secret read once at load (exactly one of the two).
+type RetentionDatabase struct {
+	URL     string `koanf:"url"`
+	URLFile string `koanf:"url_file"`
+}
+
 // NATS is the replica's JetStream connection. TLS is accepted from the
 // file or the environment (ANVILKIT_CONTROL_NATS_TLS_{MODE,CA_FILE,
 // CERT_FILE,KEY_FILE,SERVER_NAME}); CredsFile is a placement
@@ -465,6 +491,7 @@ type Config struct {
 	Recovery    Recovery    `koanf:"recovery"`
 	ModelProxy  ModelProxy  `koanf:"model_proxy"`
 	Events      Events      `koanf:"events"`
+	Retention   Retention   `koanf:"retention"`
 }
 
 var defaults = map[string]any{
@@ -546,6 +573,8 @@ var defaults = map[string]any{
 	"events.nats.name":                       "anvilkit-agent-control",
 	"events.nats.publish_timeout":            "5s",
 	"events.nats.tls.mode":                   "tls",
+	"retention.interval":                     "1h",
+	"retention.batch":                        100,
 }
 
 // envOverrides is the complete set of accepted environment variables:
@@ -588,10 +617,12 @@ var envOverrides = map[string]string{
 	"ANVILKIT_CONTROL_NATS_TLS_CERT_FILE":                  "events.nats.tls.cert_file",
 	"ANVILKIT_CONTROL_NATS_TLS_KEY_FILE":                   "events.nats.tls.key_file",
 	"ANVILKIT_CONTROL_NATS_TLS_SERVER_NAME":                "events.nats.tls.server_name",
+	"ANVILKIT_CONTROL_RETENTION_DATABASE_URL":              "retention.database.url",
+	"ANVILKIT_CONTROL_RETENTION_DATABASE_URL_FILE":         "retention.database.url_file",
 }
 
 // secretKeys may only arrive through the environment.
-var secretKeys = []string{"database.url", "inventory.s3.access_key_id", "inventory.s3.secret_access_key", "artifacts.s3.access_key_id", "artifacts.s3.secret_access_key", "model_proxy.token"}
+var secretKeys = []string{"database.url", "retention.database.url", "inventory.s3.access_key_id", "inventory.s3.secret_access_key", "artifacts.s3.access_key_id", "artifacts.s3.secret_access_key", "model_proxy.token"}
 
 func Load() (Config, error) {
 	path := os.Getenv(EnvConfigFile)
@@ -656,6 +687,7 @@ func (c *Config) readSecretFiles() error {
 		file     string
 	}{
 		{"database.url", "ANVILKIT_CONTROL_DATABASE_URL", &c.Database.URL, c.Database.URLFile},
+		{"retention.database.url", "ANVILKIT_CONTROL_RETENTION_DATABASE_URL", &c.Retention.Database.URL, c.Retention.Database.URLFile},
 		{"inventory.s3.access_key_id", "ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID", &c.Inventory.S3.AccessKeyID, c.Inventory.S3.AccessKeyIDFile},
 		{"inventory.s3.secret_access_key", "ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY", &c.Inventory.S3.SecretAccessKey, c.Inventory.S3.SecretAccessKeyFile},
 		{"artifacts.s3.access_key_id", "ANVILKIT_CONTROL_ARTIFACTS_S3_ACCESS_KEY_ID", &c.Artifacts.S3.AccessKeyID, c.Artifacts.S3.AccessKeyIDFile},

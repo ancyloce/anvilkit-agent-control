@@ -20,7 +20,15 @@ func write(t *testing.T, body string) string {
 	return path
 }
 
-const bare = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    ca_file: /etc/anvilkit/identity/ca.crt\n"
+const bare = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    ca_file: /etc/anvilkit/identity/ca.crt\n" + retentionPeriod
+
+// retentionPeriod is the retention period of operation events (RB-A27), the
+// data owner's input (ENV-09).
+const retentionPeriod = "retention:\n  operation_events: 2160h\n"
+
+// retentionURL places the retention identity (RB-A27) a non-development
+// Control needs; bare carries the period (ENV-09).
+const retentionURL = "ANVILKIT_CONTROL_RETENTION_DATABASE_URL=postgres://anvilkit_control_retention:secret@127.0.0.1:25432/anvilkit_control?sslmode=verify-full"
 
 // production holds the authority inputs a non-development dispatch chain
 // needs (P2.1): the decision endpoint, a trusted evidence issuer and the
@@ -63,6 +71,7 @@ var env = []string{
 	"ANVILKIT_CONTROL_IDENTITY_KEY_FILE=/etc/anvilkit/identity/tls.key",
 	"ANVILKIT_CONTROL_IDENTITY_CA_FILE=/etc/anvilkit/identity/ca.crt",
 	"ANVILKIT_CONTROL_IDENTITY_TRUST_DOMAIN=anvilkit.local",
+	retentionURL,
 }
 
 func TestPrecedenceDefaultsFileEnvironment(t *testing.T) {
@@ -182,7 +191,7 @@ func TestInventoryS3BackendRequiresPlacementAndEnvOnlyCredentials(t *testing.T) 
 	require.ErrorContains(t, err, "inventory.s3.access_key_id")
 	_, err = config.LoadFrom(write(t, s3+"    access_key_id: AKIA\n"), env[:1])
 	require.ErrorContains(t, err, "inventory.s3.access_key_id is a secret")
-	c, err := config.LoadFrom(write(t, s3), append(append(env[:1:1], identityEnv...),
+	c, err := config.LoadFrom(write(t, s3), append(append(env[:1:1], identityEnv...), retentionURL,
 		"ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT=https://rgw.internal:7480", "ANVILKIT_CONTROL_INVENTORY_S3_BUCKET=anvilkit-inventory",
 		"ANVILKIT_CONTROL_INVENTORY_S3_ACCESS_KEY_ID=AKIA", "ANVILKIT_CONTROL_INVENTORY_S3_SECRET_ACCESS_KEY=secret"))
 	require.NoError(t, err)
@@ -433,7 +442,7 @@ func TestDataPlaneTLS(t *testing.T) {
 	const plainTemporal = "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    mode: development\n"
 	_, err = config.LoadFrom(write(t, plainTemporal), env)
 	require.ErrorContains(t, err, "temporal.tls.mode development (plaintext) requires development.enabled")
-	_, err = config.LoadFrom(write(t, plainTemporal+devDispatch), env)
+	_, err = config.LoadFrom(write(t, plainTemporal+devDispatch+retentionPeriod), env)
 	require.NoError(t, err)
 }
 
@@ -506,4 +515,52 @@ func TestEventPublicationIsRequiredOutsideDevelopment(t *testing.T) {
 	c, err = config.LoadFrom(write(t, dev+"events:\n  enabled: true\n  nats:\n    url: nats://127.0.0.1:24222\n    tls:\n      mode: development\n"), env)
 	require.NoError(t, err)
 	require.Empty(t, c.Events.NATS.CredsKind)
+}
+
+// TestOperationEventRetention (RB-A27): outside development the deletion of
+// operation events runs under its own identity, never the app role's DSN,
+// and only with the data owner's period; the URL is a secret like the app
+// role's. Development without the identity keeps every event.
+func TestOperationEventRetention(t *testing.T) {
+	c, err := config.LoadFrom(write(t, minimal), env)
+	require.NoError(t, err)
+	require.Equal(t, 2160*time.Hour, c.Retention.OperationEvents)
+	require.Equal(t, time.Hour, c.Retention.Interval)
+	require.Equal(t, 100, c.Retention.Batch)
+	require.Contains(t, c.Retention.Database.URL, "anvilkit_control_retention")
+
+	var noRetention []string
+	for _, kv := range env {
+		if kv != retentionURL {
+			noRetention = append(noRetention, kv)
+		}
+	}
+	_, err = config.LoadFrom(write(t, minimal), noRetention)
+	require.ErrorContains(t, err, "retention.database.url is required outside development")
+	c, err = config.LoadFrom(write(t, minimal+"development:\n  enabled: true\n"), noRetention)
+	require.NoError(t, err, "development without the identity keeps every event")
+	require.Empty(t, c.Retention.Database.URL)
+
+	noPeriod := "temporal:\n  address: 127.0.0.1:27233\n  tls:\n    ca_file: /etc/anvilkit/identity/ca.crt\n" + production
+	_, err = config.LoadFrom(write(t, noPeriod), env)
+	require.ErrorContains(t, err, "retention.operation_events 0s outside [24h, 87600h]")
+	_, err = config.LoadFrom(write(t, noPeriod+"retention:\n  operation_events: 1h\n"), env)
+	require.ErrorContains(t, err, "retention.operation_events 1h0m0s outside")
+	_, err = config.LoadFrom(write(t, noPeriod+"retention:\n  operation_events: 720h\n  interval: 10s\n  batch: 0\n"), env)
+	require.ErrorContains(t, err, "retention.interval 10s outside [1m, 24h]")
+	require.ErrorContains(t, err, "retention.batch 0 outside [1, 10000] operations per pass")
+
+	appDSN := strings.TrimPrefix(env[0], "ANVILKIT_CONTROL_DATABASE_URL=")
+	_, err = config.LoadFrom(write(t, minimal), append(noRetention, "ANVILKIT_CONTROL_RETENTION_DATABASE_URL="+appDSN))
+	require.ErrorContains(t, err, "retention.database.url must not be database.url")
+
+	_, err = config.LoadFrom(write(t, noPeriod+"retention:\n  operation_events: 720h\n  database:\n    url: postgres://x:y@db/anvilkit_control\n"), noRetention)
+	require.ErrorContains(t, err, "retention.database.url is a secret")
+
+	file := secretFile(t, "postgres://anvilkit_control_retention:file-secret@db.internal:5432/anvilkit_control?sslmode=verify-full\n")
+	c, err = config.LoadFrom(write(t, minimal), append(noRetention, "ANVILKIT_CONTROL_RETENTION_DATABASE_URL_FILE="+file))
+	require.NoError(t, err)
+	require.Equal(t, "postgres://anvilkit_control_retention:file-secret@db.internal:5432/anvilkit_control?sslmode=verify-full", c.Retention.Database.URL)
+	_, err = config.LoadFrom(write(t, minimal), append(env[:len(env):len(env)], "ANVILKIT_CONTROL_RETENTION_DATABASE_URL_FILE="+file))
+	require.ErrorContains(t, err, "retention.database.url and retention.database.url_file are mutually exclusive")
 }

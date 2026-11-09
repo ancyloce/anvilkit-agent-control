@@ -25,6 +25,7 @@ func (c Config) validate() error {
 	errs = append(errs, c.validateIdentity()...)
 	errs = append(errs, c.validateDataPlane()...)
 	errs = append(errs, c.validateEvents()...)
+	errs = append(errs, c.validateRetention()...)
 	req("database.url (ANVILKIT_CONTROL_DATABASE_URL or ANVILKIT_CONTROL_DATABASE_URL_FILE)", c.Database.URL)
 	if c.Telemetry.SampleRatio < 0 || c.Telemetry.SampleRatio > 1 {
 		errs = append(errs, fmt.Errorf("telemetry.sample_ratio %v outside [0, 1]", c.Telemetry.SampleRatio))
@@ -408,5 +409,29 @@ func (c Config) validateEvents() []error {
 	check(e.NATS.Name != "", "events.nats.name is required")
 	errs = append(errs, e.NATS.TLS.validate("events.nats.tls", true, c.Development.Enabled)...)
 	check(e.NATS.CredsFile != "" || c.Development.Enabled, "events.nats.creds_file is required outside development (ANVILKIT_CONTROL_NATS_CREDS_FILE: a NATS user .creds file or an NKey user seed)")
+	return errs
+}
+
+// validateRetention bounds the retention of operation events (RB-A27):
+// outside development it runs under its own identity, and the identity
+// never runs without the data owner's period (ENV-09). In development a
+// period without the identity keeps every event (a warning at start).
+func (c Config) validateRetention() []error {
+	r := c.Retention
+	var errs []error
+	check := func(ok bool, format string, args ...any) {
+		if !ok {
+			errs = append(errs, fmt.Errorf(format, args...))
+		}
+	}
+	check(r.Interval >= time.Minute && r.Interval <= 24*time.Hour, "retention.interval %s outside [1m, 24h]", r.Interval)
+	check(r.Batch >= 1 && r.Batch <= 10000, "retention.batch %d outside [1, 10000] operations per pass", r.Batch)
+	if r.Database.URL == "" {
+		check(c.Development.Enabled, "retention.database.url is required outside development (ANVILKIT_CONTROL_RETENTION_DATABASE_URL or _FILE): operation events are deleted under the retention identity (RB-A27)")
+		return errs
+	}
+	check(r.Database.URL != c.Database.URL, "retention.database.url must not be database.url: the retention identity is not the app role")
+	check(r.OperationEvents >= 24*time.Hour && r.OperationEvents <= 87600*time.Hour,
+		"retention.operation_events %s outside [24h, 87600h]: the period is the data owner's input (ENV-09)", r.OperationEvents)
 	return errs
 }
