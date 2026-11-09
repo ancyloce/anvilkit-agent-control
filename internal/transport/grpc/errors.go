@@ -7,10 +7,12 @@ import (
 	"errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -30,7 +32,7 @@ func toStatus(err error) error {
 	case errors.Is(err, domain.ErrIdempotencyConflict):
 		return status.Error(codes.Aborted, "IDEMPOTENCY_CONFLICT: "+err.Error())
 	case errors.Is(err, domain.ErrRevisionConflict):
-		return status.Error(codes.Aborted, "REVISION_CONFLICT: "+err.Error())
+		return revisionConflictStatus(err)
 	case errors.Is(err, domain.ErrStaleExecution):
 		return status.Error(codes.FailedPrecondition, "STALE_EXECUTION: "+err.Error())
 	case errors.Is(err, domain.ErrProfileUnqualified):
@@ -64,6 +66,33 @@ func toStatus(err error) error {
 		slog.Default().Error("unmapped control error", "error", err)
 		return status.Error(codes.Unavailable, "DEPENDENCY_UNAVAILABLE")
 	}
+}
+
+// Conflict details (RB-A23): a revision conflict that knows both revisions
+// carries them as a google.rpc.ErrorInfo status detail, so the API can fill
+// the public error's details.expectedRevision and details.currentRevision.
+// The values are canonical decimal sequences; the message is unchanged.
+const (
+	ConflictReason      = "REVISION_CONFLICT"
+	ConflictDomain      = "anvilkit.control.v1"
+	ConflictExpectedKey = "expectedRevision"
+	ConflictCurrentKey  = "currentRevision"
+)
+
+func revisionConflictStatus(err error) error {
+	st := status.New(codes.Aborted, "REVISION_CONFLICT: "+err.Error())
+	var rc *domain.RevisionConflict
+	if !errors.As(err, &rc) {
+		return st.Err()
+	}
+	detailed, derr := st.WithDetails(&errdetails.ErrorInfo{Reason: ConflictReason, Domain: ConflictDomain, Metadata: map[string]string{
+		ConflictExpectedKey: strconv.FormatUint(rc.Expected, 10),
+		ConflictCurrentKey:  strconv.FormatUint(rc.Current, 10),
+	}})
+	if derr != nil {
+		return st.Err()
+	}
+	return detailed.Err()
 }
 
 // Capacity bounds the server (P1.4): three independent pools (control,
