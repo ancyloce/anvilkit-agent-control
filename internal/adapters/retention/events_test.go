@@ -3,6 +3,7 @@ package retention_test
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,11 +95,13 @@ func TestOperationEventRetention(t *testing.T) {
 	ctx := context.Background()
 	old, now := time.Now().Add(-100*24*time.Hour), time.Now()
 
-	history(t, store, "op_old_step", old, true, succeeded, settled)  // events 1..4, step at 2
+	history(t, store, "op_old_step", old, true, succeeded, settled)   // events 1..4, step at 2
 	history(t, store, "op_old_plain", old, false, succeeded, settled) // events 1..3, no step
 	history(t, store, "op_old_extra", old, false, succeeded, settled) // a second candidate for the batch bound
 	history(t, store, "op_recent", now, true, succeeded, settled)
-	history(t, store, "op_unknown", old, false, succeeded, func(o *domain.Operation) { o.Finance, o.Cleanup = domain.FinanceExposureUnknown, domain.CleanupComplete })
+	history(t, store, "op_unknown", old, false, succeeded, func(o *domain.Operation) {
+		o.Finance, o.Cleanup = domain.FinanceExposureUnknown, domain.CleanupComplete
+	})
 	history(t, store, "op_cleanup", old, false, succeeded, func(o *domain.Operation) { o.Finance, o.Cleanup = domain.FinanceSettled, domain.CleanupPending })
 	history(t, store, "op_running", old, true)
 
@@ -108,10 +111,11 @@ func TestOperationEventRetention(t *testing.T) {
 	require.NoError(t, retention.VerifyIdentity(ctx, pool, "anvilkit_control_app"))
 	require.ErrorIs(t, retention.VerifyIdentity(ctx, app, "anvilkit_control_app"), retention.ErrIdentity, "the app role is refused")
 	require.ErrorIs(t, retention.VerifyIdentity(ctx, app, "someone_else"), retention.ErrIdentity, "the app role cannot delete events")
-	admin, err := pgxpool.New(ctx, inst.AdminDSN)
+	// The table owner (the migrator) on the Control database.
+	owner, err := pgxpool.New(ctx, strings.Replace(inst.RetentionDSN, "anvilkit_control_retention:retention@", "anvilkit_control_migrator:migrator@", 1))
 	require.NoError(t, err)
-	t.Cleanup(admin.Close)
-	require.ErrorIs(t, retention.VerifyIdentity(ctx, admin, "anvilkit_control_app"), retention.ErrIdentity, "a role that may append events is refused")
+	t.Cleanup(owner.Close)
+	require.ErrorIs(t, retention.VerifyIdentity(ctx, owner, "anvilkit_control_app"), retention.ErrIdentity, "a role that may append events is refused")
 
 	// The identity deletes events and nothing else.
 	for _, stmt := range []string{
