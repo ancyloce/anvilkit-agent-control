@@ -22,8 +22,9 @@ const obligationInterval = 30 * time.Second
 // startOperationalMetrics registers the operator's signals of P3.6 (the
 // runbooks' alerts read them): the gRPC capacity pools and their
 // CAPACITY_EXHAUSTED refusals, the database pool, the relay backlog by lane,
-// and the unresolved obligations by class and state with the age of the
-// oldest. Counts and ages only: no identifier reaches a label.
+// the unresolved obligations by class and state with the age of the oldest,
+// and the in-flight releases by state (RB-A26). Counts and ages only: no
+// identifier reaches a label.
 func startOperationalMetrics(lc fx.Lifecycle, pool *pgxpool.Pool, relay *application.Relay, srv *grpctransport.Server, reg *prometheus.Registry, log *slog.Logger) {
 	reg.MustRegister(srv.Collectors()...)
 	stat := func(f func(*pgxpool.Stat) float64) func() float64 { return func() float64 { return f(pool.Stat()) } }
@@ -44,8 +45,19 @@ func startOperationalMetrics(lc fx.Lifecycle, pool *pgxpool.Pool, relay *applica
 		Help: "Age of the oldest unresolved obligation by class and state; 0 when there is none."}, []string{"class", "state"})
 	failures := prometheus.NewCounter(prometheus.CounterOpts{Name: "anvilkit_control_unresolved_obligation_reads_failed_total", Help: "Failed reads of the obligation gauges."})
 	reg.MustRegister(count, oldest, failures)
+	releases := newReleaseGauges(reg)
 	q := sqlc.New(pool)
+	readReleases := func(ctx context.Context) {
+		rows, err := q.ReleaseStates(ctx)
+		if err != nil {
+			releases.failures.Inc()
+			log.Warn("release state gauges not refreshed", "error", err)
+			return
+		}
+		releases.set(rows)
+	}
 	read := func(ctx context.Context) {
+		readReleases(ctx)
 		rows, err := q.UnresolvedObligations(ctx)
 		if err != nil {
 			failures.Inc()
@@ -91,6 +103,43 @@ func startOperationalMetrics(lc fx.Lifecycle, pool *pgxpool.Pool, relay *applica
 			return nil
 		},
 	})
+}
+
+// inFlightReleaseStates are the release states the release gauges count
+// (RB-A26): every state a release can still leave (domain.ReleaseState).
+var inFlightReleaseStates = []string{"certifying", "awaiting_approval", "publishing", "partially_published", "reconciling"}
+
+// releaseGauges are the operator's release signals (RB-A26, the partial
+// publication incident): the in-flight releases by state and the age of the
+// oldest since its last transition. States only: no identifier is a label.
+type releaseGauges struct {
+	count, oldest *prometheus.GaugeVec
+	failures      prometheus.Counter
+}
+
+func newReleaseGauges(reg prometheus.Registerer) releaseGauges {
+	g := releaseGauges{
+		count: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "anvilkit_control_releases_in_flight",
+			Help: "Releases still in flight by state (certifying, awaiting_approval, publishing, partially_published, reconciling)."}, []string{"state"}),
+		oldest: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "anvilkit_control_release_oldest_seconds",
+			Help: "Age of the oldest in-flight release by state since its last transition; 0 when there is none."}, []string{"state"}),
+		failures: prometheus.NewCounter(prometheus.CounterOpts{Name: "anvilkit_control_release_state_reads_failed_total", Help: "Failed reads of the release state gauges."}),
+	}
+	reg.MustRegister(g.count, g.oldest, g.failures)
+	g.set(nil)
+	return g
+}
+
+// set publishes one read: every in-flight state is reset, then each row's.
+func (g releaseGauges) set(rows []sqlc.ReleaseStatesRow) {
+	for _, s := range inFlightReleaseStates {
+		g.count.WithLabelValues(s).Set(0)
+		g.oldest.WithLabelValues(s).Set(0)
+	}
+	for _, r := range rows {
+		g.count.WithLabelValues(r.State).Set(float64(r.Releases))
+		g.oldest.WithLabelValues(r.State).Set(r.OldestSeconds)
+	}
 }
 
 // newLifecycleLatency registers platform.md SLO row 2 (P3.6), observed by
