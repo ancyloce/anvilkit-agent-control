@@ -96,6 +96,16 @@ spec:
                   name: {{ .Values.database.secret.name }}
                   key: {{ .Values.database.secret.key }}
             {{- end }}
+            {{- if and $csi .Values.retention.enabled }}
+            - name: ANVILKIT_CONTROL_RETENTION_DATABASE_URL_FILE
+              value: /var/run/secrets/anvilkit/csi/retention-database-url
+            {{- else if and (not $csi) .Values.retention.secret.name }}
+            - name: ANVILKIT_CONTROL_RETENTION_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.retention.secret.name }}
+                  key: {{ .Values.retention.secret.key }}
+            {{- end }}
             - name: ANVILKIT_CONTROL_INVENTORY_S3_ENDPOINT
               value: {{ .Values.inventory.s3.endpoint | quote }}
             - name: ANVILKIT_CONTROL_INVENTORY_S3_BUCKET

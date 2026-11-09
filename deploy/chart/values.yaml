@@ -91,7 +91,8 @@ development:
 # holds the keys database-url, inventory-access-key-id,
 # inventory-secret-access-key, artifacts-access-key-id and
 # artifacts-secret-access-key (with artifacts.enabled), authority-token
-# (authority.identity token) and nats-creds (events.enabled) under the role
+# (authority.identity token), nats-creds (events.enabled) and
+# retention-database-url (retention.enabled) under the role
 # csi.role; the migration Job has its own ServiceAccount, role
 # (csi.migrationRole) and path (csi.migrationPath, key migration-dsn), so
 # neither reads the other's credential.
@@ -205,6 +206,24 @@ events:
       secret:
         name: ""
         key: creds
+
+# RB-A27: the retention of operation events under the retention identity
+# (anvilkit_control_retention: SELECT on operations, SELECT and DELETE on
+# operation_events, granted by migration 00019), never the app role. The
+# identity's URL (ANVILKIT_CONTROL_RETENTION_DATABASE_URL) is the CSI key
+# retention-database-url (enabled, under secrets.provider csi) or the key of
+# an existing Secret (secret.name, under kubernetes); required outside
+# development. operationEvents is the retention period, the data owner's
+# input (ENV-09), required while the identity is configured: the events of
+# an operation that is terminal, settled, with its cleanup resolved and
+# unchanged for that long are deleted before the newest attempt-bound event
+# its snapshot projects.
+retention:
+  enabled: false
+  operationEvents: ""
+  secret:
+    name: ""
+    key: url
 
 # The obligation inventory (DD-02 §5): in a cluster every replica must share
 # one backend, so the chart renders the S3 backend only (the filesystem

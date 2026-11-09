@@ -65,6 +65,13 @@ the digest is required (RB-S10); only development.enabled renders the tag
 {{- if not .Values.temporal.address }}
 {{- fail "temporal.address is required: the Temporal frontend (ANVILKIT_CONTROL_TEMPORAL_ADDRESS)" }}
 {{- end }}
+{{- $retention := or (and (not $kube) .Values.retention.enabled) (and $kube .Values.retention.secret.name) }}
+{{- if and (not $retention) (not .Values.development.enabled) }}
+{{- fail "retention.secret.name (secrets.provider kubernetes) or retention.enabled (csi) is required outside development: operation events are deleted under the retention identity, never the app role (RB-A27)" }}
+{{- end }}
+{{- if and $retention (not .Values.retention.operationEvents) }}
+{{- fail "retention.operationEvents is required while the retention identity is configured: the retention period is the data owner's input (ENV-09)" }}
+{{- end }}
 {{- if or (not .Values.inventory.s3.endpoint) (not .Values.inventory.s3.bucket) (and $kube (not .Values.inventory.s3.secret.name)) }}
 {{- fail "inventory.s3.endpoint, inventory.s3.bucket and inventory.s3.secret.name are required: the shared obligation inventory every replica uses (ANVILKIT_CONTROL_INVENTORY_S3_*)" }}
 {{- end }}
@@ -262,6 +269,10 @@ wired to the loader's keys. */}}
 {{- end -}}
 {{- $_ = set $ev "nats" (merge (dict "tls" $nt) (default (dict) $ev.nats)) -}}
 {{- $_ = set $cfg "events" $ev -}}
+{{- /* RB-A27: the retention period; the identity's URL is an environment placement. */ -}}
+{{- if .Values.retention.operationEvents }}
+{{- $_ = set $cfg "retention" (merge (dict "operation_events" .Values.retention.operationEvents) (default (dict) $cfg.retention)) -}}
+{{- end -}}
 {{- if .Values.telemetry.otlpEndpoint }}
 {{- $ot := dict "mode" .Values.telemetry.otlpTls.mode -}}
 {{- if ne .Values.telemetry.otlpTls.mode "development" }}
@@ -321,6 +332,9 @@ spec:
 {{- end -}}
 {{- if .Values.events.enabled -}}
 {{- $keys = append $keys "nats-creds" -}}
+{{- end -}}
+{{- if .Values.retention.enabled -}}
+{{- $keys = append $keys "retention-database-url" -}}
 {{- end -}}
 {{- toJson $keys -}}
 {{- end -}}
