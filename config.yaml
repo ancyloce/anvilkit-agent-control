@@ -188,3 +188,16 @@ events:
   nats:
     tls:
       mode: development
+# RB-A27: the retention of operation events. operation_events is the
+# retention period, the data owner's input (ENV-09; this value is
+# DEVELOPMENT_ONLY): an operation that is terminal, settled, with its
+# cleanup resolved and unchanged for that long loses its events before the
+# newest attempt-bound one its snapshot projects; every interval, batch
+# operations are pruned per pass until a pass finds fewer. The deletion runs under
+# the retention identity (anvilkit_control_retention,
+# ANVILKIT_CONTROL_RETENTION_DATABASE_URL or _FILE), never the app role;
+# without it (development only) every event is kept.
+retention:
+  operation_events: 2160h
+  interval: 1h
+  batch: 100
