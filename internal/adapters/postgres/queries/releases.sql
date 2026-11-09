@@ -28,3 +28,14 @@ ON CONFLICT (tenant_id, lineage) DO NOTHING;
 
 -- name: GetLineageIdentity :one
 SELECT * FROM lineage_identities WHERE tenant_id = $1 AND lineage = $2;
+
+-- name: ReleaseStates :many
+-- RB-A26: the releases still in flight by state for the operator's gauges
+-- (count and the age of the oldest since its last transition). States only:
+-- no identifier reaches a label. The table holds one row per release
+-- operation, so the grouped read every 30 s needs no index.
+SELECT state::text AS state, count(*)::bigint AS releases,
+       coalesce(extract(epoch FROM now() - min(updated_at)), 0)::float8 AS oldest_seconds
+FROM releases
+WHERE state IN ('certifying', 'awaiting_approval', 'publishing', 'partially_published', 'reconciling')
+GROUP BY state;

@@ -188,6 +188,44 @@ func (q *Queries) LockRelease(ctx context.Context, operationID string) (Release,
 	return i, err
 }
 
+const releaseStates = `-- name: ReleaseStates :many
+SELECT state::text AS state, count(*)::bigint AS releases,
+       coalesce(extract(epoch FROM now() - min(updated_at)), 0)::float8 AS oldest_seconds
+FROM releases
+WHERE state IN ('certifying', 'awaiting_approval', 'publishing', 'partially_published', 'reconciling')
+GROUP BY state
+`
+
+type ReleaseStatesRow struct {
+	State         string
+	Releases      int64
+	OldestSeconds float64
+}
+
+// RB-A26: the releases still in flight by state for the operator's gauges
+// (count and the age of the oldest since its last transition). States only:
+// no identifier reaches a label. The table holds one row per release
+// operation, so the grouped read every 30 s needs no index.
+func (q *Queries) ReleaseStates(ctx context.Context) ([]ReleaseStatesRow, error) {
+	rows, err := q.db.Query(ctx, releaseStates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReleaseStatesRow{}
+	for rows.Next() {
+		var i ReleaseStatesRow
+		if err := rows.Scan(&i.State, &i.Releases, &i.OldestSeconds); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateRelease = `-- name: UpdateRelease :execrows
 UPDATE releases SET state = $2, subject = $3, subject_digest = $4, release_id = $5, review_effect_id = $6, approval = $7,
     approval_deadline = $8, npm = $9, browser = $10, activation = $11, catalog_revision = $12, failure_code = $13, revision = $14, updated_at = $15
