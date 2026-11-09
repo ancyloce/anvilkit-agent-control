@@ -54,3 +54,13 @@ JOIN operation_settlements s ON s.operation_id = o.operation_id
 WHERE o.lifecycle = 'reconciling'
 ORDER BY o.updated_at, o.operation_id
 LIMIT $1;
+
+-- name: ExecutionPoolUsage :many
+-- RB-A25: each reviewed execution pool's capacity, its control reserve, the
+-- active permits and the age of the oldest, for the operator's gauges (a
+-- grouped read every 30 s; pool identities are configuration, not business
+-- identifiers).
+SELECT p.pool_id, p.capacity, p.reserved_control, count(m.permit_id)::bigint AS active,
+       coalesce(extract(epoch FROM now() - min(m.granted_at)), 0)::float8 AS oldest_seconds
+FROM resource_pools p LEFT JOIN permits m ON m.pool_id = p.pool_id AND m.state = 'active'
+GROUP BY p.pool_id, p.capacity, p.reserved_control;

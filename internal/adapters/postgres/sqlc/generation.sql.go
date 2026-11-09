@@ -38,6 +38,51 @@ func (q *Queries) CountActivePermitsBefore(ctx context.Context, arg CountActiveP
 	return count, err
 }
 
+const executionPoolUsage = `-- name: ExecutionPoolUsage :many
+SELECT p.pool_id, p.capacity, p.reserved_control, count(m.permit_id)::bigint AS active,
+       coalesce(extract(epoch FROM now() - min(m.granted_at)), 0)::float8 AS oldest_seconds
+FROM resource_pools p LEFT JOIN permits m ON m.pool_id = p.pool_id AND m.state = 'active'
+GROUP BY p.pool_id, p.capacity, p.reserved_control
+`
+
+type ExecutionPoolUsageRow struct {
+	PoolID          string
+	Capacity        int32
+	ReservedControl int32
+	Active          int64
+	OldestSeconds   float64
+}
+
+// RB-A25: each reviewed execution pool's capacity, its control reserve, the
+// active permits and the age of the oldest, for the operator's gauges (a
+// grouped read every 30 s; pool identities are configuration, not business
+// identifiers).
+func (q *Queries) ExecutionPoolUsage(ctx context.Context) ([]ExecutionPoolUsageRow, error) {
+	rows, err := q.db.Query(ctx, executionPoolUsage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutionPoolUsageRow{}
+	for rows.Next() {
+		var i ExecutionPoolUsageRow
+		if err := rows.Scan(
+			&i.PoolID,
+			&i.Capacity,
+			&i.ReservedControl,
+			&i.Active,
+			&i.OldestSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getActivePermit = `-- name: GetActivePermit :one
 SELECT permit_id, pool_id, owner_kind, owner_id, fence_epoch, state, granted_at, released_at, release_evidence FROM permits WHERE pool_id = $1 AND owner_kind = $2 AND owner_id = $3 AND state = 'active'
 `
