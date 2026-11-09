@@ -235,6 +235,8 @@ func Module() fx.Option {
 		),
 		// The event publication (P2.8): forwarder, waker and outbox retention.
 		fx.Invoke(startEvents),
+		// RB-A27: the retention of operation events under its own identity.
+		fx.Invoke(startRetention),
 		fx.Invoke(startOperationalMetrics),
 		fx.Invoke(run),
 	)
@@ -306,24 +308,9 @@ func newArtifactStore(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (app
 }
 
 func newPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {
-	poolCfg, err := pgxpool.ParseConfig(cfg.Database.URL)
+	poolCfg, err := boundedPoolConfig(cfg.Database.URL, cfg.Database.MaxConns, cfg.Database)
 	if err != nil {
 		return nil, err
-	}
-	poolCfg.MaxConns = cfg.Database.MaxConns
-	// Bounds of every connection (P1.4): connect, statement and
-	// idle-in-transaction; no transaction outlives them.
-	if cfg.Database.ConnectTimeout > 0 {
-		poolCfg.ConnConfig.ConnectTimeout = cfg.Database.ConnectTimeout
-	}
-	if poolCfg.ConnConfig.RuntimeParams == nil {
-		poolCfg.ConnConfig.RuntimeParams = map[string]string{}
-	}
-	if cfg.Database.StatementTimeout > 0 {
-		poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprint(cfg.Database.StatementTimeout.Milliseconds())
-	}
-	if cfg.Database.IdleInTransactionTimeout > 0 {
-		poolCfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = fmt.Sprint(cfg.Database.IdleInTransactionTimeout.Milliseconds())
 	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
@@ -336,9 +323,34 @@ func newPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// boundedPoolConfig parses a connection URL into a pool of maxConns with
+// the bounds of every connection (P1.4): connect, statement and
+// idle-in-transaction; no transaction outlives them.
+func boundedPoolConfig(url string, maxConns int32, bounds config.Database) (*pgxpool.Config, error) {
+	poolCfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	poolCfg.MaxConns = maxConns
+	if bounds.ConnectTimeout > 0 {
+		poolCfg.ConnConfig.ConnectTimeout = bounds.ConnectTimeout
+	}
+	if poolCfg.ConnConfig.RuntimeParams == nil {
+		poolCfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	if bounds.StatementTimeout > 0 {
+		poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprint(bounds.StatementTimeout.Milliseconds())
+	}
+	if bounds.IdleInTransactionTimeout > 0 {
+		poolCfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = fmt.Sprint(bounds.IdleInTransactionTimeout.Milliseconds())
+	}
+	return poolCfg, nil
+}
+
 // run orders the lifecycle so the server and relay stop before the pool and
 // the Temporal client close (DD-09 §3).
-func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, h *health, relay *application.Relay, generations *application.Generations, prices *application.StoredPrices, finance *application.Finance, tc client.Client, log *slog.Logger) {
+func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, h *health, relay *application.Relay, generations *application.Generations, prices *application.StoredPrices, finance *application.Finance, tc client.Client, reg *prometheus.Registry, log *slog.Logger) {
+	lm := newLifecycleMetrics(reg)
 	relayCtx, cancelRelay := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	// The probe listener is registered first: up before the business
@@ -366,15 +378,47 @@ func run(lc fx.Lifecycle, cfg config.Config, srv *grpctransport.Server, h *healt
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
+			begin := time.Now()
 			h.withdraw()
-			srv.Stop(cfg.GRPC.ShutdownTimeout)
+			forced := srv.Stop(cfg.GRPC.ShutdownTimeout)
 			cancelRelay()
 			select {
 			case <-done:
 			case <-ctx.Done():
+				forced = true
 			}
+			lm.stopped(time.Since(begin), forced)
+			log.Info("control stopped", "drainSeconds", time.Since(begin).Seconds(), "forced", forced)
 			tc.Close()
 			return nil
 		},
 	})
+}
+
+// lifecycleMetrics are the DD-09 §6 signals of this process (RB-A25), named
+// as Knowledge and MCP name theirs: the active configuration generation
+// (Control builds one per process; a rejected candidate never starts) and
+// the last shutdown's drain time and whether it had to force the stop. The
+// metrics listener closes after the business listener, so a scrape during
+// the stop can still read them; AnvilKitForcedStop matches the gauge.
+type lifecycleMetrics struct {
+	drain, forced prometheus.Gauge
+}
+
+func newLifecycleMetrics(reg *prometheus.Registry) lifecycleMetrics {
+	generation := prometheus.NewGauge(prometheus.GaugeOpts{Name: "anvilkit_control_config_generation", Help: "Number of the active configuration generation (one per process: a changed input takes effect through a rolling restart)."})
+	m := lifecycleMetrics{
+		drain:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "anvilkit_control_shutdown_drain_seconds", Help: "Seconds the last shutdown spent draining before dependencies closed."}),
+		forced: prometheus.NewGauge(prometheus.GaugeOpts{Name: "anvilkit_control_shutdown_forced", Help: "1 when the last shutdown had to force-stop the server or the relay."}),
+	}
+	generation.Set(1)
+	reg.MustRegister(generation, m.drain, m.forced)
+	return m
+}
+
+func (m lifecycleMetrics) stopped(drain time.Duration, forced bool) {
+	m.drain.Set(drain.Seconds())
+	if forced {
+		m.forced.Set(1)
+	}
 }

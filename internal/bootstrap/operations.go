@@ -46,6 +46,7 @@ func startOperationalMetrics(lc fx.Lifecycle, pool *pgxpool.Pool, relay *applica
 	failures := prometheus.NewCounter(prometheus.CounterOpts{Name: "anvilkit_control_unresolved_obligation_reads_failed_total", Help: "Failed reads of the obligation gauges."})
 	reg.MustRegister(count, oldest, failures)
 	releases := newReleaseGauges(reg)
+	pools := newExecutionPoolGauges(reg)
 	q := sqlc.New(pool)
 	readReleases := func(ctx context.Context) {
 		rows, err := q.ReleaseStates(ctx)
@@ -56,8 +57,18 @@ func startOperationalMetrics(lc fx.Lifecycle, pool *pgxpool.Pool, relay *applica
 		}
 		releases.set(rows)
 	}
+	readPools := func(ctx context.Context) {
+		rows, err := q.ExecutionPoolUsage(ctx)
+		if err != nil {
+			pools.failures.Inc()
+			log.Warn("execution pool gauges not refreshed", "error", err)
+			return
+		}
+		pools.set(rows)
+	}
 	read := func(ctx context.Context) {
 		readReleases(ctx)
+		readPools(ctx)
 		rows, err := q.UnresolvedObligations(ctx)
 		if err != nil {
 			failures.Inc()
@@ -139,6 +150,39 @@ func (g releaseGauges) set(rows []sqlc.ReleaseStatesRow) {
 	for _, r := range rows {
 		g.count.WithLabelValues(r.State).Set(float64(r.Releases))
 		g.oldest.WithLabelValues(r.State).Set(r.OldestSeconds)
+	}
+}
+
+// executionPoolGauges are the database-backed execution pools' utilization
+// (RB-A25, DD-09 §6): the active permits of every replica together, the
+// admissible limit (capacity less the control reserve, as
+// domain.ResourcePool.Available admits) and the age of the oldest active
+// permit. Labels are the reviewed pool identities of the configuration.
+type executionPoolGauges struct {
+	active, limit, oldest *prometheus.GaugeVec
+	failures              prometheus.Counter
+}
+
+func newExecutionPoolGauges(reg prometheus.Registerer) executionPoolGauges {
+	g := executionPoolGauges{
+		active: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "anvilkit_control_execution_pool_active_permits",
+			Help: "Active execution permits by pool, across every replica."}, []string{"pool"}),
+		limit: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "anvilkit_control_execution_pool_limit",
+			Help: "Permits a pool admits: its capacity less the control reserve."}, []string{"pool"}),
+		oldest: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "anvilkit_control_execution_pool_oldest_permit_seconds",
+			Help: "Age of the oldest active permit by pool; 0 when there is none."}, []string{"pool"}),
+		failures: prometheus.NewCounter(prometheus.CounterOpts{Name: "anvilkit_control_execution_pool_reads_failed_total", Help: "Failed reads of the execution pool gauges."}),
+	}
+	reg.MustRegister(g.active, g.limit, g.oldest, g.failures)
+	return g
+}
+
+// set publishes one read of every pool.
+func (g executionPoolGauges) set(rows []sqlc.ExecutionPoolUsageRow) {
+	for _, r := range rows {
+		g.active.WithLabelValues(r.PoolID).Set(float64(r.Active))
+		g.limit.WithLabelValues(r.PoolID).Set(float64(max(r.Capacity-r.ReservedControl, 0)))
+		g.oldest.WithLabelValues(r.PoolID).Set(r.OldestSeconds)
 	}
 }
 
