@@ -270,6 +270,23 @@ func (o *Operation) EffectiveDeadline() time.Time {
 // CoveredEventSeq is the last committed event sequence of the projection.
 func (o *Operation) CoveredEventSeq() uint64 { return o.NextEventSeq - 1 }
 
+// EventGap reports whether a page of events read after the cursor afterSeq
+// leaves out a sequence the projection covers. Every projection change
+// commits exactly one event, so the committed sequences are contiguous from
+// 1 until retention deletes some (RB-A27): a page that does not continue
+// the cursor, skips a sequence, or ends short of the covered sequence
+// without filling limit cannot be honored and answers RESET_REQUIRED.
+func EventGap(afterSeq, covered uint64, events []Event, limit int) bool {
+	next := afterSeq + 1
+	for _, ev := range events {
+		if ev.EventSeq != next {
+			return true
+		}
+		next++
+	}
+	return len(events) < limit && next <= covered
+}
+
 // Event is one durable operation event committed with the projection.
 type Event struct {
 	OperationID  string
