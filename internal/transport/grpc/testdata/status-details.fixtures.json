@@ -1,0 +1,91 @@
+{
+  "$comment": "Cross-runtime vectors for the one gRPC status detail the internal RPC surface defines outside the .proto files (RB-A23). Producer: Control (anvilkit.control.v1). Consumer: the API. A revision conflict that knows both revisions answers gRPC ABORTED with its unchanged message (`REVISION_CONFLICT: ` and the conflict's text) and exactly one google.rpc.ErrorInfo detail: reason `REVISION_CONFLICT`, domain `anvilkit.control.v1`, metadata `expectedRevision` and `currentRevision`, each a canonical unsigned 64-bit decimal (no sign, no leading zero, no whitespace). The consumer copies both values to the public error's details.expectedRevision and details.currentRevision only from a detail with that reason and domain whose two values are both canonical; it ignores other metadata keys, and any other detail, or none, yields no public revisions. The message, the gRPC code and the public code never depend on the detail, so a peer that predates it loses only the two values. Each `detail` is the ProtoJSON form of google.rpc.ErrorInfo; `revisions` is what the consumer must copy (null: nothing); `produced` says whether the producer emits exactly this detail for those revisions. tools/check.py (Python) and tests/go (Go) decide every case by the rule above; Control and the API test against verbatim copies of this file (the parent's tools/check-contracts.py compares them byte for byte).",
+  "errorInfo": {
+    "code": "ABORTED",
+    "messagePrefix": "REVISION_CONFLICT: ",
+    "reason": "REVISION_CONFLICT",
+    "domain": "anvilkit.control.v1",
+    "expectedKey": "expectedRevision",
+    "currentKey": "currentRevision"
+  },
+  "cases": [
+    {
+      "name": "both revisions canonical",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "3", "currentRevision": "5" } },
+      "revisions": { "expectedRevision": "3", "currentRevision": "5" },
+      "produced": true
+    },
+    {
+      "name": "the uint64 maximum and zero are revisions",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "18446744073709551615", "currentRevision": "0" } },
+      "revisions": { "expectedRevision": "18446744073709551615", "currentRevision": "0" },
+      "produced": true
+    },
+    {
+      "name": "an unknown metadata key beside two canonical revisions is ignored",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "3", "currentRevision": "5", "recordKind": "operation" } },
+      "revisions": { "expectedRevision": "3", "currentRevision": "5" },
+      "produced": false
+    },
+    {
+      "name": "a leading zero is not canonical",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "03", "currentRevision": "5" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "a sign is not canonical",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "+3", "currentRevision": "5" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "whitespace is not canonical",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": " 3", "currentRevision": "5" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "a value above the uint64 maximum is no revision",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "18446744073709551616", "currentRevision": "5" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "a non-numeric value is no revision",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "three", "currentRevision": "5" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "an empty value is no revision",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "3", "currentRevision": "" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "one revision without the other is copied as neither",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "3" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "a detail without metadata carries no revisions",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.control.v1" },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "another owner's domain is not Control's conflict",
+      "detail": { "reason": "REVISION_CONFLICT", "domain": "anvilkit.mcp.v1", "metadata": { "expectedRevision": "3", "currentRevision": "5" } },
+      "revisions": null,
+      "produced": false
+    },
+    {
+      "name": "another reason is not a revision conflict",
+      "detail": { "reason": "STALE_EXECUTION", "domain": "anvilkit.control.v1", "metadata": { "expectedRevision": "3", "currentRevision": "5" } },
+      "revisions": null,
+      "produced": false
+    }
+  ]
+}
