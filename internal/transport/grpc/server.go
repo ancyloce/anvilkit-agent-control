@@ -211,16 +211,19 @@ func (s *Server) Start() (net.Addr, error) {
 }
 
 // Stop withdraws readiness, drains in-flight calls within the timeout and
-// then forces the stop (DD-09 §3).
-func (s *Server) Stop(timeout time.Duration) {
+// then forces the stop (DD-09 §3); it reports whether force was needed
+// (RB-A25).
+func (s *Server) Stop(timeout time.Duration) (forced bool) {
 	s.serving.Store(false)
 	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	done := make(chan struct{})
 	go func() { s.grpc.GracefulStop(); close(done) }()
 	select {
 	case <-done:
+		return false
 	case <-time.After(timeout):
 		s.grpc.Stop()
+		return true
 	}
 }
 

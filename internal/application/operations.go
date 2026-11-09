@@ -401,7 +401,10 @@ type EventPage struct {
 	Final           bool
 }
 
-// ListEvents reads events after the cursor under current authorization.
+// ListEvents reads events after the cursor under current authorization. A
+// cursor beyond the covered sequence, or one whose next events retention
+// deleted (RB-A27), requires a reset: the caller reads the snapshot and its
+// covered sequence and continues from there.
 func (s *Operations) ListEvents(ctx context.Context, scope domain.Scope, operationID string, afterSeq uint64, limit int) (EventPage, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
@@ -419,7 +422,15 @@ func (s *Operations) ListEvents(ctx context.Context, scope domain.Scope, operati
 			return nil
 		}
 		page.Events, err = r.ListEvents(ctx, operationID, afterSeq, limit)
-		return err
+		if err != nil {
+			return err
+		}
+		// RB-A27: events before the retention are deleted; a cursor that
+		// would skip one is reset, never answered with a gap.
+		if domain.EventGap(afterSeq, page.CoveredEventSeq, page.Events, limit) {
+			page.Events, page.ResetRequired = nil, true
+		}
+		return nil
 	})
 	return page, err
 }

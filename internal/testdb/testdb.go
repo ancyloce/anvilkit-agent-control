@@ -31,6 +31,8 @@ type Instance struct {
 	Container *postgres.PostgresContainer
 	AppDSN    string
 	AdminDSN  string
+	// RetentionDSN connects as the retention identity (RB-A27).
+	RetentionDSN string
 }
 
 // Start provisions the container, roles, database and schema.
@@ -64,6 +66,7 @@ func Start(t *testing.T) *Instance {
 	for _, stmt := range []string{
 		"CREATE ROLE anvilkit_control_app LOGIN PASSWORD 'app'",
 		"CREATE ROLE anvilkit_control_migrator LOGIN PASSWORD 'migrator'",
+		"CREATE ROLE anvilkit_control_retention LOGIN PASSWORD 'retention'",
 		"CREATE DATABASE anvilkit_control OWNER anvilkit_control_migrator",
 	} {
 		if _, err := admin.Exec(ctx, stmt); err != nil {
@@ -74,9 +77,10 @@ func Start(t *testing.T) *Instance {
 	host, _ := pg.Host(ctx)
 	port, _ := pg.MappedPort(ctx, "5432/tcp")
 	inst := &Instance{
-		Container: pg,
-		AdminDSN:  adminDSN,
-		AppDSN:    fmt.Sprintf("postgres://anvilkit_control_app:app@%s:%s/anvilkit_control?sslmode=disable", host, port.Port()),
+		Container:    pg,
+		AdminDSN:     adminDSN,
+		AppDSN:       fmt.Sprintf("postgres://anvilkit_control_app:app@%s:%s/anvilkit_control?sslmode=disable", host, port.Port()),
+		RetentionDSN: fmt.Sprintf("postgres://anvilkit_control_retention:retention@%s:%s/anvilkit_control?sslmode=disable", host, port.Port()),
 	}
 	migratorDSN := fmt.Sprintf("postgres://anvilkit_control_migrator:migrator@%s:%s/anvilkit_control?sslmode=disable", host, port.Port())
 	db, err := migrate.Open(migratorDSN)
