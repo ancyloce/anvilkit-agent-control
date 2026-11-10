@@ -22,22 +22,6 @@ func (q *Queries) CountActivePermits(ctx context.Context, poolID string) (int64,
 	return count, err
 }
 
-const countActivePermitsBefore = `-- name: CountActivePermitsBefore :one
-SELECT count(*) FROM permits WHERE pool_id = $1 AND state = 'active' AND granted_at < $2
-`
-
-type CountActivePermitsBeforeParams struct {
-	PoolID    string
-	GrantedAt pgtype.Timestamptz
-}
-
-func (q *Queries) CountActivePermitsBefore(ctx context.Context, arg CountActivePermitsBeforeParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countActivePermitsBefore, arg.PoolID, arg.GrantedAt)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const executionPoolUsage = `-- name: ExecutionPoolUsage :many
 SELECT p.pool_id, p.capacity, p.reserved_control, count(m.permit_id)::bigint AS active,
        coalesce(extract(epoch FROM now() - min(m.granted_at)), 0)::float8 AS oldest_seconds

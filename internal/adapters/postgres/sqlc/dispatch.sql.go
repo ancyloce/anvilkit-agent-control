@@ -221,45 +221,6 @@ func (q *Queries) GetDispatchByCall(ctx context.Context, arg GetDispatchByCallPa
 	return i, err
 }
 
-const getGrantPolicy = `-- name: GetGrantPolicy :one
-SELECT grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at, register_command_id, register_request_digest, revocation_command_id, revocation_request_digest, in_flight_calls, unknown_calls, registered FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2
-`
-
-type GetGrantPolicyParams struct {
-	GrantID       string
-	GrantRevision int64
-}
-
-func (q *Queries) GetGrantPolicy(ctx context.Context, arg GetGrantPolicyParams) (GrantPolicy, error) {
-	row := q.db.QueryRow(ctx, getGrantPolicy, arg.GrantID, arg.GrantRevision)
-	var i GrantPolicy
-	err := row.Scan(
-		&i.GrantID,
-		&i.GrantRevision,
-		&i.TenantID,
-		&i.PolicyDigest,
-		&i.ServerID,
-		&i.Methods,
-		&i.CostCapCurrency,
-		&i.CostCapAmount,
-		&i.ExpiresAt,
-		&i.PolicyEpoch,
-		&i.ReceiptID,
-		&i.RevocationState,
-		&i.FencedAt,
-		&i.ConvergedAt,
-		&i.RegisteredAt,
-		&i.RegisterCommandID,
-		&i.RegisterRequestDigest,
-		&i.RevocationCommandID,
-		&i.RevocationRequestDigest,
-		&i.InFlightCalls,
-		&i.UnknownCalls,
-		&i.Registered,
-	)
-	return i, err
-}
-
 const getGrantPolicyByRegisterCommand = `-- name: GetGrantPolicyByRegisterCommand :one
 SELECT grant_id, grant_revision, tenant_id, policy_digest, server_id, methods, cost_cap_currency, cost_cap_amount, expires_at, policy_epoch, receipt_id, revocation_state, fenced_at, converged_at, registered_at, register_command_id, register_request_digest, revocation_command_id, revocation_request_digest, in_flight_calls, unknown_calls, registered FROM grant_policies WHERE tenant_id = $1 AND register_command_id = $2
 `

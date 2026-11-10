@@ -51,13 +51,6 @@ func (s *Store) Read(ctx context.Context, fn func(application.Repo) error) error
 	return mapErr(fn(&repo{q: sqlc.New(s.pool), db: s.pool}))
 }
 
-// Pool exposes the connection pool to adapters that need a dedicated
-// connection.
-func (s *Store) Pool() *pgxpool.Pool { return s.pool }
-
-// Ping pings the pool.
-func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
-
 type repo struct {
 	q  *sqlc.Queries
 	db sqlc.DBTX
@@ -406,18 +399,6 @@ func (r *repo) UpdateCommand(ctx context.Context, c *domain.Command) error {
 
 func (r *repo) ListCommandRelayPending(ctx context.Context, limit int) ([]*domain.Command, error) {
 	rows, err := r.q.ListCommandRelayPending(ctx, int32(limit))
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	out := make([]*domain.Command, 0, len(rows))
-	for _, m := range rows {
-		out = append(out, toCommand(m))
-	}
-	return out, nil
-}
-
-func (r *repo) ListOperationCommands(ctx context.Context, operationID string) ([]*domain.Command, error) {
-	rows, err := r.q.ListOperationCommands(ctx, operationID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -849,14 +830,6 @@ func grantPolicyOf(m sqlc.GrantPolicy) *domain.GrantPolicy {
 		g.CostCap = &domain.Money{Currency: *m.CostCapCurrency, Amount: *m.CostCapAmount}
 	}
 	return g
-}
-
-func (r *repo) GetGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error) {
-	m, err := r.q.GetGrantPolicy(ctx, sqlc.GetGrantPolicyParams{GrantID: grantID, GrantRevision: int64(revision)})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return grantPolicyOf(m), nil
 }
 
 func (r *repo) ShareLockGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error) {

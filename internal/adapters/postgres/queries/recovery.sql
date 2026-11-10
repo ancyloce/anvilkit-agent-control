@@ -12,9 +12,6 @@ SELECT * FROM recovery_runs WHERE run_id = $1;
 -- name: LockRecoveryRun :one
 SELECT * FROM recovery_runs WHERE run_id = $1 FOR UPDATE;
 
--- name: MaxRecoveryEpoch :one
-SELECT coalesce(max(recovery_epoch), 0)::bigint FROM recovery_runs;
-
 -- name: NextRecoveryEpoch :one
 -- The epoch comes from a sequence (P1.5): two concurrent runs never share one.
 SELECT nextval('recovery_epoch_seq')::bigint;
@@ -74,9 +71,6 @@ ORDER BY class, obligation_id LIMIT $5;
 -- name: CountUnsettledFindings :one
 SELECT count(*) FROM recovery_findings WHERE run_id = $1 AND status NOT IN ('present', 'resolved', 'disposed', 'outside_scope');
 
--- name: GetAdmissionClosure :one
-SELECT * FROM admission_closures WHERE scope_key = $1;
-
 -- name: IsAdmissionClosed :one
 SELECT EXISTS (SELECT 1 FROM admission_closures WHERE scope_key IN ('*', $1) AND reopened_at IS NULL);
 
@@ -90,6 +84,3 @@ UPDATE admission_closures SET reopened_at = $3 WHERE scope_key = $1 AND run_id =
 -- name: AnyAdmissionClosed :one
 -- A run over every scope may begin only while no closure of any scope is open (P1.5).
 SELECT EXISTS (SELECT 1 FROM admission_closures WHERE reopened_at IS NULL);
-
--- name: HasOpenRecoveryFor :one
-SELECT EXISTS (SELECT 1 FROM admission_closures WHERE scope_key = $1 AND reopened_at IS NULL);

@@ -34,22 +34,6 @@ func (q *Queries) CountUnsettledFindings(ctx context.Context, runID string) (int
 	return count, err
 }
 
-const getAdmissionClosure = `-- name: GetAdmissionClosure :one
-SELECT scope_key, run_id, closed_at, reopened_at FROM admission_closures WHERE scope_key = $1
-`
-
-func (q *Queries) GetAdmissionClosure(ctx context.Context, scopeKey string) (AdmissionClosure, error) {
-	row := q.db.QueryRow(ctx, getAdmissionClosure, scopeKey)
-	var i AdmissionClosure
-	err := row.Scan(
-		&i.ScopeKey,
-		&i.RunID,
-		&i.ClosedAt,
-		&i.ReopenedAt,
-	)
-	return i, err
-}
-
 const getFinding = `-- name: GetFinding :one
 SELECT finding_id, run_id, class, obligation_id, tenant_id, inventory_key, inventory_version, recorded_at, status, outcome, evidence_ref, detail, created_at, updated_at FROM recovery_findings WHERE finding_id = $1
 `
@@ -194,17 +178,6 @@ func (q *Queries) GetRecoveryRunByCommand(ctx context.Context, arg GetRecoveryRu
 		&i.ReopenedAt,
 	)
 	return i, err
-}
-
-const hasOpenRecoveryFor = `-- name: HasOpenRecoveryFor :one
-SELECT EXISTS (SELECT 1 FROM admission_closures WHERE scope_key = $1 AND reopened_at IS NULL)
-`
-
-func (q *Queries) HasOpenRecoveryFor(ctx context.Context, scopeKey string) (bool, error) {
-	row := q.db.QueryRow(ctx, hasOpenRecoveryFor, scopeKey)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const insertFinding = `-- name: InsertFinding :exec
@@ -560,17 +533,6 @@ func (q *Queries) LockRecoveryRun(ctx context.Context, runID string) (RecoveryRu
 		&i.ReopenedAt,
 	)
 	return i, err
-}
-
-const maxRecoveryEpoch = `-- name: MaxRecoveryEpoch :one
-SELECT coalesce(max(recovery_epoch), 0)::bigint FROM recovery_runs
-`
-
-func (q *Queries) MaxRecoveryEpoch(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, maxRecoveryEpoch)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const nextRecoveryEpoch = `-- name: NextRecoveryEpoch :one

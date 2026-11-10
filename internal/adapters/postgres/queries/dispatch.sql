@@ -95,9 +95,6 @@ FROM cost_entries WHERE dispatch_id = $1 AND kind IN ('actual', 'correction');
 INSERT INTO cost_entries (entry_id, operation_id, dispatch_id, observation_id, kind, currency, amount, correction_of, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
--- name: GetGrantPolicy :one
-SELECT * FROM grant_policies WHERE grant_id = $1 AND grant_revision = $2;
-
 -- name: HasUnsettledDispatch :one
 SELECT EXISTS (SELECT 1 FROM dispatches WHERE operation_id = $1 AND state IN ('prepared', 'authorized', 'unknown'));
 

@@ -51,11 +51,6 @@ func (r *repo) LockRecoveryRun(ctx context.Context, runID string) (*domain.Recov
 	return toRun(m), nil
 }
 
-func (r *repo) MaxRecoveryEpoch(ctx context.Context) (uint64, error) {
-	n, err := r.q.MaxRecoveryEpoch(ctx)
-	return uint64(n), mapErr(err)
-}
-
 func (r *repo) InsertRecoveryRun(ctx context.Context, run *domain.RecoveryRun) error {
 	return r.q.InsertRecoveryRun(ctx, sqlc.InsertRecoveryRunParams{
 		RunID: run.ID, ScopeKey: run.ScopeKey, TenantID: run.TenantID, CommandID: run.CommandID, ActorID: run.ActorID, RequestDigest: string(run.RequestDigest),
@@ -183,14 +178,6 @@ func (r *repo) CountUnsettledFindings(ctx context.Context, runID string) (uint64
 func (r *repo) IsAdmissionClosed(ctx context.Context, tenantID string) (bool, error) {
 	ok, err := r.q.IsAdmissionClosed(ctx, tenantID)
 	return ok, mapErr(err)
-}
-
-func (r *repo) GetAdmissionClosure(ctx context.Context, scopeKey string) (*domain.AdmissionClosure, error) {
-	m, err := r.q.GetAdmissionClosure(ctx, scopeKey)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return &domain.AdmissionClosure{ScopeKey: m.ScopeKey, RunID: m.RunID, ClosedAt: fromTs(m.ClosedAt), ReopenedAt: fromTsPtr(m.ReopenedAt)}, nil
 }
 
 func (r *repo) UpsertAdmissionClosure(ctx context.Context, c *domain.AdmissionClosure) error {

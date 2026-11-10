@@ -32,7 +32,7 @@ import (
 
 var (
 	testLog = slog.New(slog.NewTextHandler(io.Discard, nil))
-	profile = domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"}
+	profile = domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check"}
 	subject = domain.Subject{ProfileID: "local-check-v1", SubjectDigest: application.DigestOf([]byte("subject"))}
 )
 

@@ -66,11 +66,6 @@ func (r *repo) ListPriceRevisions(ctx context.Context) ([]*domain.PriceRecord, e
 	return out, nil
 }
 
-func (r *repo) CountPriceRevisions(ctx context.Context) (int64, error) {
-	n, err := r.q.CountPriceRevisions(ctx)
-	return n, mapErr(err)
-}
-
 func toCostCap(m sqlc.CostCap) *domain.CostCap {
 	return &domain.CostCap{
 		ID: m.CapID, Level: domain.CapLevel(m.Level), TenantID: m.TenantID, ProjectID: m.ProjectID, Currency: m.Currency, Cap: m.CapAmount,

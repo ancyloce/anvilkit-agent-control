@@ -8,9 +8,6 @@ ON CONFLICT (pool_id) DO UPDATE SET class = EXCLUDED.class, capacity = EXCLUDED.
 -- name: CountActivePermits :one
 SELECT count(*) FROM permits WHERE pool_id = $1 AND state = 'active';
 
--- name: CountActivePermitsBefore :one
-SELECT count(*) FROM permits WHERE pool_id = $1 AND state = 'active' AND granted_at < $2;
-
 -- name: GetActivePermit :one
 SELECT * FROM permits WHERE pool_id = $1 AND owner_kind = $2 AND owner_id = $3 AND state = 'active';
 

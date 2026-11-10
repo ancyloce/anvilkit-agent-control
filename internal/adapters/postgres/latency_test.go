@@ -57,7 +57,7 @@ func TestLifecycleLatencyIsObservedOnceAtCommit(t *testing.T) {
 	store := postgres.NewStore(inst.Pool(t)).WithLifecycleLatency(l)
 	ctx := context.Background()
 	t0 := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
-	profile := domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: time.Hour, StepID: "local-check", JobProfileID: "local-check-v1"}
+	profile := domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: time.Hour, StepID: "local-check"}
 	subject := domain.Subject{ProfileID: "local-check-v1", SubjectDigest: application.DigestOf([]byte("subject"))}
 	cmd := domain.CommandIdentity{TenantID: "tenant_a", CommandID: "cmd_latency", ActorID: "user_a", RequestDigest: application.DigestOf([]byte("body"))}
 

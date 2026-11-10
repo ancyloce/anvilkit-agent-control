@@ -17,7 +17,7 @@ import (
 	"github.com/ancyloce/anvilkit-agent-control/internal/testdb"
 )
 
-var profile = domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: time.Hour, StepID: "local-check", JobProfileID: "local-check-v1"}
+var profile = domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: time.Hour, StepID: "local-check"}
 
 // history commits an operation through the store as the application does:
 // acceptance, optionally an attempt-bound event, then the transitions of

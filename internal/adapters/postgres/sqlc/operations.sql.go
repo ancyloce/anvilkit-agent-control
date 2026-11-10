@@ -485,45 +485,6 @@ func (q *Queries) ListIntakePending(ctx context.Context, arg ListIntakePendingPa
 	return items, nil
 }
 
-const listOperationCommands = `-- name: ListOperationCommands :many
-SELECT tenant_id, command_id, operation_id, actor_id, kind, expected_revision, request_digest, target_definition_activation, outcome, reason_code, operation_revision, accepted_at, settled_at, relay_state FROM operation_commands WHERE operation_id = $1 ORDER BY accepted_at
-`
-
-func (q *Queries) ListOperationCommands(ctx context.Context, operationID string) ([]OperationCommand, error) {
-	rows, err := q.db.Query(ctx, listOperationCommands, operationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []OperationCommand{}
-	for rows.Next() {
-		var i OperationCommand
-		if err := rows.Scan(
-			&i.TenantID,
-			&i.CommandID,
-			&i.OperationID,
-			&i.ActorID,
-			&i.Kind,
-			&i.ExpectedRevision,
-			&i.RequestDigest,
-			&i.TargetDefinitionActivation,
-			&i.Outcome,
-			&i.ReasonCode,
-			&i.OperationRevision,
-			&i.AcceptedAt,
-			&i.SettledAt,
-			&i.RelayState,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listOperationEvents = `-- name: ListOperationEvents :many
 SELECT operation_id, event_seq, transition_id, event_type, revision, payload, occurred_at FROM operation_events WHERE operation_id = $1 AND event_seq > $2 ORDER BY event_seq LIMIT $3
 `

@@ -11,17 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countPriceRevisions = `-- name: CountPriceRevisions :one
-SELECT count(*) FROM price_revisions
-`
-
-func (q *Queries) CountPriceRevisions(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countPriceRevisions)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const getAllocationReturn = `-- name: GetAllocationReturn :one
 SELECT allocation_id, pool_id, operation_id, currency, amount, returned_at FROM allocation_returns WHERE allocation_id = $1
 `

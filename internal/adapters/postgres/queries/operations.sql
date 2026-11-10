@@ -73,6 +73,3 @@ WHERE tenant_id = $1 AND command_id = $2;
 
 -- name: ListCommandRelayPending :many
 SELECT * FROM operation_commands WHERE relay_state IN ('pending', 'sent') ORDER BY accepted_at LIMIT $1;
-
--- name: ListOperationCommands :many
-SELECT * FROM operation_commands WHERE operation_id = $1 ORDER BY accepted_at;

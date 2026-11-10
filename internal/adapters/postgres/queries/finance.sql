@@ -21,9 +21,6 @@ UPDATE price_revisions SET withdrawn_at = $2, withdrawn_by = $3 WHERE revision =
 -- name: ListPriceRevisions :many
 SELECT * FROM price_revisions ORDER BY published_at, revision;
 
--- name: CountPriceRevisions :one
-SELECT count(*) FROM price_revisions;
-
 -- name: GetCostCap :one
 SELECT * FROM cost_caps WHERE level = $1 AND tenant_id = $2 AND project_id = $3 AND currency = $4;
 
