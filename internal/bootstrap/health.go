@@ -43,9 +43,6 @@ type health struct {
 	cancelChecks context.CancelFunc
 }
 
-// pinger is what readiness pings (the store's pool).
-type pinger interface{ Ping(context.Context) error }
-
 func newHealth(cfg config.Config, grpcServer *grpctransport.Server, pool *pgxpool.Pool, log *slog.Logger) *health {
 	h := &health{listen: cfg.Health.Listen, ready: grpcServer.Ready, ping: pool.Ping, interval: cfg.Health.CheckInterval, timeout: cfg.Health.CheckTimeout, reasons: map[string]string{}}
 	h.schema = func(ctx context.Context) error { return checkSchema(ctx, pool) }

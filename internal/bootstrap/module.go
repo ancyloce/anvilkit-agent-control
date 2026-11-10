@@ -66,7 +66,7 @@ func Profiles(cfg config.Config) []domain.Profile {
 	return []domain.Profile{
 		{
 			ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: cfg.Profiles.LocalCheckDeadline,
-			StepID: "local-check", JobProfileID: "local-check-v1",
+			StepID: "local-check",
 		},
 		{
 			ID: "preparation-v1", Kind: domain.KindPreparation, OperationDeadline: prep.Deadline, StepID: "analysis", MultiStep: true,
@@ -76,7 +76,7 @@ func Profiles(cfg config.Config) []domain.Profile {
 		{
 			ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: gen.QueueDeadline, StepID: "codegen", MultiStep: true,
 			Funding: &genFunding, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
-			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile, JobProfileID: gen.CodegenProfile,
+			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile,
 		},
 		{
 			// P20: save the edited source conditionally, then build exactly
@@ -140,11 +140,11 @@ func Module() fx.Option {
 			func(cfg config.Config, store application.Store, inv application.Inventory, mv application.ManifestValidator, finance *application.Finance, clock domain.Clock, log *slog.Logger) *application.Execution {
 				return application.NewExecution(store, inv, mv, Profiles(cfg), clock, log).WithFinance(finance)
 			},
-			func(cfg config.Config, store application.Store, clock domain.Clock, log *slog.Logger) *application.Preparations {
-				return application.NewPreparations(store, Profiles(cfg), clock, log)
+			func(cfg config.Config, store application.Store, clock domain.Clock) *application.Preparations {
+				return application.NewPreparations(store, Profiles(cfg), clock)
 			},
-			func(cfg config.Config, store application.Store, dispatch *application.Dispatch, clock domain.Clock, log *slog.Logger) *application.Generations {
-				return application.NewGenerations(store, dispatch, Profiles(cfg), Pools(cfg), clock, log)
+			func(cfg config.Config, store application.Store, dispatch *application.Dispatch, clock domain.Clock) *application.Generations {
+				return application.NewGenerations(store, dispatch, Profiles(cfg), Pools(cfg), clock)
 			},
 			// The authority inputs of the dispatch chain (P2.1): the
 			// DEVELOPMENT_ONLY fixtures only under dispatch.development (which
@@ -168,8 +168,8 @@ func Module() fx.Option {
 			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, clock domain.Clock, log *slog.Logger) *application.Effects {
 				return application.NewEffects(store, inv, queries, clock, log).WithProfiles(Profiles(cfg))
 			},
-			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, dispatch *application.Dispatch, effects *application.Effects, exec *application.Execution, ev application.NotSentEvidence, de application.DispositionEvidence, clock domain.Clock, log *slog.Logger) *application.Recovery {
-				return application.NewRecovery(store, inv, queries, dispatch, effects, exec, Profiles(cfg), ev, de, clock, log, cfg.Recovery.EnumerationPage)
+			func(cfg config.Config, store application.Store, inv application.Inventory, queries application.OutcomeQuery, dispatch *application.Dispatch, effects *application.Effects, exec *application.Execution, ev application.NotSentEvidence, de application.DispositionEvidence, clock domain.Clock) *application.Recovery {
+				return application.NewRecovery(store, inv, queries, dispatch, effects, exec, Profiles(cfg), ev, de, clock, cfg.Recovery.EnumerationPage)
 			},
 			func(cfg config.Config, store application.Store, inv application.Inventory, prices application.PriceBook, auth application.Authority, ev application.NotSentEvidence, clock domain.Clock, log *slog.Logger) *application.Dispatch {
 				d := application.NewDispatch(store, inv, prices, auth, ev, clock, log).WithProfiles(Profiles(cfg))
