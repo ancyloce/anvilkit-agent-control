@@ -10,7 +10,7 @@ import (
 var (
 	testCmd     = CommandIdentity{TenantID: "tenant_a", CommandID: "cmd", ActorID: "u", RequestDigest: "sha256:0dc7fa9db7237a2b5c96f70f59bb00f73bb86a0ca5554e91c312f9ada26e18b3"}
 	testImage   = Digest("sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0")
-	testProfile = Profile{ID: "local-check-v1", Kind: KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"}
+	testProfile = Profile{ID: "local-check-v1", Kind: KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check"}
 )
 
 func openOperation(t *testing.T, now time.Time) *Operation {

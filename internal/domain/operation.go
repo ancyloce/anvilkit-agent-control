@@ -131,9 +131,8 @@ type Profile struct {
 	ID                string
 	Kind              OperationKind
 	OperationDeadline time.Duration
-	// StepID and JobProfileID bind the single fixed step of this profile.
-	StepID       string
-	JobProfileID string
+	// StepID binds the single fixed step of this profile.
+	StepID string
 	// MultiStep profiles (every profile of bootstrap.Profiles but the
 	// single-attempt LocalCheck fixture) settle their business outcome
 	// through SettleOperation; a definite attempt close does not end them
