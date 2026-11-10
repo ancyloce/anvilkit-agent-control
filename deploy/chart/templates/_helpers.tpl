@@ -148,7 +148,6 @@ the digest is required (RB-S10); only development.enabled renders the tag
 {{- if and (eq .Values.temporal.tls.mode "mtls") (ne .Values.identity.mode "mtls") }}
 {{- fail "temporal.tls.mode mtls presents the workload certificate and needs identity.mode mtls" }}
 {{- end }}
-{{- if .Values.telemetry.otlpEndpoint }}
 {{- /* P2.8: operation events reach JetStream outside development. */ -}}
 {{- if and (not .Values.events.enabled) (not .Values.development.enabled) }}
 {{- fail "events.enabled is required outside development: operation events reach JetStream through the forwarder (P2.8)" }}
@@ -173,6 +172,7 @@ the digest is required (RB-S10); only development.enabled renders the tag
 {{- fail "events.nats.credentials.secret.name is required under secrets.provider kubernetes unless events.nats.tls.mode is development (the NATS user credential; under csi it is the key nats-creds)" }}
 {{- end }}
 {{- end }}
+{{- if .Values.telemetry.otlpEndpoint }}
 {{- if not (has .Values.telemetry.otlpTls.mode (list "tls" "mtls" "development")) }}
 {{- fail "telemetry.otlpTls.mode must be tls, mtls or development" }}
 {{- end }}

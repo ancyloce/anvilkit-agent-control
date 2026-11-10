@@ -58,7 +58,7 @@ jobs:
           --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
           --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
           --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
-          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
+          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443 --set events.nats.url=tls://nats:4222 --set events.nats.tls.caSecret.name=nats-ca --set events.nats.credentials.secret.name=control-nats
           --set retention.secret.name=control-retention --set retention.operationEvents=2160h
           --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
       - run: >-
@@ -66,7 +66,7 @@ jobs:
           --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
           --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
           --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
-          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
+          --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443 --set events.nats.url=tls://nats:4222 --set events.nats.tls.caSecret.name=nats-ca --set events.nats.credentials.secret.name=control-nats
           --set retention.secret.name=control-retention --set retention.operationEvents=2160h
           --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001 > /dev/null
       - name: Refuse a tag-only image outside development (RB-S10)
@@ -75,7 +75,7 @@ jobs:
             --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
             --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
             --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
-            --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
+            --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443 --set events.nats.url=tls://nats:4222 --set events.nats.tls.caSecret.name=nats-ca --set events.nats.credentials.secret.name=control-nats
             --set retention.secret.name=control-retention --set retention.operationEvents=2160h)
           if out=$(helm template anvilkit-agent-control deploy/chart "${sets[@]}" 2>&1); then echo "rendered a tag-only image outside development"; exit 1; fi
           echo "$out" | grep -q "image.digest is required outside development" || { echo "$out"; exit 1; }
@@ -87,7 +87,7 @@ jobs:
             --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
             --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
             --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
-            --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
+            --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443 --set events.nats.url=tls://nats:4222 --set events.nats.tls.caSecret.name=nats-ca --set events.nats.credentials.secret.name=control-nats
             --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001)
           if out=$(helm template anvilkit-agent-control deploy/chart "${sets[@]}" 2>&1); then echo "rendered without the retention identity outside development"; exit 1; fi
           echo "$out" | grep -q "retention.secret.name (secrets.provider kubernetes) or retention.enabled (csi) is required outside development" || { echo "$out"; exit 1; }
@@ -95,3 +95,20 @@ jobs:
           echo "$out" | grep -q "retention.operationEvents is required" || { echo "$out"; exit 1; }
           # Development keeps every event without the identity (DEVELOPMENT_ONLY).
           helm template anvilkit-agent-control deploy/chart "${sets[@]}" --set development.enabled=true > /dev/null
+      - name: Refuse events without a JetStream placement outside development, with no telemetry endpoint (P2.8)
+        run: |
+          sets=(--set database.secret.name=control-database --set temporal.address=temporal:7233
+            --set inventory.s3.endpoint=http://minio:9000 --set inventory.s3.bucket=anvilkit-inventory --set inventory.s3.secret.name=control-inventory
+            --set artifacts.s3.endpoint=http://minio:9000 --set artifacts.s3.bucket=anvilkit-artifacts --set artifacts.s3.secret.name=control-artifacts
+            --set migration.secret.name=control-migrator --set identity.trustDomain=ci.example --set identity.certificate.issuerRef.name=ci-issuer --set temporal.tls.caSecret.name=temporal-ca
+            --set authority.url=https://authority.ci.example --set 'evidence.issuers[0].name=anvilkit-job-access-sidecar' --set 'evidence.issuers[0].keyId=sidecar-1' --set evidence.configMap=evidence-keys --set modelProxy.address=model-proxy:9443
+            --set retention.secret.name=control-retention --set retention.operationEvents=2160h
+            --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001)
+          if out=$(helm template anvilkit-agent-control deploy/chart "${sets[@]}" 2>&1); then echo "rendered events.enabled without events.nats.url"; exit 1; fi
+          echo "$out" | grep -q "events.nats.url is required while events.enabled is true" || { echo "$out"; exit 1; }
+          if out=$(helm template anvilkit-agent-control deploy/chart "${sets[@]}" --set events.enabled=false 2>&1); then echo "rendered without operation events outside development"; exit 1; fi
+          echo "$out" | grep -q "events.enabled is required outside development" || { echo "$out"; exit 1; }
+          if out=$(helm template anvilkit-agent-control deploy/chart "${sets[@]}" --set events.nats.url=tls://nats:4222 2>&1); then echo "rendered NATS TLS without its CA"; exit 1; fi
+          echo "$out" | grep -q "events.nats.tls.caSecret.name is required" || { echo "$out"; exit 1; }
+          # Development may run without events (DEVELOPMENT_ONLY).
+          helm template anvilkit-agent-control deploy/chart "${sets[@]}" --set events.enabled=false --set development.enabled=true > /dev/null
