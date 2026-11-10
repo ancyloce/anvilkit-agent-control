@@ -120,7 +120,7 @@ func lifecycleProfiles() []domain.Profile {
 		{
 			ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: 2 * time.Hour, StepID: "codegen", MultiStep: true,
 			Funding: &genFunding, QueuePool: "generation", ActiveWindow: time.Hour, Definitions: []string{"generation-v1:def-1", "generation-v1:def-2"}, SupportsControl: true,
-			MaxRepairs: 1, CodegenProfileID: "codegen-team-dev-v1", ValidatorProfileID: "validator-source-v1", JobProfileID: "codegen-team-dev-v1",
+			MaxRepairs: 1, CodegenProfileID: "codegen-team-dev-v1", ValidatorProfileID: "validator-source-v1",
 		},
 	}
 }
@@ -148,8 +148,8 @@ func newLifecycleProcess(t *testing.T, inst *testdb.Instance, inv application.In
 	p := &lifecycleProcess{
 		ops:          application.NewOperations(store, inv, profiles, clock, testLog),
 		exec:         application.NewExecution(store, inv, manifests, profiles, clock, testLog),
-		preparations: application.NewPreparations(store, profiles, clock, testLog),
-		generations:  application.NewGenerations(store, dispatch, profiles, []domain.ResourcePool{{ID: "generation", Class: "generation", Capacity: 1}}, clock, testLog),
+		preparations: application.NewPreparations(store, profiles, clock),
+		generations:  application.NewGenerations(store, dispatch, profiles, []domain.ResourcePool{{ID: "generation", Class: "generation", Capacity: 1}}, clock),
 		artifacts:    application.NewArtifacts(store, objects, limits, clock, testLog),
 		dispatch:     dispatch,
 		wf:           &relayDouble{fakeWorkflows: fakeWorkflows{starts: map[string]int{}, cancels: map[string]int{}}, answers: map[string]int{}, commands: map[string]int{}, loseOnce: map[string]bool{}, outcome: application.RelayOutcome{Outcome: domain.OutcomeApplied}},
@@ -558,7 +558,7 @@ func TestLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, p1.relay.TickStarts(ctx))
 		counting := &countingStore{Store: postgres.NewStore(inst.Pool(t))}
-		gens := application.NewGenerations(counting, p1.dispatch, lifecycleProfiles(), []domain.ResourcePool{{ID: "generation", Class: "generation", Capacity: 1}}, clock, testLog)
+		gens := application.NewGenerations(counting, p1.dispatch, lifecycleProfiles(), []domain.ResourcePool{{ID: "generation", Class: "generation", Capacity: 1}}, clock)
 		poll := func() application.PermitAnswer {
 			t.Helper()
 			before := counting.txs.Load()

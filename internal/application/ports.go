@@ -57,7 +57,6 @@ type Repo interface {
 	UpdateCommand(ctx context.Context, c *domain.Command) error
 	SettlePendingCommands(ctx context.Context, operationID string, kind domain.CommandKind, outcome domain.CommandOutcome, rev domain.Revision, now time.Time) error
 	ListCommandRelayPending(ctx context.Context, limit int) ([]*domain.Command, error)
-	ListOperationCommands(ctx context.Context, operationID string) ([]*domain.Command, error)
 
 	// Preparation records (rank 6 under the operation lock): question
 	// sets, answers with their relay intent and briefs.
@@ -165,7 +164,6 @@ type Repo interface {
 	LockPriceRevision(ctx context.Context, revision string) (*domain.PriceRecord, error)
 	WithdrawPriceRevision(ctx context.Context, revision string, at time.Time, by string) error
 	ListPriceRevisions(ctx context.Context) ([]*domain.PriceRecord, error)
-	CountPriceRevisions(ctx context.Context) (int64, error)
 	GetCostCap(ctx context.Context, level domain.CapLevel, tenantID, projectID, currency string) (*domain.CostCap, error)
 	LockCostCap(ctx context.Context, capID string) (*domain.CostCap, error)
 	InsertCostCap(ctx context.Context, c *domain.CostCap) error
@@ -214,7 +212,6 @@ type Repo interface {
 	// Grant policy projection and barrier (rank 1; MCP owns the grant).
 	// Tool admission share-locks the policy before the allocations; the
 	// revocation barrier locks it for update.
-	GetGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error)
 	ShareLockGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error)
 	LockGrantPolicy(ctx context.Context, grantID string, revision uint64) (*domain.GrantPolicy, error)
 	GetGrantPolicyByRegisterCommand(ctx context.Context, tenantID, commandID string) (*domain.GrantPolicy, error)
@@ -244,7 +241,6 @@ type Repo interface {
 	GetRecoveryRunByCommand(ctx context.Context, scopeKey, commandID string) (*domain.RecoveryRun, error)
 	GetRecoveryRun(ctx context.Context, runID string) (*domain.RecoveryRun, error)
 	LockRecoveryRun(ctx context.Context, runID string) (*domain.RecoveryRun, error)
-	MaxRecoveryEpoch(ctx context.Context) (uint64, error)
 	// NextRecoveryEpoch allocates a unique epoch from the sequence (P1.5).
 	NextRecoveryEpoch(ctx context.Context) (uint64, error)
 	// AnyAdmissionClosed reports whether any scope's closure is open (P1.5).
@@ -265,7 +261,6 @@ type Repo interface {
 	ListFindings(ctx context.Context, runID string, status domain.FindingStatus, afterClass, afterObligationID string, limit int) ([]*domain.RecoveryFinding, error)
 	CountUnsettledFindings(ctx context.Context, runID string) (uint64, error)
 	IsAdmissionClosed(ctx context.Context, tenantID string) (bool, error)
-	GetAdmissionClosure(ctx context.Context, scopeKey string) (*domain.AdmissionClosure, error)
 	UpsertAdmissionClosure(ctx context.Context, c *domain.AdmissionClosure) error
 	ReopenAdmission(ctx context.Context, scopeKey, runID string, at time.Time) error
 }

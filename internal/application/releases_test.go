@@ -254,7 +254,7 @@ func TestLineageIdentities(t *testing.T) {
 		previewProfile, releaseProfile,
 	}
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, testLog)
-	preparations := application.NewPreparations(store, profiles, domain.SystemClock{}, testLog)
+	preparations := application.NewPreparations(store, profiles, domain.SystemClock{})
 	previews := application.NewPreviews(store, domain.SystemClock{})
 	effects := application.NewEffects(store, inv, nil, domain.SystemClock{}, testLog)
 	ctx := context.Background()

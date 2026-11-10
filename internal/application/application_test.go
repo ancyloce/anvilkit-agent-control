@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	profile   = domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"}
+	profile   = domain.Profile{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check"}
 	subject   = domain.Subject{ProfileID: "local-check-v1", SubjectDigest: application.DigestOf([]byte("subject"))}
 	scopeA    = domain.Scope{TenantID: "tenant_a", ProjectID: "proj", ActorID: "user_a"}
 	scopeB    = domain.Scope{TenantID: "tenant_b", ProjectID: "proj", ActorID: "user_b"}
@@ -527,7 +527,7 @@ func TestControl(t *testing.T) {
 
 	t.Run("relay starts each confirmed operation exactly once and cancel is relayed", func(t *testing.T) {
 		wf := &fakeWorkflows{starts: map[string]int{}, cancels: map[string]int{}}
-		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, nil, application.NewPreparations(postgres.NewStore(p1.pool), []domain.Profile{profile}, domain.SystemClock{}, testLog), application.NewGenerations(postgres.NewStore(p1.pool), nil, []domain.Profile{profile}, nil, domain.SystemClock{}, testLog), domain.SystemClock{}, testLog, time.Second)
+		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, nil, application.NewPreparations(postgres.NewStore(p1.pool), []domain.Profile{profile}, domain.SystemClock{}), application.NewGenerations(postgres.NewStore(p1.pool), nil, []domain.Profile{profile}, nil, domain.SystemClock{}), domain.SystemClock{}, testLog, time.Second)
 		op, _, err := p1.ops.Create(ctx, cmd("tenant_a", "cmd_relay", "body"), scopeA, domain.KindLocalCheck, subject, nil)
 		require.NoError(t, err)
 		require.NoError(t, relay.Tick(ctx))

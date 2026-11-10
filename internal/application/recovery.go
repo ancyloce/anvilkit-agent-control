@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -35,11 +34,10 @@ type Recovery struct {
 	notSent   NotSentEvidence
 	evidence  DispositionEvidence
 	clock     domain.Clock
-	log       *slog.Logger
 	page      int
 }
 
-func NewRecovery(store Store, inventory Inventory, queries OutcomeQuery, dispatch *Dispatch, effects *Effects, exec *Execution, profiles []domain.Profile, notSent NotSentEvidence, evidence DispositionEvidence, clock domain.Clock, log *slog.Logger, page int) *Recovery {
+func NewRecovery(store Store, inventory Inventory, queries OutcomeQuery, dispatch *Dispatch, effects *Effects, exec *Execution, profiles []domain.Profile, notSent NotSentEvidence, evidence DispositionEvidence, clock domain.Clock, page int) *Recovery {
 	m := make(map[string]domain.Profile, len(profiles))
 	for _, p := range profiles {
 		m[p.ID] = p
@@ -47,7 +45,7 @@ func NewRecovery(store Store, inventory Inventory, queries OutcomeQuery, dispatc
 	if page <= 0 {
 		page = 500
 	}
-	return &Recovery{store: store, inventory: inventory, queries: queries, dispatch: dispatch, effects: effects, exec: exec, profiles: m, notSent: notSent, evidence: evidence, clock: clock, log: log, page: page}
+	return &Recovery{store: store, inventory: inventory, queries: queries, dispatch: dispatch, effects: effects, exec: exec, profiles: m, notSent: notSent, evidence: evidence, clock: clock, page: page}
 }
 
 // The operator actions (P0.3): decided by the verified roles of the user

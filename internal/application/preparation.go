@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
 )
@@ -20,15 +19,14 @@ type Preparations struct {
 	store    Store
 	profiles map[string]domain.Profile
 	clock    domain.Clock
-	log      *slog.Logger
 }
 
-func NewPreparations(store Store, profiles []domain.Profile, clock domain.Clock, log *slog.Logger) *Preparations {
+func NewPreparations(store Store, profiles []domain.Profile, clock domain.Clock) *Preparations {
 	m := make(map[string]domain.Profile, len(profiles))
 	for _, p := range profiles {
 		m[p.ID] = p
 	}
-	return &Preparations{store: store, profiles: m, clock: clock, log: log}
+	return &Preparations{store: store, profiles: m, clock: clock}
 }
 
 // PreparationView is the intake, question sets and brief of a Preparation

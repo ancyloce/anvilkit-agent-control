@@ -27,7 +27,7 @@ func TestSettlementRegressions(t *testing.T) {
 	execution := func() *application.Execution {
 		return application.NewExecution(store, inv, manifests, profiles, domain.SystemClock{}, testLog)
 	}
-	generations := application.NewGenerations(store, nil, profiles, nil, domain.SystemClock{}, testLog)
+	generations := application.NewGenerations(store, nil, profiles, nil, domain.SystemClock{})
 	ctx := context.Background()
 	create := func(t *testing.T) *domain.Operation {
 		t.Helper()

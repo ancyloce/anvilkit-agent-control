@@ -46,7 +46,7 @@ func newP07Process(t *testing.T, inst *testdb.Instance, inv *hookedInventory, au
 	queries := development.NewOutcomeQuery(inv, []string{issuer})
 	effects := application.NewEffects(store, inv, queries, domain.SystemClock{}, testLog)
 	recovery := application.NewRecovery(store, inv, queries, base.dispatch, effects, base.exec, []domain.Profile{profile},
-		development.NewNotSentEvidence(inv, []string{issuer}), development.NewDispositionEvidence(inv, []string{issuer}), domain.SystemClock{}, testLog, 2)
+		development.NewNotSentEvidence(inv, []string{issuer}), development.NewDispositionEvidence(inv, []string{issuer}), domain.SystemClock{}, 2)
 	return &p07Process{dispatchProcess: base, effects: effects, recovery: recovery}
 }
 
@@ -383,7 +383,7 @@ func TestDisposeIsOneCommit(t *testing.T) {
 	effects := application.NewEffects(store, inv, queries, domain.SystemClock{}, testLog)
 	evidence := &hookedDisposition{inner: development.NewDispositionEvidence(inv, []string{issuer})}
 	recovery := application.NewRecovery(store, inv, queries, base.dispatch, effects, base.exec, []domain.Profile{profile},
-		development.NewNotSentEvidence(inv, []string{issuer}), evidence, domain.SystemClock{}, testLog, 2)
+		development.NewNotSentEvidence(inv, []string{issuer}), evidence, domain.SystemClock{}, 2)
 	ctx := context.Background()
 	pools(t, base.pool, "onecommit", [3]int64{1_000_000_000, 100_000_000, 10_000_000})
 	opCmd := func(id string) domain.CommandIdentity {
@@ -690,7 +690,7 @@ func TestRecovery(t *testing.T) {
 		require.Equal(t, uint64(1), unchanged.ExecutionEpoch)
 
 		wf := &fakeWorkflows{starts: map[string]int{}, cancels: map[string]int{}}
-		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, p1.recovery, application.NewPreparations(postgres.NewStore(p1.pool), []domain.Profile{profile}, domain.SystemClock{}, testLog), application.NewGenerations(postgres.NewStore(p1.pool), nil, []domain.Profile{profile}, nil, domain.SystemClock{}, testLog), domain.SystemClock{}, testLog, time.Second)
+		relay := application.NewRelay(postgres.NewStore(p1.pool), wf, p1.ops, p1.recovery, application.NewPreparations(postgres.NewStore(p1.pool), []domain.Profile{profile}, domain.SystemClock{}), application.NewGenerations(postgres.NewStore(p1.pool), nil, []domain.Profile{profile}, nil, domain.SystemClock{}), domain.SystemClock{}, testLog, time.Second)
 		require.NoError(t, relay.Tick(ctx))
 		require.NoError(t, relay.Tick(ctx))
 		require.Equal(t, 1, wf.starts["recovery:"+run.ID], "the relay starts the reconciliation workflow once")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
@@ -23,15 +22,14 @@ type Generations struct {
 	profiles map[string]domain.Profile
 	pools    []domain.ResourcePool
 	clock    domain.Clock
-	log      *slog.Logger
 }
 
-func NewGenerations(store Store, dispatch *Dispatch, profiles []domain.Profile, pools []domain.ResourcePool, clock domain.Clock, log *slog.Logger) *Generations {
+func NewGenerations(store Store, dispatch *Dispatch, profiles []domain.Profile, pools []domain.ResourcePool, clock domain.Clock) *Generations {
 	m := make(map[string]domain.Profile, len(profiles))
 	for _, p := range profiles {
 		m[p.ID] = p
 	}
-	return &Generations{store: store, dispatch: dispatch, profiles: m, pools: pools, clock: clock, log: log}
+	return &Generations{store: store, dispatch: dispatch, profiles: m, pools: pools, clock: clock}
 }
 
 // InstallPools writes the reviewed execution pools of this build (their

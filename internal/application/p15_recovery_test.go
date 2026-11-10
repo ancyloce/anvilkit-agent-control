@@ -33,7 +33,7 @@ func TestRecoveryEpochsAreUniqueAndScopesExclusive(t *testing.T) {
 	queries := development.NewOutcomeQuery(inv, []string{issuer})
 	effects := application.NewEffects(store, inv, queries, domain.SystemClock{}, testLog)
 	recovery := application.NewRecovery(store, inv, queries, base.dispatch, effects, base.exec, []domain.Profile{profile},
-		development.NewNotSentEvidence(inv, []string{issuer}), development.NewDispositionEvidence(inv, []string{issuer}), domain.SystemClock{}, testLog, 2)
+		development.NewNotSentEvidence(inv, []string{issuer}), development.NewDispositionEvidence(inv, []string{issuer}), domain.SystemClock{}, 2)
 	ctx := context.Background()
 	opCmd := func(tenant, id string) domain.CommandIdentity {
 		return domain.CommandIdentity{TenantID: tenant, CommandID: id, ActorID: operatorActor, RequestDigest: application.DigestOf([]byte(id))}

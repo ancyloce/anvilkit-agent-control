@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -478,24 +479,11 @@ func (s *Artifacts) settle(ctx context.Context, cmd domain.CommandIdentity, tran
 func archiveReason(err error) string {
 	msg := err.Error()
 	for _, code := range []string{domain.ReasonPathEscape, domain.ReasonArchiveInvalid} {
-		if len(msg) > 0 && containsWord(msg, code) {
+		if strings.Contains(msg, code) {
 			return code
 		}
 	}
 	return domain.ReasonArchiveInvalid
-}
-
-func containsWord(s, w string) bool {
-	return len(w) > 0 && len(s) >= len(w) && (indexOf(s, w) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
 
 // BindOutputs verifies, inside the acceptance transaction, that the
