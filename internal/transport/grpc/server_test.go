@@ -53,7 +53,7 @@ func TestTransport(t *testing.T) {
 	require.NoError(t, err)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	profiles := []domain.Profile{
-		{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"},
+		{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check"},
 		{ID: "preview-build-v1", Kind: domain.KindPreviewBuild, OperationDeadline: 30 * time.Minute, StepID: "preview-build", MultiStep: true},
 	}
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log).WithFinance(application.NewFinance(store, nil, domain.SystemClock{}, log))
@@ -61,8 +61,8 @@ func TestTransport(t *testing.T) {
 	authority := development.NewAuthority([]development.RouteAuthorization{{TenantID: "tenant_a", RouteID: "authorized-route"}}, 30*time.Second, domain.SystemClock{})
 	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log).WithDevelopmentCaps()
 	effects := application.NewEffects(store, inv, development.NewOutcomeQuery(inv, nil), domain.SystemClock{}, log)
-	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, log, 100)
-	srv, err := grpctransport.NewServer("127.0.0.1:0", 4, 4, ops, exec, dispatch, effects, recovery, application.NewArtifacts(store, nil, application.ArtifactLimits{}, domain.SystemClock{}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))), application.NewPreparations(store, profiles, domain.SystemClock{}, log), application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}, log), application.NewGrantPolicies(store, domain.SystemClock{}, log), application.NewPreviews(store, domain.SystemClock{}), application.NewReleases(store, domain.SystemClock{}))
+	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, 100)
+	srv, err := grpctransport.NewServer("127.0.0.1:0", 4, 4, ops, exec, dispatch, effects, recovery, application.NewArtifacts(store, nil, application.ArtifactLimits{}, domain.SystemClock{}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))), application.NewPreparations(store, profiles, domain.SystemClock{}), application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}), application.NewGrantPolicies(store, domain.SystemClock{}, log), application.NewPreviews(store, domain.SystemClock{}), application.NewReleases(store, domain.SystemClock{}))
 	require.NoError(t, err)
 	addr, err := srv.Start()
 	require.NoError(t, err)

@@ -38,13 +38,13 @@ func TestAuthorityFromWorkloadIdentity(t *testing.T) {
 	inv, err := inventory.NewFilesystem(filepath.Join(t.TempDir(), "inv"))
 	require.NoError(t, err)
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	profiles := []domain.Profile{{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check", JobProfileID: "local-check-v1"}}
+	profiles := []domain.Profile{{ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: 15 * time.Minute, StepID: "local-check"}}
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, log)
 	exec := application.NewExecution(store, inv, jobs.Contract{}, profiles, domain.SystemClock{}, log)
 	authority := development.NewAuthority([]development.RouteAuthorization{{TenantID: "tenant_a", RouteID: "authorized-route"}}, 30*time.Second, domain.SystemClock{})
 	dispatch := application.NewDispatch(store, inv, priceBook(t), authority, development.NewNotSentEvidence(inv, nil), domain.SystemClock{}, log).WithDevelopmentCaps()
 	effects := application.NewEffects(store, inv, development.NewOutcomeQuery(inv, nil), domain.SystemClock{}, log)
-	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, log, 100)
+	recovery := application.NewRecovery(store, inv, development.NewOutcomeQuery(inv, nil), dispatch, effects, exec, profiles, development.NewNotSentEvidence(inv, nil), development.NewDispositionEvidence(inv, nil), domain.SystemClock{}, 100)
 
 	ca := identitytest.NewCA(t, "ca")
 	td := "anvilkit.local"
@@ -58,7 +58,7 @@ func TestAuthorityFromWorkloadIdentity(t *testing.T) {
 	require.NoError(t, err)
 	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: td, Policy: grpctransport.Policy()}, grpctransport.Capacity{Control: 4, Execution: 4, Streams: 4, StreamPerTenant: 4},
 		grpctransport.Dependencies{Ops: ops, Exec: exec, Dispatch: dispatch, Effects: effects, Recovery: recovery, Artifacts: application.NewArtifacts(store, nil, application.ArtifactLimits{}, domain.SystemClock{}, log),
-			Preparations: application.NewPreparations(store, profiles, domain.SystemClock{}, log), Generations: application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}, log),
+			Preparations: application.NewPreparations(store, profiles, domain.SystemClock{}), Generations: application.NewGenerations(store, dispatch, profiles, nil, domain.SystemClock{}),
 			Grants: application.NewGrantPolicies(store, domain.SystemClock{}, log), Previews: application.NewPreviews(store, domain.SystemClock{}), Releases: application.NewReleases(store, domain.SystemClock{})})
 	require.NoError(t, err)
 	addr, err := srv.Start()
