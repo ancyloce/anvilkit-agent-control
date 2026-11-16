@@ -278,7 +278,7 @@ func TestLineageIdentities(t *testing.T) {
 		transfer("prompt_"+name, "prompt", "", prompt)
 		subject := domain.Subject{ProfileID: "preparation-v1", SubjectDigest: prompt}
 		if len(base) == 2 {
-			subject.SourceOperationID, subject.SourceRevision = base[0], base[1]
+			subject.Base = domain.RefinementBase{OperationID: base[0], Revision: base[1]}
 		}
 		prep, _, err := ops.Create(ctx, cmd("tenant_a", "prep_"+name, name), scopeA, domain.KindPreparation, subject,
 			&domain.PreparationIntake{Prompt: domain.ArtifactBinding{TransferID: "xfer_prompt_" + name, Digest: prompt}})
@@ -453,8 +453,12 @@ func TestLineageIdentities(t *testing.T) {
 		}
 		prep, err := prepare("accepted", first.ID, "4")
 		require.NoError(t, err)
-		require.Equal(t, first.ID, prep.Subject.SourceOperationID)
-		require.Equal(t, "4", prep.Subject.SourceRevision)
+		require.Equal(t, domain.RefinementBase{OperationID: first.ID, Revision: "4"}, prep.Subject.Base)
+		require.Empty(t, prep.Subject.SourceOperationID, "a base is no source operation of the preparation's own")
+		require.Empty(t, prep.Subject.SourceRevision)
+		stored, err := ops.Get(ctx, scopeA, prep.ID)
+		require.NoError(t, err)
+		require.Equal(t, prep.Subject, stored.Subject, "the base is read back as it was accepted")
 		require.Empty(t, prep.Subject.SourceHandle, "a preparation binds no source artifact")
 	})
 
@@ -467,26 +471,33 @@ func TestLineageIdentities(t *testing.T) {
 		change := brief("hero-change", hero, first.ID, "4")
 		for name, subject := range map[string]domain.Subject{
 			"no-base":                {SubjectDigest: bound, BriefID: change.ID},
-			"no-revision":            {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID},
-			"client-artifact":        {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4", SourceHandle: "hdl_src"},
-			"package-version":        {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4", PackageVersion: "1.0.0"},
-			"another-revision":       {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "3"},
-			"another-lineage":        {SubjectDigest: unbound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4"},
-			"base-not-an-operation":  {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: "op_missing", SourceRevision: "4"},
-			"a-brief-without-a-base": {SubjectDigest: bound, BriefID: heroBrief.ID, SourceOperationID: first.ID, SourceRevision: "4"},
+			"no-revision":            {SubjectDigest: bound, BriefID: change.ID, Base: domain.RefinementBase{OperationID: first.ID}},
+			"a-release-source-shape": {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4"},
+			"its-own-revision":       {SubjectDigest: bound, BriefID: change.ID, SourceRevision: "1", Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}},
+			"client-artifact":        {SubjectDigest: bound, BriefID: change.ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}, SourceHandle: "hdl_src"},
+			"package-version":        {SubjectDigest: bound, BriefID: change.ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}, PackageVersion: "1.0.0"},
+			"another-revision":       {SubjectDigest: bound, BriefID: change.ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "3"}},
+			"another-lineage":        {SubjectDigest: unbound, BriefID: change.ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}},
+			"base-not-an-operation":  {SubjectDigest: bound, BriefID: change.ID, Base: domain.RefinementBase{OperationID: "op_missing", Revision: "4"}},
+			"a-brief-without-a-base": {SubjectDigest: bound, BriefID: heroBrief.ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}},
 		} {
 			_, err := refine("refused-"+name, subject)
 			require.ErrorIs(t, err, domain.ErrInvalid, name)
 		}
-		_, err := refine("renamed", domain.Subject{SubjectDigest: bound, BriefID: brief("banner-change", banner, first.ID, "4").ID, SourceOperationID: first.ID, SourceRevision: "4"})
+		_, err := refine("renamed", domain.Subject{SubjectDigest: bound, BriefID: brief("banner-change", banner, first.ID, "4").ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}})
 		require.ErrorIs(t, err, domain.ErrInvalid)
 		require.ErrorContains(t, err, domain.DenyIdentityMismatch, "a refinement's brief keeps the lineage's identity")
-		_, err = refine("unallocated", domain.Subject{SubjectDigest: bound, BriefID: brief("legacy-change", nil, first.ID, "4").ID, SourceOperationID: first.ID, SourceRevision: "4"})
+		_, err = refine("unallocated", domain.Subject{SubjectDigest: bound, BriefID: brief("legacy-change", nil, first.ID, "4").ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}})
 		require.ErrorContains(t, err, domain.DenyIdentityMismatch, "a brief without an identity refines nothing")
 
-		op, err := refine("hero", domain.Subject{SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4"})
+		op, err := refine("hero", domain.Subject{SubjectDigest: bound, BriefID: change.ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}})
 		require.NoError(t, err)
 		require.Equal(t, "hdl_gensrc", op.Subject.SourceHandle, "Control binds the base's certified source at its registered revision")
+		stored, err := ops.Get(ctx, scopeA, op.ID)
+		require.NoError(t, err)
+		require.Equal(t, domain.RefinementBase{OperationID: first.ID, Revision: "4"}, stored.Subject.Base)
+		require.Empty(t, stored.Subject.SourceRevision, "the base revision is not the candidate's")
+		require.Empty(t, stored.Subject.SourceOperationID)
 
 		// Its candidate registration is checked against the lineage's
 		// identity and becomes its candidate effect, as a Generation's.
@@ -498,7 +509,7 @@ func TestLineageIdentities(t *testing.T) {
 		require.Equal(t, p.Effect.ID, refined.CandidateEffectID)
 
 		_, _, err = ops.Create(ctx, cmd("tenant_a", "gen_based", "based"), scopeA, domain.KindGeneration,
-			domain.Subject{ProfileID: "generation-v1", SubjectDigest: bound, BriefID: heroBrief.ID, SourceOperationID: first.ID, SourceRevision: "4"}, nil)
+			domain.Subject{ProfileID: "generation-v1", SubjectDigest: bound, BriefID: heroBrief.ID, Base: domain.RefinementBase{OperationID: first.ID, Revision: "4"}}, nil)
 		require.ErrorIs(t, err, domain.ErrInvalid, "a generation names no base")
 		_, _, err = ops.Create(ctx, cmd("tenant_a", "gen_refine_brief", "refine-brief"), scopeA, domain.KindGeneration,
 			domain.Subject{ProfileID: "generation-v1", SubjectDigest: application.DigestOf([]byte("a new lineage")), BriefID: change.ID}, nil)

@@ -656,10 +656,10 @@ func artifactRelationship(ctx context.Context, r Repo, op *domain.Operation, t *
 	if (op.Kind == domain.KindPreviewBuild || op.Kind == domain.KindRelease || op.Kind == domain.KindRefinement) && op.Subject.SourceHandle != "" && op.Subject.SourceHandle == t.Handle {
 		return nil
 	}
-	if op.Kind == domain.KindPreparation && op.Subject.SourceOperationID != "" {
+	if op.Kind == domain.KindPreparation && op.Subject.Base.Named() {
 		// DEC-063: the analysis of a change reads the frozen brief of the
 		// base the preparation names.
-		base, err := r.GetOperationScoped(ctx, op.Subject.SourceOperationID, op.TenantID)
+		base, err := r.GetOperationScoped(ctx, op.Subject.Base.OperationID, op.TenantID)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {
 			return err
 		}
