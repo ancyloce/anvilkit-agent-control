@@ -57,11 +57,15 @@ func (s *Operations) Profile(id string) (domain.Profile, error) {
 // A Preparation carries its intake: the prompt must be a finalized prompt
 // artifact of the caller's tenant holding the declared digest (a transfer
 // bound to no operation, since the operation does not exist yet). A
+// Preparation of a change to a delivered component also names its base
+// (preparationBase, DEC-063): the brief it freezes then starts only a
+// refinement of that base. A
 // Generation or refinement binds a brief: the subject's brief must be the
 // current brief of a succeeded preparation of the same tenant; a
 // superseded brief starts no generation. A refinement also names its base
-// the way a release names its source, and its brief must keep the base
-// lineage's identity (refinementBase, DEC-062). A preview build names a finalized
+// the way a release names its source; its brief must have been prepared
+// for that base and keep the base lineage's identity (refinementBase,
+// DEC-062, DEC-063), and a brief prepared for a base starts no generation. A preview build names a finalized
 // source artifact of the tenant (verifySourceArtifact) and a release the
 // exact saved or registered revision of a source operation
 // (releaseSource).
@@ -77,6 +81,9 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 	case domain.KindPreparation:
 		if intake == nil {
 			return nil, false, fmt.Errorf("%w: a preparation needs its intake", domain.ErrInvalid)
+		}
+		if (subject.SourceOperationID == "") != (subject.SourceRevision == "") {
+			return nil, false, fmt.Errorf("%w: a preparation names its base as the source operation and the exact revision, or names none", domain.ErrInvalid)
 		}
 	case domain.KindGeneration, domain.KindRefinement:
 		if intake != nil {
@@ -113,8 +120,8 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 	if kind != domain.KindRelease && subject.PackageVersion != "" {
 		return nil, false, fmt.Errorf("%w: only a release names a package version", domain.ErrInvalid)
 	}
-	if kind != domain.KindRelease && kind != domain.KindRefinement && subject.SourceOperationID != "" {
-		return nil, false, fmt.Errorf("%w: only a release or a refinement names a source operation", domain.ErrInvalid)
+	if kind != domain.KindRelease && kind != domain.KindRefinement && kind != domain.KindPreparation && subject.SourceOperationID != "" {
+		return nil, false, fmt.Errorf("%w: only a release, a refinement or a preparation names a source operation", domain.ErrInvalid)
 	}
 	now := s.clock.Now()
 	for attempt := 0; attempt < 2; attempt++ {
@@ -146,10 +153,20 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 					return err
 				}
 				fresh.Preparation = intake
+				if subject.SourceOperationID != "" {
+					if err := preparationBase(ctx, r, scope, subject); err != nil {
+						return err
+					}
+				}
 			}
+			var prepared *domain.Operation
 			if subject.BriefID != "" {
-				if err := verifyBriefBinding(ctx, r, scope, subject.BriefID); err != nil {
+				var err error
+				if prepared, err = verifyBriefBinding(ctx, r, scope, subject.BriefID); err != nil {
 					return err
+				}
+				if kind == domain.KindGeneration && prepared.Subject.SourceOperationID != "" {
+					return fmt.Errorf("%w: brief %s was prepared for a refinement of %s and starts no generation", domain.ErrInvalid, subject.BriefID, prepared.Subject.SourceOperationID)
 				}
 			}
 			if subject.SourceHandle != "" {
@@ -165,7 +182,7 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 				fresh.Subject.SourceHandle = handle
 			}
 			if kind == domain.KindRefinement {
-				handle, err := refinementBase(ctx, r, scope, subject)
+				handle, err := refinementBase(ctx, r, scope, subject, prepared)
 				if err != nil {
 					return err
 				}
@@ -258,12 +275,22 @@ func releaseSource(ctx context.Context, r Repo, scope domain.Scope, subject doma
 }
 
 // refinementBase resolves the base a refinement names (DEC-062), under the
-// release's rules for a named source, and requires the refinement's brief
-// to allocate the identity recorded for the lineage: a refinement keeps
-// its component, and a brief that renames it is refused here instead of at
-// the candidate registration, after the paid work. The answer is the base
-// source artifact's handle, which the refinement binds as its seed.
-func refinementBase(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) (string, error) {
+// release's rules for a named source. The refinement's brief must come
+// from a preparation that named the same base (prepared; DEC-063): its
+// requirements were analyzed against that base, and a base that moved
+// since needs a new preparation. The brief must also allocate the identity
+// recorded for the lineage: a refinement keeps its component, and a brief
+// that renames it is refused here instead of at the candidate
+// registration, after the paid work. The answer is the base source
+// artifact's handle, which the refinement binds as its seed.
+func refinementBase(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject, prepared *domain.Operation) (string, error) {
+	if prepared == nil || prepared.Subject.SourceOperationID == "" {
+		return "", fmt.Errorf("%w: brief %s was not prepared for a base; a refinement binds the brief of a preparation that named its base", domain.ErrInvalid, subject.BriefID)
+	}
+	if prepared.Subject.SourceOperationID != subject.SourceOperationID || prepared.Subject.SourceRevision != subject.SourceRevision {
+		return "", fmt.Errorf("%w: brief %s was prepared for base %s at revision %s, the refinement names %s at revision %s", domain.ErrInvalid, subject.BriefID,
+			prepared.Subject.SourceOperationID, prepared.Subject.SourceRevision, subject.SourceOperationID, subject.SourceRevision)
+	}
 	handle, recorded, err := namedSource(ctx, r, scope, subject, "refinement")
 	if err != nil {
 		return "", err
@@ -281,8 +308,41 @@ func refinementBase(ctx context.Context, r Repo, scope domain.Scope, subject dom
 	return handle, nil
 }
 
-// namedSource resolves the source operation and revision a release or a
-// refinement (what) names to the source artifact's handle and the
+// preparationBase checks the base a preparation names (DEC-063): a
+// generation or refinement of the caller's scope whose certified source
+// holds the named registered revision, on a lineage with an allocated
+// identity that the base's own brief allocates. That brief is what the
+// analysis reads and what the new brief takes its identity and version
+// from; a preview's saved edit has no brief and is no base here.
+func preparationBase(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) error {
+	base, err := scopedOperation(ctx, r, scope, subject.SourceOperationID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return fmt.Errorf("%w: source operation %s is not an operation of this scope", domain.ErrInvalid, subject.SourceOperationID)
+	}
+	if err != nil {
+		return err
+	}
+	if (base.Kind != domain.KindGeneration && base.Kind != domain.KindRefinement) || base.Subject.BriefID == "" {
+		return fmt.Errorf("%w: source operation %s is a %s: a preparation's base is a generation or a refinement, whose brief the analysis reads", domain.ErrInvalid, base.ID, base.Kind)
+	}
+	named := subject
+	named.SubjectDigest = base.Subject.SubjectDigest
+	_, recorded, err := namedSource(ctx, r, scope, named, "preparation")
+	if err != nil {
+		return err
+	}
+	b, err := r.GetBrief(ctx, base.Subject.BriefID)
+	if err != nil {
+		return err
+	}
+	if b.Component == nil || *b.Component != recorded.Identity {
+		return fmt.Errorf("%w: %s: the brief of source operation %s does not allocate the identity of lineage %s", domain.ErrInvalid, domain.DenyIdentityMismatch, base.ID, recorded.Lineage)
+	}
+	return nil
+}
+
+// namedSource resolves the source operation and revision a release, a
+// refinement or a preparation (what) names to the source artifact's handle and the
 // lineage's recorded identity.
 func namedSource(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject, what string) (string, *domain.LineageIdentity, error) {
 	src, err := scopedOperation(ctx, r, scope, subject.SourceOperationID)
@@ -318,29 +378,30 @@ func namedSource(ctx context.Context, r Repo, scope domain.Scope, subject domain
 }
 
 // verifyBriefBinding checks that the brief a generation binds is the
-// current brief of a succeeded preparation of the caller's tenant.
-func verifyBriefBinding(ctx context.Context, r Repo, scope domain.Scope, briefID string) error {
+// current brief of a succeeded preparation of the caller's tenant, and
+// answers that preparation.
+func verifyBriefBinding(ctx context.Context, r Repo, scope domain.Scope, briefID string) (*domain.Operation, error) {
 	b, err := r.GetBrief(ctx, briefID)
 	if errors.Is(err, domain.ErrNotFound) {
-		return fmt.Errorf("%w: brief %s is not a brief of this scope", domain.ErrInvalid, briefID)
+		return nil, fmt.Errorf("%w: brief %s is not a brief of this scope", domain.ErrInvalid, briefID)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := b.StartsGeneration(scope.TenantID); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			return fmt.Errorf("%w: brief %s is not a brief of this scope", domain.ErrInvalid, briefID)
+			return nil, fmt.Errorf("%w: brief %s is not a brief of this scope", domain.ErrInvalid, briefID)
 		}
-		return err
+		return nil, err
 	}
 	prep, err := scopedOperation(ctx, r, scope, b.OperationID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if prep.Lifecycle != domain.LifecycleSucceeded {
-		return fmt.Errorf("%w: brief %s belongs to preparation %s which is %s", domain.ErrStaleExecution, briefID, prep.ID, prep.Lifecycle)
+		return nil, fmt.Errorf("%w: brief %s belongs to preparation %s which is %s", domain.ErrStaleExecution, briefID, prep.ID, prep.Lifecycle)
 	}
-	return nil
+	return prep, nil
 }
 
 // confirmIntake writes the intake obligation to the independent inventory

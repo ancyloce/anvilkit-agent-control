@@ -622,7 +622,8 @@ func readerAuthority(ctx context.Context, r Repo, op *domain.Operation, instance
 
 // artifactRelationship establishes that the operation may read the
 // artifact: its prompt, an accepted answer, the brief its subject binds,
-// the source handle of a preview build, release or refinement, or an artifact an
+// the brief of the base a preparation names, the source handle of a
+// preview build, release or refinement, or an artifact an
 // accepted stage of one of its attempts binds. A finalized transfer that
 // no accepted record names is not an input.
 func artifactRelationship(ctx context.Context, r Repo, op *domain.Operation, t *domain.Transfer) error {
@@ -655,12 +656,29 @@ func artifactRelationship(ctx context.Context, r Repo, op *domain.Operation, t *
 	if (op.Kind == domain.KindPreviewBuild || op.Kind == domain.KindRelease || op.Kind == domain.KindRefinement) && op.Subject.SourceHandle != "" && op.Subject.SourceHandle == t.Handle {
 		return nil
 	}
+	if op.Kind == domain.KindPreparation && op.Subject.SourceOperationID != "" {
+		// DEC-063: the analysis of a change reads the frozen brief of the
+		// base the preparation names.
+		base, err := r.GetOperationScoped(ctx, op.Subject.SourceOperationID, op.TenantID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+		if base != nil && base.Subject.BriefID != "" {
+			b, err := r.GetBrief(ctx, base.Subject.BriefID)
+			if err != nil && !errors.Is(err, domain.ErrNotFound) {
+				return err
+			}
+			if b != nil && b.Brief.TransferID == t.ID && b.TenantID == op.TenantID {
+				return nil
+			}
+		}
+	}
 	if _, err := r.GetStageArtifactByTransfer(ctx, t.ID, op.ID); err == nil {
 		return nil
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
-	return fmt.Errorf("%w: transfer %s is no input of operation %s: not its prompt, an accepted answer, its brief, its preview, release or refinement source or an accepted stage artifact", domain.ErrStaleExecution, t.ID, op.ID)
+	return fmt.Errorf("%w: transfer %s is no input of operation %s: not its prompt, an accepted answer, its brief, its base's brief, its preview, release or refinement source or an accepted stage artifact", domain.ErrStaleExecution, t.ID, op.ID)
 }
 
 // finalizeSlot acquires one of the bounded finalization slots.
