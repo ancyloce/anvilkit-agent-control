@@ -68,8 +68,8 @@ func (s *generationServer) GetGeneration(ctx context.Context, req *controlv1.Get
 		Lease: toLease(op.Lease), DefinitionActivation: op.DefinitionActivation, MaxRepairs: domain.Revision(v.Profile.MaxRepairs).String(),
 		CodegenProfileId: v.Profile.CodegenProfileID, ValidatorProfileId: v.Profile.ValidatorProfileID, CandidateEffectId: optString(op.CandidateEffectID),
 		Subject: &controlv1.OperationSubject{ProfileId: op.Subject.ProfileID, SubjectDigest: string(op.Subject.SubjectDigest), BriefId: optString(op.Subject.BriefID), SourceRevision: optString(op.Subject.SourceRevision),
-			// A refinement's base (DEC-062): the source operation it names and the source artifact Control bound.
-			SourceHandle: optString(op.Subject.SourceHandle), SourceOperationId: optString(op.Subject.SourceOperationID)},
+			// A refinement's base (DEC-062): the base it names and the source artifact Control bound for it.
+			SourceHandle: optString(op.Subject.SourceHandle), RefinementBase: toRefinementBase(op.Subject.Base)},
 		ActorId: op.ActorID,
 	}
 	if v.Brief != nil {

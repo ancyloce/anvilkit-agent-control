@@ -117,8 +117,18 @@ func optString(s string) *string {
 	return &s
 }
 
+// toRefinementBase states the base a refinement or the preparation of its
+// change names; nil for every other subject.
+func toRefinementBase(b domain.RefinementBase) *controlv1.RefinementBase {
+	if !b.Named() {
+		return nil
+	}
+	return &controlv1.RefinementBase{SourceOperationId: b.OperationID, SourceRevision: b.Revision}
+}
+
 func toView(o *domain.Operation) *controlv1.OperationView {
 	subject := &controlv1.OperationSubject{ProfileId: o.Subject.ProfileID, SubjectDigest: string(o.Subject.SubjectDigest), BriefId: optString(o.Subject.BriefID), SourceRevision: optString(o.Subject.SourceRevision), SourceHandle: optString(o.Subject.SourceHandle), SourceOperationId: optString(o.Subject.SourceOperationID), PackageVersion: optString(o.Subject.PackageVersion)}
+	subject.RefinementBase = toRefinementBase(o.Subject.Base)
 	v := &controlv1.OperationView{
 		OperationId: o.ID, TenantId: o.TenantID, ProjectId: o.ProjectID, ActorId: o.ActorID, Kind: kindToProto[o.Kind], Subject: subject,
 		Lifecycle: lifecycleToProto[o.Lifecycle], Phase: o.Phase, Control: controlToProto[o.Control], Cleanup: cleanupToProto[o.Cleanup], Finance: financeToProto[o.Finance],
@@ -221,6 +231,9 @@ func (s *operationServer) CreateOperation(ctx context.Context, req *controlv1.Cr
 		return nil, toStatus(err)
 	}
 	subject := domain.Subject{ProfileID: req.GetSubject().GetProfileId(), SubjectDigest: digest, BriefID: req.GetSubject().GetBriefId(), SourceRevision: req.GetSubject().GetSourceRevision(), SourceHandle: req.GetSubject().GetSourceHandle(), SourceOperationID: req.GetSubject().GetSourceOperationId(), PackageVersion: req.GetSubject().GetPackageVersion()}
+	if b := req.GetSubject().GetRefinementBase(); b != nil {
+		subject.Base = domain.RefinementBase{OperationID: b.GetSourceOperationId(), Revision: b.GetSourceRevision()}
+	}
 	var intake *domain.PreparationIntake
 	if p := req.GetPreparation(); p != nil {
 		in, err := toIntake(p)
