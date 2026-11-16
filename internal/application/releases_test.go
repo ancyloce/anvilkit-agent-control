@@ -251,6 +251,7 @@ func TestLineageIdentities(t *testing.T) {
 	profiles := []domain.Profile{
 		{ID: "preparation-v1", Kind: domain.KindPreparation, OperationDeadline: 10 * time.Hour, StepID: "analysis", MultiStep: true},
 		{ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: 2 * time.Hour, StepID: "codegen", MultiStep: true},
+		{ID: "refinement-v1", Kind: domain.KindRefinement, OperationDeadline: 2 * time.Hour, StepID: "codegen", MultiStep: true},
 		previewProfile, releaseProfile,
 	}
 	ops := application.NewOperations(store, inv, profiles, domain.SystemClock{}, testLog)
@@ -428,6 +429,49 @@ func TestLineageIdentities(t *testing.T) {
 		rel, err := release("gen", bound, first)
 		require.NoError(t, err)
 		require.Equal(t, "hdl_gensrc", rel.Subject.SourceHandle, "the Generation's certified source at its registered revision")
+	})
+
+	t.Run("a refinement names its base, binds the base source and keeps the lineage's identity (DEC-062)", func(t *testing.T) {
+		refine := func(name string, subject domain.Subject) (*domain.Operation, error) {
+			subject.ProfileID = "refinement-v1"
+			op, _, err := ops.Create(ctx, cmd("tenant_a", "ref_"+name, name), scopeA, domain.KindRefinement, subject, nil)
+			return op, err
+		}
+		change := brief("hero-change", hero)
+		for name, subject := range map[string]domain.Subject{
+			"no-base":               {SubjectDigest: bound, BriefID: change.ID},
+			"no-revision":           {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID},
+			"client-artifact":       {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4", SourceHandle: "hdl_src"},
+			"package-version":       {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4", PackageVersion: "1.0.0"},
+			"another-revision":      {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "3"},
+			"another-lineage":       {SubjectDigest: unbound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4"},
+			"base-not-an-operation": {SubjectDigest: bound, BriefID: change.ID, SourceOperationID: "op_missing", SourceRevision: "4"},
+		} {
+			_, err := refine("refused-"+name, subject)
+			require.ErrorIs(t, err, domain.ErrInvalid, name)
+		}
+		_, err := refine("renamed", domain.Subject{SubjectDigest: bound, BriefID: brief("banner-change", banner).ID, SourceOperationID: first.ID, SourceRevision: "4"})
+		require.ErrorIs(t, err, domain.ErrInvalid)
+		require.ErrorContains(t, err, domain.DenyIdentityMismatch, "a refinement's brief keeps the lineage's identity")
+		_, err = refine("unallocated", domain.Subject{SubjectDigest: bound, BriefID: brief("legacy-change", nil).ID, SourceOperationID: first.ID, SourceRevision: "4"})
+		require.ErrorContains(t, err, domain.DenyIdentityMismatch, "a brief without an identity refines nothing")
+
+		op, err := refine("hero", domain.Subject{SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4"})
+		require.NoError(t, err)
+		require.Equal(t, "hdl_gensrc", op.Subject.SourceHandle, "Control binds the base's certified source at its registered revision")
+
+		// Its candidate registration is checked against the lineage's
+		// identity and becomes its candidate effect, as a Generation's.
+		p := register(op)
+		require.True(t, p.Permitted, p.DenialCode)
+		require.Equal(t, first.ID, recorded(bound).OperationID, "the lineage keeps the identity its first generation bound")
+		refined, err := ops.Get(ctx, scopeA, op.ID)
+		require.NoError(t, err)
+		require.Equal(t, p.Effect.ID, refined.CandidateEffectID)
+
+		_, _, err = ops.Create(ctx, cmd("tenant_a", "gen_based", "based"), scopeA, domain.KindGeneration,
+			domain.Subject{ProfileID: "generation-v1", SubjectDigest: bound, BriefID: change.ID, SourceOperationID: first.ID, SourceRevision: "4"}, nil)
+		require.ErrorIs(t, err, domain.ErrInvalid, "a generation names no base")
 	})
 
 	t.Run("previews and releases read the lineage's identity; another kind or an unbound lineage none", func(t *testing.T) {

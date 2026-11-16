@@ -59,7 +59,9 @@ func (s *Operations) Profile(id string) (domain.Profile, error) {
 // bound to no operation, since the operation does not exist yet). A
 // Generation or refinement binds a brief: the subject's brief must be the
 // current brief of a succeeded preparation of the same tenant; a
-// superseded brief starts no generation. A preview build names a finalized
+// superseded brief starts no generation. A refinement also names its base
+// the way a release names its source, and its brief must keep the base
+// lineage's identity (refinementBase, DEC-062). A preview build names a finalized
 // source artifact of the tenant (verifySourceArtifact) and a release the
 // exact saved or registered revision of a source operation
 // (releaseSource).
@@ -83,6 +85,9 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 		if subject.BriefID == "" {
 			return nil, false, fmt.Errorf("%w: a %s binds a brief", domain.ErrInvalid, kind)
 		}
+		if kind == domain.KindRefinement && (subject.SourceOperationID == "" || subject.SourceRevision == "" || subject.SourceHandle != "") {
+			return nil, false, fmt.Errorf("%w: a refinement names its base as the source operation and the exact revision; Control binds the source artifact itself", domain.ErrInvalid)
+		}
 	case domain.KindPreviewBuild:
 		if intake != nil || subject.BriefID != "" {
 			return nil, false, fmt.Errorf("%w: a preview build binds its source, not an intake or a brief", domain.ErrInvalid)
@@ -105,8 +110,11 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 			return nil, false, fmt.Errorf("%w: only a preview build names a source artifact", domain.ErrInvalid)
 		}
 	}
-	if kind != domain.KindRelease && (subject.SourceOperationID != "" || subject.PackageVersion != "") {
-		return nil, false, fmt.Errorf("%w: only a release names a source operation and a package version", domain.ErrInvalid)
+	if kind != domain.KindRelease && subject.PackageVersion != "" {
+		return nil, false, fmt.Errorf("%w: only a release names a package version", domain.ErrInvalid)
+	}
+	if kind != domain.KindRelease && kind != domain.KindRefinement && subject.SourceOperationID != "" {
+		return nil, false, fmt.Errorf("%w: only a release or a refinement names a source operation", domain.ErrInvalid)
 	}
 	now := s.clock.Now()
 	for attempt := 0; attempt < 2; attempt++ {
@@ -151,6 +159,13 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 			}
 			if kind == domain.KindRelease {
 				handle, err := releaseSource(ctx, r, scope, subject)
+				if err != nil {
+					return err
+				}
+				fresh.Subject.SourceHandle = handle
+			}
+			if kind == domain.KindRefinement {
+				handle, err := refinementBase(ctx, r, scope, subject)
 				if err != nil {
 					return err
 				}
@@ -238,34 +253,68 @@ func verifySourceArtifact(ctx context.Context, r Repo, scope domain.Scope, subje
 // artifact's handle, which the release binds; a revision that was only a
 // base of an edit is refused.
 func releaseSource(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) (string, error) {
-	src, err := scopedOperation(ctx, r, scope, subject.SourceOperationID)
-	if errors.Is(err, domain.ErrNotFound) {
-		return "", fmt.Errorf("%w: source operation %s is not an operation of this scope", domain.ErrInvalid, subject.SourceOperationID)
-	}
+	handle, _, err := namedSource(ctx, r, scope, subject, "release")
+	return handle, err
+}
+
+// refinementBase resolves the base a refinement names (DEC-062), under the
+// release's rules for a named source, and requires the refinement's brief
+// to allocate the identity recorded for the lineage: a refinement keeps
+// its component, and a brief that renames it is refused here instead of at
+// the candidate registration, after the paid work. The answer is the base
+// source artifact's handle, which the refinement binds as its seed.
+func refinementBase(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject) (string, error) {
+	handle, recorded, err := namedSource(ctx, r, scope, subject, "refinement")
 	if err != nil {
 		return "", err
+	}
+	b, err := r.GetBrief(ctx, subject.BriefID)
+	if err != nil {
+		return "", err
+	}
+	if b.Component == nil {
+		return "", fmt.Errorf("%w: %s: brief %s allocates no component identity", domain.ErrInvalid, domain.DenyIdentityMismatch, b.ID)
+	}
+	if *b.Component != recorded.Identity {
+		return "", fmt.Errorf("%w: %s: lineage %s is allocated %s, brief %s allocates %s", domain.ErrInvalid, domain.DenyIdentityMismatch, recorded.Lineage, recorded.Identity, b.ID, *b.Component)
+	}
+	return handle, nil
+}
+
+// namedSource resolves the source operation and revision a release or a
+// refinement (what) names to the source artifact's handle and the
+// lineage's recorded identity.
+func namedSource(ctx context.Context, r Repo, scope domain.Scope, subject domain.Subject, what string) (string, *domain.LineageIdentity, error) {
+	src, err := scopedOperation(ctx, r, scope, subject.SourceOperationID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return "", nil, fmt.Errorf("%w: source operation %s is not an operation of this scope", domain.ErrInvalid, subject.SourceOperationID)
+	}
+	if err != nil {
+		return "", nil, err
 	}
 	out, saved, err := resolveSource(ctx, r, src)
 	if errors.Is(err, domain.ErrNotFound) {
-		return "", fmt.Errorf("%w: source operation %s holds no released source", domain.ErrInvalid, src.ID)
+		return "", nil, fmt.Errorf("%w: source operation %s holds no certified source", domain.ErrInvalid, src.ID)
 	}
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	switch {
 	case out.Lineage != subject.SubjectDigest:
-		return "", fmt.Errorf("%w: source operation %s edits lineage %s, the release names %s", domain.ErrInvalid, src.ID, out.Lineage, subject.SubjectDigest)
+		return "", nil, fmt.Errorf("%w: source operation %s edits lineage %s, the %s names %s", domain.ErrInvalid, src.ID, out.Lineage, what, subject.SubjectDigest)
 	case !saved || out.Revision == "":
-		return "", fmt.Errorf("%w: source operation %s holds no saved or registered revision", domain.ErrInvalid, src.ID)
+		return "", nil, fmt.Errorf("%w: source operation %s holds no saved or registered revision", domain.ErrInvalid, src.ID)
 	case out.Revision != subject.SourceRevision:
-		return "", fmt.Errorf("%w: source operation %s holds revision %s, the release names %s", domain.ErrInvalid, src.ID, out.Revision, subject.SourceRevision)
+		return "", nil, fmt.Errorf("%w: source operation %s holds revision %s, the %s names %s", domain.ErrInvalid, src.ID, out.Revision, what, subject.SourceRevision)
 	}
-	if _, err := r.GetLineageIdentity(ctx, scope.TenantID, subject.SubjectDigest); errors.Is(err, domain.ErrNotFound) {
-		return "", fmt.Errorf("%w: %s: the lineage %s has no allocated component identity", domain.ErrInvalid, domain.IdentityUnallocated, subject.SubjectDigest)
-	} else if err != nil {
-		return "", err
+	recorded, err := r.GetLineageIdentity(ctx, scope.TenantID, subject.SubjectDigest)
+	if errors.Is(err, domain.ErrNotFound) {
+		return "", nil, fmt.Errorf("%w: %s: the lineage %s has no allocated component identity", domain.ErrInvalid, domain.IdentityUnallocated, subject.SubjectDigest)
 	}
-	return out.Source.Handle, nil
+	if err != nil {
+		return "", nil, err
+	}
+	return out.Source.Handle, recorded, nil
 }
 
 // verifyBriefBinding checks that the brief a generation binds is the

@@ -86,11 +86,13 @@ type Subject struct {
 	SourceRevision string
 	// SourceHandle names the finalized source artifact of a preview_build
 	// (the edited source; its digest is SubjectDigest) or, bound by
-	// Control, the released source of a release.
+	// Control, the released source of a release or the base source of a
+	// refinement.
 	SourceHandle string
 	// SourceOperationID and PackageVersion bind a release (P21): the
 	// operation whose saved or registered source it releases and the
-	// exact package version released.
+	// exact package version released. A refinement names its base with
+	// SourceOperationID and SourceRevision (DEC-062).
 	SourceOperationID string
 	PackageVersion    string
 }

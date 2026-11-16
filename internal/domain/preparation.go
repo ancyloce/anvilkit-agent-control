@@ -328,12 +328,14 @@ const (
 	IdentityUnallocated = "IDENTITY_UNALLOCATED"
 )
 
-// BindsLineage reports whether the effect is a Generation's candidate
-// registration on its own lineage, the business write that binds the
-// lineage identity. A preview's save names the same subject form on a
-// preview_build operation and binds nothing.
+// BindsLineage reports whether the effect is a Generation's or a
+// refinement's candidate registration on its own lineage, the business
+// write that binds the lineage identity (a refinement's lineage already
+// holds one, so its registration is checked against it: DEC-062). A
+// preview's save names the same subject form on a preview_build operation
+// and binds nothing.
 func (o *Operation) BindsLineage(req EffectRequest) bool {
-	return o.Kind == KindGeneration && o.Subject.BriefID != "" && req.Kind == EffectBusinessWrite && req.CanonicalSubject == "source:"+string(o.Subject.SubjectDigest)
+	return (o.Kind == KindGeneration || o.Kind == KindRefinement) && o.Subject.BriefID != "" && req.Kind == EffectBusinessWrite && req.CanonicalSubject == "source:"+string(o.Subject.SubjectDigest)
 }
 
 // CheckLineageIdentity denies a registration whose brief allocates another

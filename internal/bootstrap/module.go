@@ -31,7 +31,8 @@ import (
 // The stable registered workflow types (architecture.md "API, events and
 // Temporal"): the LocalCheck fixture, the Preparation and Generation
 // business workflows (P13), the preview build (P20), the release (P21) and
-// the reconciliation workflow of a recovery run (P07). Every other kind has
+// the reconciliation workflow of a recovery run (P07). A refinement runs the
+// Generation workflow from a base source (DEC-062). Every other kind has
 // no registration (WorkflowNames) and is not started.
 const (
 	LocalCheckWorkflowName  = "LocalCheckWorkflow"
@@ -51,14 +52,15 @@ func WorkflowNames() map[domain.OperationKind]string {
 	return map[domain.OperationKind]string{
 		domain.KindLocalCheck: LocalCheckWorkflowName, domain.KindPreparation: PreparationWorkflowName, domain.KindGeneration: GenerationWorkflowName,
 		domain.KindPreviewBuild: PreviewWorkflowName, domain.KindRelease: ReleaseWorkflowName,
+		domain.KindRefinement: GenerationWorkflowName,
 	}
 }
 
 // Profiles returns the reviewed operation profiles of this build: the
 // LocalCheck fixture, the Preparation profile and the Generation profile
-// (P13), the preview build (P20) and the release (P21); a kind without a
-// reviewed profile here (refinement) is rejected with PROFILE_UNQUALIFIED.
-// The money values were validated by the configuration.
+// (P13), the refinement (DEC-062), the preview build (P20) and the release
+// (P21); a profile id that is not listed here is rejected with
+// PROFILE_UNQUALIFIED. The money values were validated by the configuration.
 func Profiles(cfg config.Config) []domain.Profile {
 	prep, gen := cfg.Profiles.Preparation, cfg.Profiles.Generation
 	prepFunding, _ := domain.ParseMoney(prep.Funding.Currency, prep.Funding.Amount)
@@ -75,6 +77,14 @@ func Profiles(cfg config.Config) []domain.Profile {
 		},
 		{
 			ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: gen.QueueDeadline, StepID: "codegen", MultiStep: true,
+			Funding: &genFunding, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
+			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile,
+		},
+		{
+			// DEC-062: a Generation that starts from the base source its
+			// subject names, under the generation's pool, funding, windows
+			// and repair bound (requirements §2 funds both alike).
+			ID: "refinement-v1", Kind: domain.KindRefinement, OperationDeadline: gen.QueueDeadline, StepID: "codegen", MultiStep: true,
 			Funding: &genFunding, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
 			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile,
 		},
