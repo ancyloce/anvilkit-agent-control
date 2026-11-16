@@ -91,12 +91,29 @@ type Subject struct {
 	SourceHandle string
 	// SourceOperationID and PackageVersion bind a release (P21): the
 	// operation whose saved or registered source it releases and the
-	// exact package version released. A refinement names its base with
-	// SourceOperationID and SourceRevision (DEC-062), and so does the
-	// preparation that analyzes the change (DEC-063).
+	// exact package version released.
 	SourceOperationID string
 	PackageVersion    string
+	// Base names the delivered component a refinement changes, and the
+	// same for the preparation that analyzes the change (DEC-062, DEC-063).
+	// SourceRevision and SourceOperationID keep their own meanings and are
+	// not set beside it.
+	Base RefinementBase
 }
+
+// RefinementBase is the base of a refinement: the generation or refinement
+// operation whose registered source the change starts from, and the exact
+// revision the source authority named for that source.
+type RefinementBase struct {
+	OperationID string
+	Revision    string
+}
+
+// Named reports whether a base is named.
+func (b RefinementBase) Named() bool { return b.OperationID != "" || b.Revision != "" }
+
+// Complete reports whether both parts of the base are named.
+func (b RefinementBase) Complete() bool { return b.OperationID != "" && b.Revision != "" }
 
 // ArtifactBinding names a finalized transfer and the digest it must hold.
 type ArtifactBinding struct {
