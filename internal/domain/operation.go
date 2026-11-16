@@ -92,7 +92,8 @@ type Subject struct {
 	// SourceOperationID and PackageVersion bind a release (P21): the
 	// operation whose saved or registered source it releases and the
 	// exact package version released. A refinement names its base with
-	// SourceOperationID and SourceRevision (DEC-062).
+	// SourceOperationID and SourceRevision (DEC-062), and so does the
+	// preparation that analyzes the change (DEC-063).
 	SourceOperationID string
 	PackageVersion    string
 }
