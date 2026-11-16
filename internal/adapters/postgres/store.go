@@ -121,7 +121,7 @@ func toOperation(m sqlc.Operation) *domain.Operation {
 	return &domain.Operation{
 		ID: m.OperationID, TenantID: m.TenantID, ProjectID: m.ProjectID, ActorID: m.ActorID, CommandID: m.CommandID,
 		Kind:           domain.OperationKind(m.Kind),
-		Subject:        domain.Subject{ProfileID: m.ProfileID, SubjectDigest: domain.Digest(m.SubjectDigest), BriefID: deref(m.BriefID), SourceRevision: deref(m.SourceRevision), SourceHandle: deref(m.SourceHandle), SourceOperationID: deref(m.SourceOperationID), PackageVersion: deref(m.PackageVersion)},
+		Subject:        toSubject(m),
 		SemanticDigest: domain.Digest(m.SemanticDigest), Lifecycle: domain.Lifecycle(m.Lifecycle), Phase: m.Phase,
 		Control: domain.ControlState(m.ControlState), Cleanup: domain.CleanupState(m.CleanupState), Finance: domain.FinanceState(m.FinanceState),
 		FailureCode: deref(m.FailureCode), Revision: domain.Revision(m.Revision), NextEventSeq: uint64(m.NextEventSeq),
@@ -144,6 +144,35 @@ func derefInt(v *int64) int64 {
 
 // toIntake reads the preparation intake columns; a row without a prompt is
 // no preparation.
+// namesBase reports the kinds whose subject names a refinement base
+// instead of a source operation and revision of their own: a refinement
+// and the preparation of its change (DEC-062, DEC-063).
+func namesBase(kind domain.OperationKind) bool {
+	return kind == domain.KindRefinement || kind == domain.KindPreparation
+}
+
+// toSubject reads an operation's subject. The columns source_operation_id
+// and source_revision hold a release's source and a preview's or
+// generation's revision; for the kinds that name a refinement base they
+// hold the base, which those kinds name instead (acceptance refuses both).
+func toSubject(m sqlc.Operation) domain.Subject {
+	s := domain.Subject{ProfileID: m.ProfileID, SubjectDigest: domain.Digest(m.SubjectDigest), BriefID: deref(m.BriefID), SourceHandle: deref(m.SourceHandle), PackageVersion: deref(m.PackageVersion)}
+	if namesBase(domain.OperationKind(m.Kind)) {
+		s.Base = domain.RefinementBase{OperationID: deref(m.SourceOperationID), Revision: deref(m.SourceRevision)}
+	} else {
+		s.SourceOperationID, s.SourceRevision = deref(m.SourceOperationID), deref(m.SourceRevision)
+	}
+	return s
+}
+
+// sourceColumns is toSubject's inverse for the two shared columns.
+func sourceColumns(o *domain.Operation) (operationID, revision string) {
+	if namesBase(o.Kind) {
+		return o.Subject.Base.OperationID, o.Subject.Base.Revision
+	}
+	return o.Subject.SourceOperationID, o.Subject.SourceRevision
+}
+
 func toIntake(m sqlc.Operation) *domain.PreparationIntake {
 	if m.PromptTransferID == nil {
 		return nil
@@ -163,10 +192,11 @@ func jsonOrEmptyList(v any) []byte {
 }
 
 func (r *repo) InsertOperation(ctx context.Context, o *domain.Operation) error {
+	sourceOperationID, sourceRevision := sourceColumns(o)
 	return r.q.InsertOperation(ctx, sqlc.InsertOperationParams{
 		OperationID: o.ID, TenantID: o.TenantID, ProjectID: o.ProjectID, ActorID: o.ActorID, CommandID: o.CommandID,
 		Kind: string(o.Kind), ProfileID: o.Subject.ProfileID, SubjectDigest: string(o.Subject.SubjectDigest),
-		BriefID: strPtr(o.Subject.BriefID), SourceRevision: strPtr(o.Subject.SourceRevision), SourceHandle: strPtr(o.Subject.SourceHandle), SourceOperationID: strPtr(o.Subject.SourceOperationID), PackageVersion: strPtr(o.Subject.PackageVersion), SemanticDigest: string(o.SemanticDigest),
+		BriefID: strPtr(o.Subject.BriefID), SourceRevision: strPtr(sourceRevision), SourceHandle: strPtr(o.Subject.SourceHandle), SourceOperationID: strPtr(sourceOperationID), PackageVersion: strPtr(o.Subject.PackageVersion), SemanticDigest: string(o.SemanticDigest),
 		Lifecycle: string(o.Lifecycle), Phase: o.Phase, ControlState: string(o.Control), CleanupState: string(o.Cleanup),
 		FinanceState: string(o.Finance), FailureCode: strPtr(o.FailureCode), Revision: int64(o.Revision), NextEventSeq: int64(o.NextEventSeq),
 		ExecutionEpoch: int64(o.ExecutionEpoch), RecoveryEpoch: int64(o.RecoveryEpoch), Deadline: ts(o.Deadline),
