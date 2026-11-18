@@ -153,6 +153,20 @@ func TestControlSchema(t *testing.T) {
 	require.False(t, retInsert)
 	require.False(t, retUpdate)
 	require.False(t, appDelete)
+	// 00020 (DEC-066): the runtime role creates and adjusts credit pools and
+	// appends credit entries, but never rewrites an entry; a credit pool is
+	// a tenant or actor pool (the actor exactly when the level says so).
+	var poolUpdate, entryInsert, entryUpdate bool
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege('anvilkit_control_app', 'credit_pools', 'UPDATE'),
+		has_table_privilege('anvilkit_control_app', 'credit_entries', 'INSERT'),
+		has_table_privilege('anvilkit_control_app', 'credit_entries', 'UPDATE')`).Scan(&poolUpdate, &entryInsert, &entryUpdate))
+	require.True(t, poolUpdate)
+	require.True(t, entryInsert)
+	require.False(t, entryUpdate)
+	_, err = db.ExecContext(ctx, `INSERT INTO credit_pools (credit_pool_id, level, tenant_id, actor_id, period_start, period_end, limit_credits, created_by) VALUES ('crp-bad', 'tenant', 't', 'u', now(), now() + interval '1 day', 1, 'test')`)
+	require.Error(t, err, "a tenant credit pool names no actor")
+	_, err = db.ExecContext(ctx, `INSERT INTO credit_pools (credit_pool_id, level, tenant_id, period_start, period_end, limit_credits, created_by) VALUES ('crp-platform', 'platform', 't', now(), now() + interval '1 day', 1, 'test')`)
+	require.Error(t, err, "there is no platform credit pool")
 }
 
 // grantPolicyBarrier: 00010 keeps one registration per (tenant, command),
