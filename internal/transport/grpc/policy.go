@@ -59,7 +59,7 @@ func Policy() identity.Policy {
 	// decides on the verified roles); commercial authorization for the
 	// owners that disclose or execute on a user's behalf.
 	add("PriceAdminService", []string{"PublishPriceRevision", "WithdrawPriceRevision", "GetPriceRevision"}, api)
-	add("BudgetPoolService", []string{"CreatePool", "AdjustPool", "GetPool", "SetCostCap", "GetCostCap"}, api)
+	add("BudgetPoolService", []string{"CreatePool", "AdjustPool", "GetPool", "FindPool", "SetCostCap", "GetCostCap", "CreateCreditPool", "AdjustCreditPool", "FindCreditPool"}, api)
 	add("AuthorizationService", []string{"CheckDisclosure"}, knowledge)
 	add("AuthorizationService", []string{"CheckExecution"}, mcp)
 	for _, m := range []string{"Check", "Watch", "List"} {

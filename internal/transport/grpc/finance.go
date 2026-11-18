@@ -188,6 +188,62 @@ func (s *budgetPoolServer) GetPool(ctx context.Context, req *controlv1.GetPoolRe
 	return &controlv1.GetPoolResponse{Pool: toBudgetPool(pool)}, nil
 }
 
+func (s *budgetPoolServer) FindPool(ctx context.Context, req *controlv1.FindPoolRequest) (*controlv1.FindPoolResponse, error) {
+	pool, err := s.finance.FindPool(ctx, scope(ctx, req.GetScope()), budgetLevelFromProto[req.GetLevel()], req.GetTenantId(), req.GetActorId(), req.GetPeriodStart().AsTime())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.FindPoolResponse{Pool: toBudgetPool(pool)}, nil
+}
+
+// Credit pools (DEC-066).
+
+func toCreditPool(p *domain.CreditPool) *controlv1.CreditPool {
+	return &controlv1.CreditPool{
+		CreditPoolId: p.ID, Level: budgetLevelToProto[p.Level], TenantId: p.TenantID, ActorId: p.ActorID, PeriodStart: timestamppb.New(p.PeriodStart), PeriodEnd: timestamppb.New(p.PeriodEnd),
+		Limit: p.Limit, Used: p.Used, Available: p.Available(), Revision: domain.Revision(p.Revision).String(),
+	}
+}
+
+func (s *budgetPoolServer) CreateCreditPool(ctx context.Context, req *controlv1.CreateCreditPoolRequest) (*controlv1.CreateCreditPoolResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	pool, existing, err := s.finance.CreateCreditPool(ctx, cmd, scope(ctx, req.GetScope()), application.CreditPoolSpec{
+		Level: budgetLevelFromProto[req.GetLevel()], TenantID: req.GetTenantId(), ActorID: req.GetActorId(),
+		PeriodStart: req.GetPeriodStart().AsTime(), PeriodEnd: req.GetPeriodEnd().AsTime(), Limit: req.GetLimit(),
+	})
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.CreateCreditPoolResponse{Pool: toCreditPool(pool), Existing: existing}, nil
+}
+
+func (s *budgetPoolServer) AdjustCreditPool(ctx context.Context, req *controlv1.AdjustCreditPoolRequest) (*controlv1.AdjustCreditPoolResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	expected, err := domain.ParseRevision(req.GetExpectedRevision())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	pool, err := s.finance.AdjustCreditPool(ctx, cmd, scope(ctx, req.GetScope()), req.GetCreditPoolId(), uint64(expected), req.GetLimit())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.AdjustCreditPoolResponse{Pool: toCreditPool(pool)}, nil
+}
+
+func (s *budgetPoolServer) FindCreditPool(ctx context.Context, req *controlv1.FindCreditPoolRequest) (*controlv1.FindCreditPoolResponse, error) {
+	pool, err := s.finance.FindCreditPool(ctx, scope(ctx, req.GetScope()), budgetLevelFromProto[req.GetLevel()], req.GetTenantId(), req.GetActorId(), req.GetPeriodStart().AsTime())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.FindCreditPoolResponse{Pool: toCreditPool(pool)}, nil
+}
+
 func (s *budgetPoolServer) SetCostCap(ctx context.Context, req *controlv1.SetCostCapRequest) (*controlv1.SetCostCapResponse, error) {
 	cmd, err := commandIdentity(req.GetCommand())
 	if err != nil {
