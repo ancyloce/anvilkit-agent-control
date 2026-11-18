@@ -174,6 +174,15 @@ type Repo interface {
 	GetPool(ctx context.Context, poolID string) (*domain.BudgetPool, error)
 	GetPoolByScope(ctx context.Context, level domain.BudgetLevel, tenantID, actorID string, periodStart time.Time) (*domain.BudgetPool, error)
 	UpdatePoolCap(ctx context.Context, p *domain.BudgetPool) error
+	// Credit pools (DEC-066; rank 1, locked after the budget pools, in id
+	// order) and their append-only credit entries.
+	ListCurrentCreditPools(ctx context.Context, tenantID, actorID string, at time.Time) ([]*domain.CreditPool, error)
+	LockCreditPool(ctx context.Context, creditPoolID string) (*domain.CreditPool, error)
+	GetCreditPoolByScope(ctx context.Context, level domain.BudgetLevel, tenantID, actorID string, periodStart time.Time) (*domain.CreditPool, error)
+	InsertCreditPool(ctx context.Context, p *domain.CreditPool, createdBy string) error
+	UpdateCreditPool(ctx context.Context, p *domain.CreditPool) error
+	HasCreditEntry(ctx context.Context, creditPoolID, operationID string) (bool, error)
+	InsertCreditEntry(ctx context.Context, e *domain.CreditEntry) error
 	InsertAllocationReturn(ctx context.Context, a *domain.Allocation, amount int64, at time.Time) error
 	HasAllocationReturn(ctx context.Context, allocationID string) (bool, error)
 	ListFinanceUnsettled(ctx context.Context, limit int) ([]string, error)
