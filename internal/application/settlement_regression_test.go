@@ -219,7 +219,7 @@ func TestSettlementRegressions(t *testing.T) {
 		pools(t, pool, "unsettled", [3]int64{10_000_000, 10_000_000, 10_000_000})
 		auth := &authorityDouble{allowed: map[string]bool{"tenant_a/" + modelRoute: true}}
 		dispatch := application.NewDispatch(store, inv, fixturePrices(t, "regression", 1), auth, nil, domain.SystemClock{}, testLog).WithDevelopmentCaps()
-		_, _, err = dispatch.Allocate(ctx, scopeA, op.ID, usd(1_000_000))
+		_, _, err = dispatch.Allocate(ctx, scopeA, op.ID, usd(1_000_000), 0)
 		require.NoError(t, err)
 		sent, err := dispatch.Admit(ctx, cmd("tenant_a", op.ID+":send", "send"), modelRequest(op, at, op.ID+":send", "proxy", 1000))
 		require.NoError(t, err)
@@ -260,7 +260,7 @@ func TestSettlementRegressions(t *testing.T) {
 		}
 		auth := &authorityDouble{allowed: map[string]bool{"tenant_a/" + modelRoute: true}}
 		dispatch := application.NewDispatch(store, inv, fixturePrices(t, "regression", 1), auth, nil, domain.SystemClock{}, testLog).WithDevelopmentCaps()
-		_, _, err = dispatch.Allocate(ctx, scopeA, op.ID, usd(1_000_000))
+		_, _, err = dispatch.Allocate(ctx, scopeA, op.ID, usd(1_000_000), 0)
 		require.NoError(t, err)
 		sent, err := dispatch.Admit(ctx, cmd("tenant_a", op.ID+":send", "send"), modelRequest(op, at, op.ID+":send", "proxy", 1000))
 		require.NoError(t, err)

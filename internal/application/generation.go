@@ -276,10 +276,11 @@ func (s *Generations) RecordLease(ctx context.Context, cmd domain.CommandIdentit
 }
 
 // RecordFunding allocates the profile's reviewed amount to the operation
-// from the current platform/tenant/actor pools under the operation
-// identity (Dispatch.Allocate is idempotent per operation); the funding
-// occurrence records the command that did it. A profile that funds
-// nothing refuses.
+// from the current platform/tenant/actor pools, and debits the profile's
+// credits from the current tenant and actor credit pools in the same
+// transaction (DEC-066), under the operation identity (Dispatch.Allocate is
+// idempotent per operation); the funding occurrence records the command
+// that did it. A profile that funds nothing refuses.
 func (s *Generations) RecordFunding(ctx context.Context, cmd domain.CommandIdentity, operationID string) (f *domain.Funding, existing bool, err error) {
 	var op *domain.Operation
 	var profile domain.Profile
@@ -312,7 +313,7 @@ func (s *Generations) RecordFunding(ctx context.Context, cmd domain.CommandIdent
 		return nil, false, fmt.Errorf("%w: profile %s funds nothing", domain.ErrProfileUnqualified, profile.ID)
 	}
 	scope := domain.Scope{TenantID: op.TenantID, ProjectID: op.ProjectID, ActorID: op.ActorID}
-	if _, _, err := s.dispatch.Allocate(ctx, scope, op.ID, *profile.Funding); err != nil {
+	if _, _, err := s.dispatch.Allocate(ctx, scope, op.ID, *profile.Funding, profile.Credits); err != nil {
 		return nil, false, err
 	}
 	now := s.clock.Now()

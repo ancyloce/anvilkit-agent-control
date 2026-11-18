@@ -54,10 +54,13 @@ func (s *Dispatch) WithProfiles(profiles []domain.Profile) *Dispatch {
 // Allocate gives the operation its share of the current platform, tenant
 // and actor pools (DD-02 §3): one allocation per level, each within its
 // pool's shared cap, under the pool locks (rank 1) taken before the
-// operation lock (rank 2). A repeated call returns the existing
-// allocations; a missing pool at any level or a cap that cannot cover the
-// amount denies with ErrBudgetExhausted and allocates nothing.
-func (s *Dispatch) Allocate(ctx context.Context, scope domain.Scope, operationID string, amount domain.Money) (allocs []*domain.Allocation, existing bool, err error) {
+// operation lock (rank 2). With credits above zero it also debits them
+// from the current tenant and actor credit pools (DEC-066), locked after
+// the budget pools in id order, in the same transaction. A repeated call
+// returns the existing allocations and debits nothing twice; a missing
+// pool or credit pool at any level, or a cap or limit that cannot cover the
+// amount, denies with ErrBudgetExhausted and allocates and debits nothing.
+func (s *Dispatch) Allocate(ctx context.Context, scope domain.Scope, operationID string, amount domain.Money, credits int64) (allocs []*domain.Allocation, existing bool, err error) {
 	now := s.clock.Now()
 	err = s.store.Tx(ctx, func(r Repo) error {
 		pools, err := r.ListCurrentPools(ctx, amount.Currency, scope.TenantID, scope.ActorID, now)
@@ -83,6 +86,10 @@ func (s *Dispatch) Allocate(ctx context.Context, scope domain.Scope, operationID
 				return err
 			}
 			locked = append(locked, lp)
+		}
+		lockedCredits, err := lockCurrentCreditPools(ctx, r, scope, credits, now)
+		if err != nil {
+			return err
 		}
 		op, err := r.LockOperation(ctx, operationID)
 		if err != nil {
@@ -113,6 +120,33 @@ func (s *Dispatch) Allocate(ctx context.Context, scope domain.Scope, operationID
 			fresh = append(fresh, a)
 			allocs = append(allocs, a)
 		}
+		var debited []*domain.CreditPool
+		var entries []*domain.CreditEntry
+		for _, p := range lockedCredits {
+			has, err := r.HasCreditEntry(ctx, p.ID, op.ID)
+			if err != nil {
+				return err
+			}
+			if has {
+				continue
+			}
+			existing = false
+			if err := p.Debit(credits, now); err != nil {
+				return err
+			}
+			debited = append(debited, p)
+			entries = append(entries, &domain.CreditEntry{ID: domain.NewID("crd"), OperationID: op.ID, CreditPoolID: p.ID, Credits: credits, CreatedAt: now})
+		}
+		for _, p := range debited {
+			if err := r.UpdateCreditPool(ctx, p); err != nil {
+				return err
+			}
+		}
+		for _, e := range entries {
+			if err := r.InsertCreditEntry(ctx, e); err != nil {
+				return err
+			}
+		}
 		if len(fresh) == 0 {
 			return nil
 		}
@@ -136,6 +170,41 @@ func (s *Dispatch) Allocate(ctx context.Context, scope domain.Scope, operationID
 		return nil, false, err
 	}
 	return allocs, existing, nil
+}
+
+// lockCurrentCreditPools locks the current tenant and actor credit pools of
+// the scope in id order (rank 1, after the budget pools) when the operation
+// is debited credits; zero credits needs no credit pool, and a missing one
+// denies with ErrBudgetExhausted.
+func lockCurrentCreditPools(ctx context.Context, r Repo, scope domain.Scope, credits int64, now time.Time) ([]*domain.CreditPool, error) {
+	if credits == 0 {
+		return nil, nil
+	}
+	pools, err := r.ListCurrentCreditPools(ctx, scope.TenantID, scope.ActorID, now)
+	if err != nil {
+		return nil, err
+	}
+	byLevel := map[domain.BudgetLevel]bool{}
+	for _, p := range pools {
+		if byLevel[p.Level] {
+			return nil, fmt.Errorf("%w: more than one current %s credit pool", domain.ErrInvalid, p.Level)
+		}
+		byLevel[p.Level] = true
+	}
+	for _, level := range domain.CreditLevels {
+		if !byLevel[level] {
+			return nil, fmt.Errorf("%w: no current %s credit pool for the scope", domain.ErrBudgetExhausted, level)
+		}
+	}
+	locked := make([]*domain.CreditPool, 0, len(pools))
+	for _, p := range pools { // already ordered by credit pool id
+		lp, err := r.LockCreditPool(ctx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		locked = append(locked, lp)
+	}
+	return locked, nil
 }
 
 // Admission is the answer to one admission request: the dispatch record,

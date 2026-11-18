@@ -244,6 +244,31 @@ func pools(t *testing.T, pool *pgxpool.Pool, suffix string, caps [3]int64) {
 	}
 }
 
+// creditPools inserts the current tenant and actor credit pools of scopeA
+// (DEC-066).
+func creditPools(t *testing.T, pool *pgxpool.Pool, suffix string, tenantLimit, actorLimit int64) {
+	t.Helper()
+	for _, row := range []struct {
+		level string
+		actor *string
+		limit int64
+	}{{"tenant", nil, tenantLimit}, {"actor", &scopeA.ActorID, actorLimit}} {
+		_, err := pool.Exec(context.Background(), "INSERT INTO credit_pools (credit_pool_id, level, tenant_id, actor_id, period_start, period_end, limit_credits, created_by) VALUES ($1, $2, $3, $4, now() - interval '1 hour', now() + interval '1 hour', $5, 'test')",
+			"crp-"+row.level+"-"+suffix, row.level, scopeA.TenantID, row.actor, row.limit)
+		require.NoError(t, err)
+	}
+}
+
+// creditsUsed reads the used counts of the tenant and actor credit pools
+// creditPools inserted.
+func creditsUsed(t *testing.T, pool *pgxpool.Pool, suffix string) (used [2]int64) {
+	t.Helper()
+	for i, level := range []string{"tenant", "actor"} {
+		require.NoError(t, pool.QueryRow(context.Background(), "SELECT used_credits FROM credit_pools WHERE credit_pool_id = $1", "crp-"+level+"-"+suffix).Scan(&used[i]))
+	}
+	return used
+}
+
 func dropPools(t *testing.T, pool *pgxpool.Pool, suffix string) {
 	t.Helper()
 	// Pools are deleted only by the migrator role in production; the test
@@ -263,7 +288,7 @@ func funded(t *testing.T, p *dispatchProcess, id string, amount int64) (*domain.
 	at, _, err := p.exec.OpenAttempt(ctx, cmd("tenant_a", "cmd_"+id+"_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 	require.NoError(t, err)
 	if amount > 0 {
-		allocs, existing, err := p.dispatch.Allocate(ctx, scopeA, op.ID, usd(amount))
+		allocs, existing, err := p.dispatch.Allocate(ctx, scopeA, op.ID, usd(amount), 0)
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Len(t, allocs, 3, "one allocation per level")
@@ -333,11 +358,11 @@ func TestDispatch(t *testing.T) {
 
 	t.Run("allocation at every level within shared caps, idempotent, denied when a level is missing or its cap is short", func(t *testing.T) {
 		op, _ := funded(t, p1, "alloc", 0)
-		allocs, existing, err := p1.dispatch.Allocate(ctx, scopeA, op.ID, usd(5000))
+		allocs, existing, err := p1.dispatch.Allocate(ctx, scopeA, op.ID, usd(5000), 0)
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Len(t, allocs, 3)
-		again, existing, err := p2.dispatch.Allocate(ctx, scopeA, op.ID, usd(5000))
+		again, existing, err := p2.dispatch.Allocate(ctx, scopeA, op.ID, usd(5000), 0)
 		require.NoError(t, err)
 		require.True(t, existing, "a repeated allocation draws nothing more")
 		require.Equal(t, allocs[0].ID, again[0].ID)
@@ -363,7 +388,7 @@ func TestDispatch(t *testing.T) {
 			wg.Add(1)
 			go func(p *dispatchProcess, op *domain.Operation) {
 				defer wg.Done()
-				_, _, err := p.dispatch.Allocate(ctx, scopeA, op.ID, usd(4000))
+				_, _, err := p.dispatch.Allocate(ctx, scopeA, op.ID, usd(4000), 0)
 				results <- err
 			}(run.p, run.op)
 		}
@@ -386,8 +411,48 @@ func TestDispatch(t *testing.T) {
 		dropPools(t, p1.pool, "tight")
 		pools(t, p1.pool, "main2", [3]int64{1_000_000_000, 100_000_000, 10_000_000})
 		// A scope without a current pool at some level allocates nothing.
-		_, _, err = p1.dispatch.Allocate(ctx, domain.Scope{TenantID: "tenant_a", ActorID: "user_other"}, op.ID, usd(1))
+		_, _, err = p1.dispatch.Allocate(ctx, domain.Scope{TenantID: "tenant_a", ActorID: "user_other"}, op.ID, usd(1), 0)
 		require.ErrorIs(t, err, domain.ErrBudgetExhausted)
+	})
+
+	t.Run("credits are debited once from the tenant and actor credit pools beside the allocation; a full or missing credit pool denies and allocates nothing (DEC-066)", func(t *testing.T) {
+		creditPools(t, p1.pool, "c1", 2, 1)
+		op, _ := funded(t, p1, "credit", 0)
+		allocs, existing, err := p1.dispatch.Allocate(ctx, scopeA, op.ID, usd(1000), 1)
+		require.NoError(t, err)
+		require.False(t, existing)
+		require.Len(t, allocs, 3)
+		_, existing, err = p2.dispatch.Allocate(ctx, scopeA, op.ID, usd(1000), 1)
+		require.NoError(t, err)
+		require.True(t, existing, "a repeated funding debits nothing more")
+		require.Equal(t, [2]int64{1, 1}, creditsUsed(t, p1.pool, "c1"))
+		var entries int
+		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT count(*) FROM credit_entries WHERE operation_id = $1", op.ID).Scan(&entries))
+		require.Equal(t, 2, entries, "one entry per credit pool")
+		var costCredits int
+		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT count(*) FROM cost_entries WHERE operation_id = $1", op.ID).Scan(&costCredits))
+		require.Zero(t, costCredits, "credits never enter the USD ledger")
+
+		// The actor's credit pool is full: the next operation is refused and
+		// draws nothing from the USD pools either.
+		var before, after int64
+		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT allocated FROM budget_pools WHERE pool_id = 'pool-actor-main2'").Scan(&before))
+		full, _ := funded(t, p1, "credit_full", 0)
+		_, _, err = p1.dispatch.Allocate(ctx, scopeA, full.ID, usd(1000), 1)
+		require.ErrorIs(t, err, domain.ErrBudgetExhausted)
+		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT allocated FROM budget_pools WHERE pool_id = 'pool-actor-main2'").Scan(&after))
+		require.Equal(t, before, after, "a refused debit allocates nothing")
+		require.Equal(t, [2]int64{1, 1}, creditsUsed(t, p1.pool, "c1"))
+
+		// Zero credits needs no credit pool; with none current, an operation
+		// that owes credits is refused.
+		_, err = p1.pool.Exec(ctx, "UPDATE credit_pools SET period_end = period_start + interval '1 second' WHERE credit_pool_id LIKE 'crp-%-c1'")
+		require.NoError(t, err)
+		_, _, err = p1.dispatch.Allocate(ctx, scopeA, full.ID, usd(1000), 1)
+		require.ErrorIs(t, err, domain.ErrBudgetExhausted)
+		_, existing, err = p1.dispatch.Allocate(ctx, scopeA, full.ID, usd(1000), 0)
+		require.NoError(t, err)
+		require.False(t, existing)
 	})
 
 	t.Run("two processes admit the same call concurrently: one permission, one obligation, one reservation", func(t *testing.T) {

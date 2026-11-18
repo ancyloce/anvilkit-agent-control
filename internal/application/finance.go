@@ -34,6 +34,7 @@ func NewFinance(store Store, refresh func(context.Context) error, clock domain.C
 const (
 	ActionPublishPrice = "publish a price revision"
 	ActionFundPool     = "fund or adjust a budget pool"
+	ActionCreditPool   = "create or adjust a credit pool"
 	ActionSetCostCap   = "set a cost cap"
 )
 
@@ -295,6 +296,138 @@ func (f *Finance) GetPool(ctx context.Context, scope domain.Scope, poolID string
 		return nil, err
 	}
 	return pool, nil
+}
+
+// FindPool reads the pool of one scope and period start (the key CreatePool
+// is idempotent on). The reader is authorized on the requested tenant
+// before the read, so a refusal says nothing about whether the pool exists.
+func (f *Finance) FindPool(ctx context.Context, scope domain.Scope, level domain.BudgetLevel, tenantID, actorID string, periodStart time.Time) (*domain.BudgetPool, error) {
+	if err := financeReader(scope, tenantID); err != nil {
+		return nil, err
+	}
+	var pool *domain.BudgetPool
+	err := f.store.Read(ctx, func(r Repo) error {
+		var err error
+		pool, err = r.GetPoolByScope(ctx, level, tenantID, actorID, periodStart.UTC().Truncate(time.Microsecond))
+		return err
+	})
+	return pool, err
+}
+
+// CreditPoolSpec is the scope, period and limit of a credit pool (DEC-066).
+type CreditPoolSpec struct {
+	Level       domain.BudgetLevel
+	TenantID    string
+	ActorID     string
+	PeriodStart time.Time
+	PeriodEnd   time.Time
+	Limit       int64
+}
+
+func (s CreditPoolSpec) validate() error {
+	switch s.Level {
+	case domain.LevelTenant:
+		if s.TenantID == "" || s.ActorID != "" {
+			return fmt.Errorf("%w: a tenant credit pool names its tenant and no actor", domain.ErrInvalid)
+		}
+	case domain.LevelActor:
+		if s.TenantID == "" || s.ActorID == "" {
+			return fmt.Errorf("%w: an actor credit pool names its tenant and actor", domain.ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: a credit pool is a tenant or actor pool, not %q", domain.ErrInvalid, s.Level)
+	}
+	if !s.PeriodEnd.After(s.PeriodStart) {
+		return fmt.Errorf("%w: credit pool period is empty", domain.ErrInvalid)
+	}
+	return validCreditLimit(s.Limit)
+}
+
+func validCreditLimit(limit int64) error {
+	if limit < 0 || limit > domain.MaxCredits {
+		return fmt.Errorf("%w: credit limit %d outside [0, %d]", domain.ErrInvalid, limit, domain.MaxCredits)
+	}
+	return nil
+}
+
+// CreateCreditPool creates a tenant or actor credit pool. The same scope
+// and period start with the same end and limit returns the existing pool;
+// anything else under that scope and period start is an idempotency
+// conflict.
+func (f *Finance) CreateCreditPool(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, spec CreditPoolSpec) (pool *domain.CreditPool, existing bool, err error) {
+	if err := financeWriter(scope, cmd, ActionCreditPool); err != nil {
+		return nil, false, err
+	}
+	spec.PeriodStart, spec.PeriodEnd = spec.PeriodStart.UTC().Truncate(time.Microsecond), spec.PeriodEnd.UTC().Truncate(time.Microsecond)
+	if err := spec.validate(); err != nil {
+		return nil, false, err
+	}
+	err = f.store.Tx(ctx, func(r Repo) error {
+		found, err := r.GetCreditPoolByScope(ctx, spec.Level, spec.TenantID, spec.ActorID, spec.PeriodStart)
+		switch {
+		case err == nil:
+			if found.Limit != spec.Limit || !found.PeriodEnd.Equal(spec.PeriodEnd) {
+				return fmt.Errorf("%w: credit pool %s already limits this scope and period with other terms", domain.ErrIdempotencyConflict, found.ID)
+			}
+			pool, existing = found, true
+			return nil
+		case !errors.Is(err, domain.ErrNotFound):
+			return err
+		}
+		pool = &domain.CreditPool{ID: domain.NewID("crp"), Level: spec.Level, TenantID: spec.TenantID, ActorID: spec.ActorID, PeriodStart: spec.PeriodStart, PeriodEnd: spec.PeriodEnd, Limit: spec.Limit, Revision: 1}
+		return r.InsertCreditPool(ctx, pool, cmd.ActorID)
+	})
+	if errors.Is(err, ErrDuplicateKey) && depthOf(ctx) < duplicateRetries {
+		return f.CreateCreditPool(deeper(ctx), cmd, scope, spec)
+	}
+	if err == nil && !existing {
+		f.log.Info("credit pool created", "creditPoolId", pool.ID, "level", pool.Level, "tenantId", pool.TenantID, "limit", pool.Limit, "actor", cmd.ActorID)
+	}
+	return pool, existing, err
+}
+
+// AdjustCreditPool sets a credit pool's limit conditionally on its revision;
+// a limit below the used count fences new debits and refunds nothing.
+func (f *Finance) AdjustCreditPool(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, creditPoolID string, expected uint64, limit int64) (*domain.CreditPool, error) {
+	if err := financeWriter(scope, cmd, ActionCreditPool); err != nil {
+		return nil, err
+	}
+	if err := validCreditLimit(limit); err != nil {
+		return nil, err
+	}
+	var pool *domain.CreditPool
+	err := f.store.Tx(ctx, func(r Repo) error {
+		locked, err := r.LockCreditPool(ctx, creditPoolID)
+		if err != nil {
+			return err
+		}
+		if locked.Revision != expected {
+			return domain.NewRevisionConflict(expected, locked.Revision, "credit pool %s is at revision %d, not %d", creditPoolID, locked.Revision, expected)
+		}
+		locked.Limit = limit
+		locked.Revision++
+		pool = locked
+		return r.UpdateCreditPool(ctx, locked)
+	})
+	if err == nil {
+		f.log.Info("credit pool adjusted", "creditPoolId", creditPoolID, "limit", limit, "revision", pool.Revision, "actor", cmd.ActorID)
+	}
+	return pool, err
+}
+
+// FindCreditPool reads the credit pool of one scope and period start,
+// authorized on the requested tenant before the read.
+func (f *Finance) FindCreditPool(ctx context.Context, scope domain.Scope, level domain.BudgetLevel, tenantID, actorID string, periodStart time.Time) (*domain.CreditPool, error) {
+	if err := financeReader(scope, tenantID); err != nil {
+		return nil, err
+	}
+	var pool *domain.CreditPool
+	err := f.store.Read(ctx, func(r Repo) error {
+		var err error
+		pool, err = r.GetCreditPoolByScope(ctx, level, tenantID, actorID, periodStart.UTC().Truncate(time.Microsecond))
+		return err
+	})
+	return pool, err
 }
 
 // SetCostCap creates or changes the cap of a scope; with expected set, the

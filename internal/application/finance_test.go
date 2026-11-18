@@ -144,7 +144,7 @@ func (c *productionChain) operation(t *testing.T, scope domain.Scope, id string,
 	at, _, err := c.exec.OpenAttempt(ctx, cmd(scope.TenantID, "cmd_"+id+"_open", "open"), op.ID, "local-check", 0, "local-check-v1")
 	require.NoError(t, err)
 	if funding > 0 {
-		_, _, err = c.dispatch.Allocate(ctx, scope, op.ID, usd(funding))
+		_, _, err = c.dispatch.Allocate(ctx, scope, op.ID, usd(funding), 0)
 		require.NoError(t, err)
 	}
 	return op, at
@@ -231,6 +231,66 @@ func TestProductionAdmission(t *testing.T) {
 // independently; a cap lowered while a call is in flight does not revoke
 // that call and fences the next one; a missing cap denies the paid route
 // (P2.1 AC2).
+// TestCreditPools: only a platform operator creates or adjusts a credit
+// pool, creation is idempotent on the scope and period start, an
+// adjustment is conditional on the revision, and a read is authorized on
+// the requested tenant before the pool is looked up (DEC-066).
+func TestCreditPools(t *testing.T) {
+	inst := testdb.Start(t)
+	c := newProductionChain(t, inst)
+	ctx := context.Background()
+	spec := application.CreditPoolSpec{Level: domain.LevelTenant, TenantID: "tenant_cr", PeriodStart: c.start, PeriodEnd: c.start.Add(48 * time.Hour), Limit: 100}
+
+	_, _, err := c.finance.CreateCreditPool(ctx, cmd("tenant_f", "credit_f", "f"), financeTenant, spec)
+	require.ErrorIs(t, err, domain.ErrForbidden, "only a platform operator creates a credit pool")
+	pool, existing, err := c.finance.CreateCreditPool(ctx, opsCmd("credit_tenant"), platformOperator, spec)
+	require.NoError(t, err)
+	require.False(t, existing)
+	require.Equal(t, int64(100), pool.Available())
+	again, existing, err := c.finance.CreateCreditPool(ctx, opsCmd("credit_tenant_again"), platformOperator, spec)
+	require.NoError(t, err)
+	require.True(t, existing)
+	require.Equal(t, pool.ID, again.ID)
+	other := spec
+	other.Limit = 50
+	_, _, err = c.finance.CreateCreditPool(ctx, opsCmd("credit_tenant_other"), platformOperator, other)
+	require.ErrorIs(t, err, domain.ErrIdempotencyConflict)
+	for name, bad := range map[string]application.CreditPoolSpec{
+		"platform level":        {Level: domain.LevelPlatform, PeriodStart: spec.PeriodStart, PeriodEnd: spec.PeriodEnd, Limit: 1},
+		"actor without actor":   {Level: domain.LevelActor, TenantID: "tenant_cr", PeriodStart: spec.PeriodStart, PeriodEnd: spec.PeriodEnd, Limit: 1},
+		"tenant with an actor":  {Level: domain.LevelTenant, TenantID: "tenant_cr", ActorID: "user", PeriodStart: spec.PeriodStart, PeriodEnd: spec.PeriodEnd, Limit: 1},
+		"empty period":          {Level: domain.LevelTenant, TenantID: "tenant_cr2", PeriodStart: spec.PeriodStart, PeriodEnd: spec.PeriodStart, Limit: 1},
+		"limit above the bound": {Level: domain.LevelTenant, TenantID: "tenant_cr2", PeriodStart: spec.PeriodStart, PeriodEnd: spec.PeriodEnd, Limit: domain.MaxCredits + 1},
+	} {
+		_, _, err := c.finance.CreateCreditPool(ctx, opsCmd("credit_bad_"+name), platformOperator, bad)
+		require.ErrorIs(t, err, domain.ErrInvalid, name)
+	}
+
+	_, err = c.finance.AdjustCreditPool(ctx, opsCmd("credit_adjust_stale"), platformOperator, pool.ID, 2, 120)
+	require.ErrorIs(t, err, domain.ErrRevisionConflict)
+	adjusted, err := c.finance.AdjustCreditPool(ctx, opsCmd("credit_adjust"), platformOperator, pool.ID, 1, 120)
+	require.NoError(t, err)
+	require.Equal(t, int64(120), adjusted.Limit)
+	require.Equal(t, uint64(2), adjusted.Revision)
+
+	found, err := c.finance.FindCreditPool(ctx, platformOperator, domain.LevelTenant, "tenant_cr", "", c.start)
+	require.NoError(t, err)
+	require.Equal(t, int64(120), found.Limit)
+	tenantOperator := domain.Scope{TenantID: "tenant_cr", ActorID: "user_cr", Roles: []string{domain.RoleOperator}}
+	_, err = c.finance.FindCreditPool(ctx, tenantOperator, domain.LevelTenant, "tenant_cr", "", c.start)
+	require.NoError(t, err, "an operator reads its own tenant's credit pool")
+	_, err = c.finance.FindCreditPool(ctx, financeTenant, domain.LevelTenant, "tenant_cr", "", c.start)
+	require.ErrorIs(t, err, domain.ErrForbidden, "another tenant's user is refused before the read")
+	_, err = c.finance.FindCreditPool(ctx, platformOperator, domain.LevelActor, "tenant_cr", "user_none", c.start)
+	require.ErrorIs(t, err, domain.ErrNotFound)
+
+	platform, err := c.finance.FindPool(ctx, platformOperator, domain.LevelPlatform, "", "", c.start)
+	require.NoError(t, err)
+	require.Equal(t, c.platform.ID, platform.ID)
+	_, err = c.finance.FindPool(ctx, financeTenant, domain.LevelTenant, "tenant_other", "", c.start)
+	require.ErrorIs(t, err, domain.ErrForbidden)
+}
+
 func TestCostCaps(t *testing.T) {
 	inst := testdb.Start(t)
 	c := newProductionChain(t, inst)
