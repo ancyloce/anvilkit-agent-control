@@ -254,19 +254,24 @@ type PreviewProfile struct {
 // (analysis and every wait); the clarification bounds are the trial
 // defaults of requirements.md §2 (two rounds, three questions, seven
 // days); funding is the analysis allowance the operation allocates from
-// the shared pools (currency and scale-6 amount as decimal strings).
+// the shared pools (currency and scale-6 amount as decimal strings);
+// credits is the number of credits funding debits from the tenant and
+// actor credit pools (DEC-066; requirements §2: zero for a Preparation).
 type PreparationProfile struct {
 	Deadline     time.Duration `koanf:"deadline"`
 	MaxRounds    uint64        `koanf:"max_rounds"`
 	MaxQuestions uint64        `koanf:"max_questions"`
 	Wait         time.Duration `koanf:"wait"`
 	Funding      MoneyValue    `koanf:"funding"`
+	Credits      int64         `koanf:"credits"`
 }
 
 // GenerationProfile: queue_deadline bounds admission waiting from intake;
 // active_window is the execution window the first permit opens once;
 // capacity is the size of the execution pool; funding is the reviewed
-// allocation; definitions are the reviewed definition activations (the
+// allocation; credits is the number of credits funding debits (DEC-066;
+// requirements §2: one per Generation, and a Refinement shares it);
+// definitions are the reviewed definition activations (the
 // first is the default); max_repairs bounds the independently classified
 // repair rounds; codegen_profile and validator_profile are the reviewed
 // job profiles the steps launch.
@@ -275,6 +280,7 @@ type GenerationProfile struct {
 	ActiveWindow     time.Duration `koanf:"active_window"`
 	Capacity         int32         `koanf:"capacity"`
 	Funding          MoneyValue    `koanf:"funding"`
+	Credits          int64         `koanf:"credits"`
 	Definitions      []string      `koanf:"definitions"`
 	MaxRepairs       uint64        `koanf:"max_repairs"`
 	CodegenProfile   string        `koanf:"codegen_profile"`
@@ -528,10 +534,12 @@ var defaults = map[string]any{
 	"profiles.preparation.max_questions":     3,
 	"profiles.preparation.wait":              "168h",
 	"profiles.preparation.funding":           map[string]any{"currency": "USD", "amount": "500000"},
+	"profiles.preparation.credits":           0,
 	"profiles.generation.queue_deadline":     "24h",
 	"profiles.generation.active_window":      "2h",
 	"profiles.generation.capacity":           2,
 	"profiles.generation.funding":            map[string]any{"currency": "USD", "amount": "1000000"},
+	"profiles.generation.credits":            1,
 	"profiles.generation.definitions":        []string{"generation-v1:def-1", "generation-v1:def-2"},
 	"profiles.generation.max_repairs":        1,
 	"profiles.generation.codegen_profile":    "codegen-team-dev-v1",

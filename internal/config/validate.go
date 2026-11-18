@@ -152,6 +152,9 @@ func (c Config) validate() error {
 	if _, err := domain.ParseMoney(p.Funding.Currency, p.Funding.Amount); err != nil {
 		errs = append(errs, fmt.Errorf("profiles.preparation.funding: %w", err))
 	}
+	if p.Credits < 0 || p.Credits > maxProfileCredits {
+		errs = append(errs, fmt.Errorf("profiles.preparation.credits %d outside [0, %d]", p.Credits, maxProfileCredits))
+	}
 	g := c.Profiles.Generation
 	if g.QueueDeadline < time.Minute || g.QueueDeadline > 7*24*time.Hour {
 		errs = append(errs, fmt.Errorf("profiles.generation.queue_deadline %s outside [1m, 168h]", g.QueueDeadline))
@@ -164,6 +167,9 @@ func (c Config) validate() error {
 	}
 	if _, err := domain.ParseMoney(g.Funding.Currency, g.Funding.Amount); err != nil {
 		errs = append(errs, fmt.Errorf("profiles.generation.funding: %w", err))
+	}
+	if g.Credits < 0 || g.Credits > maxProfileCredits {
+		errs = append(errs, fmt.Errorf("profiles.generation.credits %d outside [0, %d]", g.Credits, maxProfileCredits))
 	}
 	if len(g.Definitions) == 0 || g.CodegenProfile == "" || g.ValidatorProfile == "" {
 		errs = append(errs, errors.New("profiles.generation needs definitions, codegen_profile and validator_profile"))
@@ -353,6 +359,10 @@ func requireHTTPS(name, endpoint string) error {
 	}
 	return nil
 }
+
+// maxProfileCredits bounds the credits funding debits for one operation
+// (DEC-066); the defaults are 0 and 1 (requirements §2).
+const maxProfileCredits = 1000
 
 var trustDomainPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$`)
 
