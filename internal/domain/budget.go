@@ -297,6 +297,66 @@ func (p *BudgetPool) Allocate(amount Money, now time.Time) error {
 	return nil
 }
 
+// MaxCredits bounds a credit pool's limit and a profile's credits.
+const MaxCredits = 1_000_000_000
+
+// CreditLevels are the levels funding debits credits from: there is no
+// platform credit pool.
+var CreditLevels = []BudgetLevel{LevelTenant, LevelActor}
+
+// CreditPool limits how many operations of one tenant or one actor are
+// funded in one period (DEC-066). Credits are whole numbers kept apart from
+// the USD pools and allocations, so no USD admission, cap or settlement
+// path sees them; funding debits them once, and nothing refunds them.
+type CreditPool struct {
+	ID          string
+	Level       BudgetLevel
+	TenantID    string
+	ActorID     string
+	PeriodStart time.Time
+	PeriodEnd   time.Time
+	Limit       int64
+	Used        int64
+	Revision    uint64
+}
+
+// Covers reports whether the pool is the current credit pool of its scope.
+func (p *CreditPool) Covers(now time.Time) bool {
+	return !now.Before(p.PeriodStart) && now.Before(p.PeriodEnd)
+}
+
+// Available is the number of credits left; a limit lowered below the used
+// count leaves none.
+func (p *CreditPool) Available() int64 {
+	return max(0, p.Limit-p.Used)
+}
+
+// Debit consumes credits for one operation: the used count never exceeds
+// the limit, and a pool outside its period debits nothing.
+func (p *CreditPool) Debit(credits int64, now time.Time) error {
+	if credits <= 0 || credits > MaxCredits {
+		return fmt.Errorf("%w: a credit debit must be in [1, %d]", ErrInvalid, MaxCredits)
+	}
+	if !p.Covers(now) {
+		return fmt.Errorf("%w: credit pool %s does not cover %s", ErrBudgetExhausted, p.ID, now.UTC().Format(time.RFC3339))
+	}
+	if credits > p.Available() {
+		return fmt.Errorf("%w: credit pool %s (%s) cannot debit %d credits: %d of %d used", ErrBudgetExhausted, p.ID, p.Level, credits, p.Used, p.Limit)
+	}
+	p.Used += credits
+	p.Revision++
+	return nil
+}
+
+// CreditEntry is one append-only debit of an operation from one credit pool.
+type CreditEntry struct {
+	ID           string
+	OperationID  string
+	CreditPoolID string
+	Credits      int64
+	CreatedAt    time.Time
+}
+
 // Allocation is one operation's share of one pool: the run total that
 // every dispatch of the operation reserves from and settles against.
 // Consumed may exceed Amount after an overspend; it is never reduced to

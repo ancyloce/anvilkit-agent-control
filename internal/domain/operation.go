@@ -165,6 +165,10 @@ type Profile struct {
 	// still need an allocation, so its profile funds its analysis
 	// allowance).
 	Funding *Money
+	// Credits is the number of credits funding debits beside Funding from
+	// the current tenant and actor credit pools (DEC-066); zero debits
+	// nothing and needs no credit pool.
+	Credits int64
 	// QueuePool names the execution capacity pool a Generation waits on;
 	// empty means no execution queue (the intake deadline is the only one).
 	QueuePool string

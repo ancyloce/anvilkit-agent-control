@@ -126,6 +126,44 @@ func TestPoolsAndAllocationsEnforceSharedLimits(t *testing.T) {
 	}
 }
 
+func TestCreditPoolDebitsWithinItsLimitAndPeriod(t *testing.T) {
+	now := time.Date(2026, 12, 15, 0, 0, 0, 0, time.UTC)
+	pool := &CreditPool{ID: "crp", Level: LevelActor, PeriodStart: now.Add(-time.Hour), PeriodEnd: now.Add(time.Hour), Limit: 2, Revision: 1}
+	if err := pool.Debit(1, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Debit(1, now); err != nil {
+		t.Fatal(err)
+	}
+	if pool.Used != 2 || pool.Available() != 0 || pool.Revision != 3 {
+		t.Fatalf("used %d available %d revision %d", pool.Used, pool.Available(), pool.Revision)
+	}
+	if err := pool.Debit(1, now); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("debit above the limit accepted: %v", err)
+	}
+	pool.Limit = 5
+	if err := pool.Debit(1, now.Add(2*time.Hour)); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatal("a credit pool outside its period debited")
+	}
+	for _, credits := range []int64{0, -1, MaxCredits + 1} {
+		if err := pool.Debit(credits, now); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("debit of %d accepted: %v", credits, err)
+		}
+	}
+	// A limit lowered below the used count fences new debits and leaves no
+	// negative headroom.
+	pool.Limit = 1
+	if pool.Available() != 0 {
+		t.Fatalf("available %d below the used count", pool.Available())
+	}
+	if err := pool.Debit(1, now); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatal("a lowered limit debited")
+	}
+	if pool.Used != 2 {
+		t.Fatalf("a refused debit changed the used count to %d", pool.Used)
+	}
+}
+
 func TestPriceMetersInclusiveNativeUsageWithoutCountingSubsetsTwice(t *testing.T) {
 	p := fixture
 	p.InputIncludesCached, p.OutputIncludesReasoning = true, true
