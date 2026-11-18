@@ -73,11 +73,11 @@ func Profiles(cfg config.Config) []domain.Profile {
 		{
 			ID: "preparation-v1", Kind: domain.KindPreparation, OperationDeadline: prep.Deadline, StepID: "analysis", MultiStep: true,
 			Clarification: domain.ClarificationBounds{MaxRounds: prep.MaxRounds, MaxQuestions: prep.MaxQuestions, Wait: prep.Wait},
-			Funding:       &prepFunding,
+			Funding:       &prepFunding, Credits: prep.Credits,
 		},
 		{
 			ID: "generation-v1", Kind: domain.KindGeneration, OperationDeadline: gen.QueueDeadline, StepID: "codegen", MultiStep: true,
-			Funding: &genFunding, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
+			Funding: &genFunding, Credits: gen.Credits, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
 			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile,
 		},
 		{
@@ -85,7 +85,7 @@ func Profiles(cfg config.Config) []domain.Profile {
 			// subject names, under the generation's pool, funding, windows
 			// and repair bound (requirements §2 funds both alike).
 			ID: "refinement-v1", Kind: domain.KindRefinement, OperationDeadline: gen.QueueDeadline, StepID: "codegen", MultiStep: true,
-			Funding: &genFunding, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
+			Funding: &genFunding, Credits: gen.Credits, QueuePool: GenerationPoolID, ActiveWindow: gen.ActiveWindow, Definitions: gen.Definitions, SupportsControl: true,
 			MaxRepairs: gen.MaxRepairs, CodegenProfileID: gen.CodegenProfile, ValidatorProfileID: gen.ValidatorProfile,
 		},
 		{
