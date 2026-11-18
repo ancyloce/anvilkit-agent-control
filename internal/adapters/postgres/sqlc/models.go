@@ -165,6 +165,27 @@ type CostEntry struct {
 	CreatedAt     pgtype.Timestamptz
 }
 
+type CreditEntry struct {
+	EntryID      string
+	OperationID  string
+	CreditPoolID string
+	Credits      int64
+	CreatedAt    pgtype.Timestamptz
+}
+
+type CreditPool struct {
+	CreditPoolID string
+	Level        string
+	TenantID     string
+	ActorID      *string
+	PeriodStart  pgtype.Timestamptz
+	PeriodEnd    pgtype.Timestamptz
+	LimitCredits int64
+	UsedCredits  int64
+	Revision     int64
+	CreatedBy    string
+}
+
 type Dispatch struct {
 	DispatchID       string
 	Kind             string
