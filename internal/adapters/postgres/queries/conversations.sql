@@ -1,0 +1,47 @@
+-- Conversations (DEC-067, migration 00021): personal conversations, their
+-- user messages and the commands that created or changed them. Every read is
+-- tenant-scoped here; the application matches project and owner. Lock rank
+-- 1 (conversations, after the credit pools), then rank 6 (commands and
+-- messages).
+
+-- name: InsertConversation :exec
+INSERT INTO conversations (conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+
+-- name: GetConversation :one
+SELECT * FROM conversations WHERE conversation_id = $1 AND tenant_id = $2;
+
+-- name: LockConversation :one
+SELECT * FROM conversations WHERE conversation_id = $1 AND tenant_id = $2 FOR UPDATE;
+
+-- name: UpdateConversation :exec
+UPDATE conversations SET status = $2, title = $3, revision = $4, last_message_seq = $5, updated_at = $6
+WHERE conversation_id = $1;
+
+-- name: ListConversations :many
+SELECT * FROM conversations
+WHERE tenant_id = sqlc.arg(tenant_id)::text AND project_id = sqlc.arg(project_id)::text AND owner_actor_id = sqlc.arg(owner_actor_id)::text
+  AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (sqlc.arg(after_id)::text = '' OR (created_at, conversation_id) < (sqlc.arg(after_created_at)::timestamptz, sqlc.arg(after_id)::text))
+ORDER BY created_at DESC, conversation_id DESC
+LIMIT sqlc.arg(row_limit)::int;
+
+-- name: InsertConversationMessage :exec
+INSERT INTO conversation_messages (message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+
+-- name: GetConversationMessage :one
+SELECT * FROM conversation_messages WHERE message_id = $1 AND tenant_id = $2;
+
+-- name: ListConversationMessages :many
+SELECT * FROM conversation_messages
+WHERE conversation_id = sqlc.arg(conversation_id)::text AND tenant_id = sqlc.arg(tenant_id)::text AND message_seq < sqlc.arg(before_seq)::bigint
+ORDER BY message_seq DESC
+LIMIT sqlc.arg(row_limit)::int;
+
+-- name: GetConversationCommand :one
+SELECT * FROM conversation_commands WHERE tenant_id = $1 AND command_id = $2;
+
+-- name: InsertConversationCommand :exec
+INSERT INTO conversation_commands (tenant_id, command_id, kind, actor_id, request_digest, conversation_id, message_id, accepted_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);

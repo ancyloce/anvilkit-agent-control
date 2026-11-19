@@ -139,6 +139,43 @@ type BudgetPool struct {
 	CreatedBy   string
 }
 
+type Conversation struct {
+	ConversationID string
+	TenantID       string
+	ProjectID      string
+	OwnerActorID   string
+	Status         string
+	Title          *string
+	Revision       int64
+	LastMessageSeq int64
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+type ConversationCommand struct {
+	TenantID       string
+	CommandID      string
+	Kind           string
+	ActorID        string
+	RequestDigest  string
+	ConversationID string
+	MessageID      *string
+	AcceptedAt     pgtype.Timestamptz
+}
+
+type ConversationMessage struct {
+	MessageID            string
+	TenantID             string
+	ConversationID       string
+	MessageSeq           int64
+	Role                 string
+	State                string
+	Body                 string
+	ContentDigest        string
+	ConversationRevision int64
+	CreatedAt            pgtype.Timestamptz
+}
+
 type CostCap struct {
 	CapID     string
 	Level     string
