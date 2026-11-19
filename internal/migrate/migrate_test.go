@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,6 +168,41 @@ func TestControlSchema(t *testing.T) {
 	require.Error(t, err, "a tenant credit pool names no actor")
 	_, err = db.ExecContext(ctx, `INSERT INTO credit_pools (credit_pool_id, level, tenant_id, period_start, period_end, limit_credits, created_by) VALUES ('crp-platform', 'platform', 't', now(), now() + interval '1 day', 1, 'test')`)
 	require.Error(t, err, "there is no platform credit pool")
+	conversationSchema(ctx, t, db)
+}
+
+// conversationSchema: 00021 (DEC-067) keeps a user message immutable (the
+// runtime role appends messages and commands, never rewrites them), bounds
+// a user message to 32768 bytes, and ties every message and command to a
+// conversation of the same tenant.
+func conversationSchema(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+	var convUpdate, msgInsert, msgUpdate, msgDelete, cmdUpdate bool
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege('anvilkit_control_app', 'conversations', 'UPDATE'),
+		has_table_privilege('anvilkit_control_app', 'conversation_messages', 'INSERT'),
+		has_table_privilege('anvilkit_control_app', 'conversation_messages', 'UPDATE'),
+		has_table_privilege('anvilkit_control_app', 'conversation_messages', 'DELETE'),
+		has_table_privilege('anvilkit_control_app', 'conversation_commands', 'UPDATE')`).Scan(&convUpdate, &msgInsert, &msgUpdate, &msgDelete, &cmdUpdate))
+	require.True(t, convUpdate)
+	require.True(t, msgInsert)
+	require.False(t, msgUpdate, "a stored message is never rewritten")
+	require.False(t, msgDelete)
+	require.False(t, cmdUpdate)
+	digest := "sha256:" + strings.Repeat("0", 64)
+	_, err := db.ExecContext(ctx, `INSERT INTO conversations (conversation_id, tenant_id, project_id, owner_actor_id, status, revision, created_at, updated_at) VALUES ('cnv_schema', 'tenant_s', 'project_s', 'user_s', 'active', 1, now(), now())`)
+	require.NoError(t, err)
+	insertMessage := func(id, tenant, role, state, body string) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO conversation_messages (message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at) VALUES ($1, $2, 'cnv_schema', (SELECT count(*) + 1 FROM conversation_messages WHERE conversation_id = 'cnv_schema'), $3, $4, $5, $6, 2, now())`, id, tenant, role, state, body, digest)
+		return err
+	}
+	require.NoError(t, insertMessage("msg_schema_1", "tenant_s", "user", "completed", strings.Repeat("a", 32768)))
+	require.Error(t, insertMessage("msg_schema_2", "tenant_s", "user", "completed", strings.Repeat("a", 32769)), "a user message is at most 32768 bytes")
+	require.Error(t, insertMessage("msg_schema_3", "tenant_s", "user", "streaming", "x"), "a user message is completed")
+	require.Error(t, insertMessage("msg_schema_4", "tenant_other", "user", "completed", "x"), "a message belongs to a conversation of its own tenant")
+	_, err = db.ExecContext(ctx, `INSERT INTO conversation_commands (tenant_id, command_id, kind, actor_id, request_digest, conversation_id, accepted_at) VALUES ('tenant_s', 'cmd_schema', 'append_message', 'user_s', $1, 'cnv_schema', now())`, digest)
+	require.Error(t, err, "an append command names its message")
+	_, err = db.ExecContext(ctx, `UPDATE conversations SET status = 'deleted' WHERE conversation_id = 'cnv_schema'`)
+	require.Error(t, err, "deletion is not a status of this slice")
 }
 
 // grantPolicyBarrier: 00010 keeps one registration per (tenant, command),
