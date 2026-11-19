@@ -183,6 +183,19 @@ type Repo interface {
 	UpdateCreditPool(ctx context.Context, p *domain.CreditPool) error
 	HasCreditEntry(ctx context.Context, creditPoolID, operationID string) (bool, error)
 	InsertCreditEntry(ctx context.Context, e *domain.CreditEntry) error
+	// Conversations (DEC-067; rank 1, locked after the credit pools), their
+	// append-only messages and conversation commands (rank 6). Reads are
+	// tenant-scoped; the application matches project and owner.
+	InsertConversation(ctx context.Context, c *domain.Conversation) error
+	GetConversation(ctx context.Context, conversationID, tenantID string) (*domain.Conversation, error)
+	LockConversation(ctx context.Context, conversationID, tenantID string) (*domain.Conversation, error)
+	UpdateConversation(ctx context.Context, c *domain.Conversation) error
+	ListConversations(ctx context.Context, owner domain.Scope, status domain.ConversationStatus, after *domain.ConversationCursor, limit int) ([]*domain.Conversation, error)
+	InsertConversationMessage(ctx context.Context, m *domain.Message) error
+	GetConversationMessage(ctx context.Context, messageID, tenantID string) (*domain.Message, error)
+	ListConversationMessages(ctx context.Context, conversationID, tenantID string, before uint64, limit int) ([]*domain.Message, error)
+	GetConversationCommand(ctx context.Context, tenantID, commandID string) (*domain.ConversationCommand, error)
+	InsertConversationCommand(ctx context.Context, c *domain.ConversationCommand) error
 	InsertAllocationReturn(ctx context.Context, a *domain.Allocation, amount int64, at time.Time) error
 	HasAllocationReturn(ctx context.Context, allocationID string) (bool, error)
 	ListFinanceUnsettled(ctx context.Context, limit int) ([]string, error)
