@@ -451,3 +451,47 @@ func TestWorkloadAuthorizationBeforeHandlers(t *testing.T) {
 	_, err = grpc_health_v1.NewHealthClient(plain).Check(ctx, &grpc_health_v1.HealthCheckRequest{})
 	require.Equal(t, codes.Unavailable, status.Code(err), "%v", err)
 }
+
+// TestConversationServiceIsAPIOnly (DEC-067): conversations are read and
+// written for a verified user, so only the API workload reaches the
+// handlers; the Workflow and the Model Proxy are refused before
+// validation, and the reviewed policy covers every conversation method.
+func TestConversationServiceIsAPIOnly(t *testing.T) {
+	ca := identitytest.NewCA(t, "ca")
+	td := "anvilkit.local"
+	mount := func(cn string) string {
+		dir := filepath.Join(t.TempDir(), cn)
+		identitytest.Mount(t, dir, ca.Issue(t, cn, []string{identitytest.SPIFFE(td, "anvilkit-apps", cn)}, cn), ca.PEM)
+		return dir
+	}
+	cert, key, caFile := identitytest.Files(mount("anvilkit-agent-control"))
+	r, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
+	require.NoError(t, err)
+	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", &grpctransport.Identity{Reloader: r, TrustDomain: td, Policy: grpctransport.Policy()}, grpctransport.Capacity{Control: 4, Execution: 4},
+		grpctransport.Dependencies{Conversations: application.NewConversations(nil, domain.SystemClock{}, nil)})
+	require.NoError(t, err, "the reviewed policy covers every conversation method")
+	addr, err := srv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { srv.Stop(time.Second) })
+	client := func(cn string) controlv1.ConversationServiceClient {
+		cert, key, caFile := identitytest.Files(mount(cn))
+		cr, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
+		require.NoError(t, err)
+		creds, err := identity.NewClientCredentials(cr, "anvilkit-agent-control")
+		require.NoError(t, err)
+		conn, err := grpc.NewClient(addr.String(), grpc.WithTransportCredentials(creds))
+		require.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		return controlv1.NewConversationServiceClient(conn)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client("anvilkit-agent-api").ListMessages(ctx, &controlv1.ListMessagesRequest{})
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "the API passes authorization and reaches validation: %v", err)
+	for _, cn := range []string{"anvilkit-agent-workflow", "anvilkit-agent-model-proxy"} {
+		_, err = client(cn).ListMessages(ctx, &controlv1.ListMessagesRequest{})
+		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
+		_, err = client(cn).AppendMessage(ctx, &controlv1.AppendMessageRequest{})
+		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
+	}
+}

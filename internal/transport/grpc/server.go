@@ -63,6 +63,9 @@ type Dependencies struct {
 	// serves AuthorizationService (P2.1). Nil leaves them unregistered.
 	Finance       *application.Finance
 	Authorization *application.Authorization
+	// Conversations serves ConversationService (DEC-067); nil leaves it
+	// unregistered.
+	Conversations *application.Conversations
 	// Notifier wakes event streams when an event of their operation commits
 	// (P1.4); nil means the streams poll at the fallback interval only.
 	Notifier application.EventNotifier
@@ -105,6 +108,9 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 		}
 		if deps.Authorization == nil {
 			policy = withoutService(policy, "AuthorizationService")
+		}
+		if deps.Conversations == nil {
+			policy = withoutService(policy, "ConversationService")
 		}
 		authz, err = identity.NewAuthorizer(id.TrustDomain, policy)
 		if err != nil {
@@ -154,6 +160,9 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 	}
 	if deps.Authorization != nil {
 		controlv1.RegisterAuthorizationServiceServer(s, &authorizationServer{authorization: deps.Authorization})
+	}
+	if deps.Conversations != nil {
+		controlv1.RegisterConversationServiceServer(s, &conversationServer{conversations: deps.Conversations})
 	}
 	if authz != nil {
 		if err := authz.Check(s); err != nil {
