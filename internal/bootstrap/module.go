@@ -199,6 +199,9 @@ func Module() fx.Option {
 			func(store application.Store, clock domain.Clock, log *slog.Logger) *application.GrantPolicies {
 				return application.NewGrantPolicies(store, clock, log)
 			},
+			func(store application.Store, clock domain.Clock, log *slog.Logger) *application.Conversations {
+				return application.NewConversations(store, clock, log)
+			},
 			func(store application.Store, clock domain.Clock) *application.Previews {
 				return application.NewPreviews(store, clock)
 			},
@@ -207,7 +210,7 @@ func Module() fx.Option {
 			},
 			newTracer,
 			newMetrics,
-			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, finance *application.Finance, authorization *application.Authorization, _ trace.Tracer, reg *prometheus.Registry, notifier *postgres.Notifier) (*grpctransport.Server, error) {
+			func(lc fx.Lifecycle, cfg config.Config, log *slog.Logger, ops *application.Operations, exec *application.Execution, dispatch *application.Dispatch, effects *application.Effects, recovery *application.Recovery, artifacts *application.Artifacts, preparations *application.Preparations, generations *application.Generations, grants *application.GrantPolicies, previews *application.Previews, releases *application.Releases, finance *application.Finance, authorization *application.Authorization, conversations *application.Conversations, _ trace.Tracer, reg *prometheus.Registry, notifier *postgres.Notifier) (*grpctransport.Server, error) {
 				id, reloader, err := serverIdentity(cfg, log)
 				if err != nil {
 					return nil, err
@@ -218,7 +221,7 @@ func Module() fx.Option {
 				return grpctransport.NewServerWithIdentity(cfg.GRPC.Listen, id,
 					grpctransport.Capacity{Control: cfg.GRPC.ControlCapacity, Execution: cfg.GRPC.ExecutionCapacity, Streams: cfg.GRPC.StreamCapacity, StreamPerTenant: cfg.GRPC.StreamPerTenant, CommandReserve: cfg.GRPC.CommandReserve},
 					grpctransport.Dependencies{Ops: ops, Exec: exec, Dispatch: dispatch, Effects: effects, Recovery: recovery, Artifacts: artifacts, Preparations: preparations, Generations: generations, Grants: grants, Previews: previews, Releases: releases,
-						Finance: finance, Authorization: authorization, Notifier: notifier, DefaultDeadline: cfg.GRPC.DefaultDeadline, MaxConnectionAge: cfg.GRPC.Identity.MaxConnectionAge,
+						Finance: finance, Authorization: authorization, Conversations: conversations, Notifier: notifier, DefaultDeadline: cfg.GRPC.DefaultDeadline, MaxConnectionAge: cfg.GRPC.Identity.MaxConnectionAge,
 						MaxConnectionAgeGrace: cfg.GRPC.Identity.MaxConnectionAgeGrace},
 					grpctransport.Observability(reg)...)
 			},
