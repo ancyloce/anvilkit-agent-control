@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"google.golang.org/grpc/metadata"
@@ -274,9 +275,32 @@ func toIntake(p *controlv1.PreparationIntake) (domain.PreparationIntake, error) 
 	return in, nil
 }
 
+// served refuses a chat_turn operation (DEC-068): a turn's operation is read
+// and stopped through its conversation (ConversationService GetTurn and
+// StopTurn), so OperationService answers it as not found to every caller.
+func served(op *domain.Operation) error {
+	if op.Kind == domain.KindChatTurn {
+		return fmt.Errorf("%w: operation %s", domain.ErrNotFound, op.ID)
+	}
+	return nil
+}
+
+// servedOperation reads the operation under the caller's scope, the same
+// rule the method behind it applies, and refuses a chat_turn operation.
+func (s *operationServer) servedOperation(ctx context.Context, sc domain.Scope, operationID string) error {
+	op, err := s.ops.Get(ctx, sc, operationID)
+	if err != nil {
+		return err
+	}
+	return served(op)
+}
+
 func (s *operationServer) GetOperation(ctx context.Context, req *controlv1.GetOperationRequest) (*controlv1.GetOperationResponse, error) {
 	op, err := s.ops.Get(ctx, scope(ctx, req.GetScope()), req.GetOperationId())
 	if err != nil {
+		return nil, toStatus(err)
+	}
+	if err := served(op); err != nil {
 		return nil, toStatus(err)
 	}
 	v, err := s.view(ctx, op)
@@ -299,6 +323,9 @@ func (s *operationServer) ListOperationEvents(ctx context.Context, req *controlv
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	if err := s.servedOperation(ctx, scope(ctx, req.GetScope()), req.GetOperationId()); err != nil {
+		return nil, toStatus(err)
+	}
 	page, err := s.ops.ListEvents(ctx, scope(ctx, req.GetScope()), req.GetOperationId(), after, int(req.GetLimit()))
 	if err != nil {
 		return nil, toStatus(err)
@@ -318,6 +345,9 @@ func (s *operationServer) StreamOperationEvents(req *controlv1.StreamOperationEv
 	ctx := stream.Context()
 	after, err := parseAfter(req.GetAfterEventSeq())
 	if err != nil {
+		return toStatus(err)
+	}
+	if err := s.servedOperation(ctx, scope(ctx, req.GetScope()), req.GetOperationId()); err != nil {
 		return toStatus(err)
 	}
 	if s.streams != nil {
@@ -377,6 +407,9 @@ func (s *operationServer) SubmitCommand(ctx context.Context, req *controlv1.Subm
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	if err := s.servedOperation(ctx, scope(ctx, req.GetScope()), req.GetOperationId()); err != nil {
+		return nil, toStatus(err)
+	}
 	c, existing, err := s.ops.SubmitCommand(ctx, cmd, scope(ctx, req.GetScope()), req.GetOperationId(), commandKindFromProto[req.GetKind()], expected, req.GetTargetDefinitionActivation())
 	if err != nil {
 		return nil, toStatus(err)
@@ -385,6 +418,9 @@ func (s *operationServer) SubmitCommand(ctx context.Context, req *controlv1.Subm
 }
 
 func (s *operationServer) GetCommand(ctx context.Context, req *controlv1.GetCommandRequest) (*controlv1.GetCommandResponse, error) {
+	if err := s.servedOperation(ctx, scope(ctx, req.GetScope()), req.GetOperationId()); err != nil {
+		return nil, toStatus(err)
+	}
 	c, err := s.ops.GetCommand(ctx, scope(ctx, req.GetScope()), req.GetOperationId(), req.GetCommandId())
 	if err != nil {
 		return nil, toStatus(err)

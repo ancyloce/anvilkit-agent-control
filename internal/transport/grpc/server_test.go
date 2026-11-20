@@ -520,3 +520,61 @@ func TestConversationServiceIsAPIOnly(t *testing.T) {
 		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
 	}
 }
+
+// TestChatTurnOperationsAreNotServed (DEC-068): a turn's chat_turn operation
+// is read and stopped through its conversation only. Every OperationService
+// method answers it as not found (agent.yaml: "/operations does not serve
+// it"), while GetTurn serves the turn that names it.
+func TestChatTurnOperationsAreNotServed(t *testing.T) {
+	inst := testdb.Start(t)
+	store := postgres.NewStore(inst.Pool(t))
+	inv, err := inventory.NewFilesystem(filepath.Join(t.TempDir(), "inv"))
+	require.NoError(t, err)
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	chat := domain.Profile{ID: domain.ChatTurnProfileID, Kind: domain.KindChatTurn, OperationDeadline: 150 * time.Second,
+		StepID: domain.ChatTurnStepID, MultiStep: true, AttemptWindow: 120 * time.Second}
+	ops := application.NewOperations(store, inv, []domain.Profile{chat}, domain.SystemClock{}, log)
+	conversations := application.NewConversations(store, domain.SystemClock{}, log).WithReplies(ops, chat, 64, true)
+	srv, err := grpctransport.NewServerWithIdentity("127.0.0.1:0", nil, grpctransport.Capacity{Control: 4, Execution: 4, Streams: 8, StreamPerTenant: 4},
+		grpctransport.Dependencies{Ops: ops, Conversations: conversations})
+	require.NoError(t, err)
+	addr, err := srv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { srv.Stop(2 * time.Second) })
+	conn, err := grpc.NewClient(addr.String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	ctx := context.Background()
+	sc := &controlv1.Scope{TenantId: "tenant_chat", ProjectId: "project_chat", ActorId: "user_alice"}
+	cmd := func(id string) *controlv1.CommandIdentity {
+		return &controlv1.CommandIdentity{TenantId: "tenant_chat", CommandId: id, ActorId: "user_alice", RequestDigest: string(application.DigestOf([]byte(id)))}
+	}
+
+	convClient := controlv1.NewConversationServiceClient(conn)
+	created, err := convClient.CreateConversation(ctx, &controlv1.CreateConversationRequest{Command: cmd("chat_conv"), Scope: sc})
+	require.NoError(t, err)
+	appended, err := convClient.AppendMessage(ctx, &controlv1.AppendMessageRequest{Command: cmd("chat_msg"), Scope: sc,
+		ConversationId: created.GetConversation().GetConversationId(), ExpectedRevision: created.GetConversation().GetRevision(), Text: "Make it black"})
+	require.NoError(t, err)
+	opID, turnID := appended.GetReceipt().GetOperationId(), appended.GetReceipt().GetTurnId()
+	require.NotEmpty(t, opID, "the message opened a turn and its operation")
+
+	turn, err := convClient.GetTurn(ctx, &controlv1.GetTurnRequest{Scope: sc, ConversationId: created.GetConversation().GetConversationId(), TurnId: turnID})
+	require.NoError(t, err)
+	require.Equal(t, opID, turn.GetTurn().GetOperationId(), "the turn names its operation for the ledger")
+
+	opsClient := controlv1.NewOperationServiceClient(conn)
+	_, err = opsClient.GetOperation(ctx, &controlv1.GetOperationRequest{Scope: sc, OperationId: opID})
+	require.Equal(t, codes.NotFound, status.Code(err), "GetOperation: %v", err)
+	_, err = opsClient.ListOperationEvents(ctx, &controlv1.ListOperationEventsRequest{Scope: sc, OperationId: opID})
+	require.Equal(t, codes.NotFound, status.Code(err), "ListOperationEvents: %v", err)
+	_, err = opsClient.SubmitCommand(ctx, &controlv1.SubmitCommandRequest{Command: cmd("chat_cancel"), Scope: sc, OperationId: opID,
+		Kind: controlv1.CommandKind_COMMAND_KIND_CANCEL, ExpectedRevision: "1"})
+	require.Equal(t, codes.NotFound, status.Code(err), "SubmitCommand: a turn is stopped through StopTurn only: %v", err)
+	_, err = opsClient.GetCommand(ctx, &controlv1.GetCommandRequest{Scope: sc, OperationId: opID, CommandId: "chat_cancel"})
+	require.Equal(t, codes.NotFound, status.Code(err), "GetCommand: %v", err)
+	stream, err := opsClient.StreamOperationEvents(ctx, &controlv1.StreamOperationEventsRequest{Scope: sc, OperationId: opID})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.Equal(t, codes.NotFound, status.Code(err), "StreamOperationEvents: %v", err)
+}
