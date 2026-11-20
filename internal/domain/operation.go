@@ -14,6 +14,9 @@ const (
 	KindPreviewBuild OperationKind = "preview_build"
 	KindRelease      OperationKind = "release"
 	KindLocalCheck   OperationKind = "local_check"
+	// KindChatTurn is one assistant reply to one user message (DEC-068):
+	// created only by a conversation message, never by CreateOperation.
+	KindChatTurn OperationKind = "chat_turn"
 )
 
 type Lifecycle string
