@@ -203,6 +203,49 @@ func conversationSchema(ctx context.Context, t *testing.T, db *sql.DB) {
 	require.Error(t, err, "an append command names its message")
 	_, err = db.ExecContext(ctx, `UPDATE conversations SET status = 'deleted' WHERE conversation_id = 'cnv_schema'`)
 	require.Error(t, err, "deletion is not a status of this slice")
+	turnSchema(ctx, t, db, digest)
+}
+
+// turnSchema: 00022 (DEC-068) admits the chat_turn operation kind, keeps at
+// most one open turn per conversation (the reply slot), ties a claimed writer
+// to its activity and invocation, and lets the runtime role write turns but
+// never delete them.
+func turnSchema(ctx context.Context, t *testing.T, db *sql.DB, digest string) {
+	t.Helper()
+	var turnInsert, turnUpdate, turnDelete bool
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege('anvilkit_control_app', 'conversation_turns', 'INSERT'),
+		has_table_privilege('anvilkit_control_app', 'conversation_turns', 'UPDATE'),
+		has_table_privilege('anvilkit_control_app', 'conversation_turns', 'DELETE')`).Scan(&turnInsert, &turnUpdate, &turnDelete))
+	require.True(t, turnInsert)
+	require.True(t, turnUpdate)
+	require.False(t, turnDelete)
+	insertOperation := func(id, kind string) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO operations (operation_id, tenant_id, actor_id, command_id, kind, profile_id, subject_digest, semantic_digest, lifecycle, phase, control_state, cleanup_state, finance_state, deadline, intake_state, relay_state)
+			VALUES ($1, 'tenant_s', 'user_s', 'cmd_' || $1, $2, 'chat-turn-v1', $3, $3, 'accepted', 'intake', 'none', 'not_required', 'not_funded', now(), 'pending', 'pending')`, id, kind, digest)
+		return err
+	}
+	require.NoError(t, insertOperation("op_turn_1", "chat_turn"), "00022 admits the chat_turn kind")
+	require.Error(t, insertOperation("op_turn_x", "chat"), "the kind list still binds")
+	require.NoError(t, insertOperation("op_turn_2", "chat_turn"))
+	_, err := db.ExecContext(ctx, `INSERT INTO conversation_messages (message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at) VALUES ('msg_schema_turn', 'tenant_s', 'cnv_schema', 99, 'user', 'completed', 'x', $1, 3, now())`, digest)
+	require.NoError(t, err)
+	insertTurn := func(id, message, operation, state, content string) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO conversation_turns (turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, created_at, updated_at)
+			VALUES ($1, 'tenant_s', 'cnv_schema', $2, 1, $3, $4, $5, 'not_started', now(), now())`, id, message, operation, state, content)
+		return err
+	}
+	require.NoError(t, insertTurn("trn_schema_1", "msg_schema_1", "op_turn_1", "queued", "unknown"))
+	require.Error(t, insertTurn("trn_schema_2", "msg_schema_turn", "op_turn_2", "running", "unknown"), "one open turn per conversation")
+	require.Error(t, insertTurn("trn_schema_3", "msg_schema_turn", "op_turn_2", "failed", "complete"), "only a completed turn has complete content")
+	_, err = db.ExecContext(ctx, `UPDATE conversation_turns SET writer_epoch = 1 WHERE turn_id = 'trn_schema_1'`)
+	require.Error(t, err, "a claimed writer names its activity and invocation")
+	_, err = db.ExecContext(ctx, `UPDATE conversation_turns SET writer_epoch = 1, temporal_attempt = 1, activity_key = 'chat/trn', invocation_id = 'inv_1', state = 'running' WHERE turn_id = 'trn_schema_1'`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE conversation_turns SET state = 'completed', content_status = 'complete', sender_status = 'stopped', outcome_command_id = 'cmd_outcome' WHERE turn_id = 'trn_schema_1'`)
+	require.Error(t, err, "a sealed turn names both its command and its digest")
+	_, err = db.ExecContext(ctx, `UPDATE conversation_turns SET state = 'completed', content_status = 'complete', sender_status = 'stopped', outcome_command_id = 'cmd_outcome', outcome_digest = $1 WHERE turn_id = 'trn_schema_1'`, digest)
+	require.NoError(t, err)
+	require.NoError(t, insertTurn("trn_schema_2", "msg_schema_turn", "op_turn_2", "queued", "unknown"), "a sealed turn frees the slot")
 }
 
 // grantPolicyBarrier: 00010 keeps one registration per (tenant, command),
