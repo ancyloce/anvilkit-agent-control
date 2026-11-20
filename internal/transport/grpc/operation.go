@@ -55,6 +55,7 @@ var kindFromProto = map[controlv1.OperationKind]domain.OperationKind{
 	controlv1.OperationKind_OPERATION_KIND_PREVIEW_BUILD: domain.KindPreviewBuild,
 	controlv1.OperationKind_OPERATION_KIND_RELEASE:       domain.KindRelease,
 	controlv1.OperationKind_OPERATION_KIND_LOCAL_CHECK:   domain.KindLocalCheck,
+	controlv1.OperationKind_OPERATION_KIND_CHAT_TURN:     domain.KindChatTurn,
 }
 
 var kindToProto = map[domain.OperationKind]controlv1.OperationKind{
@@ -64,6 +65,7 @@ var kindToProto = map[domain.OperationKind]controlv1.OperationKind{
 	domain.KindPreviewBuild: controlv1.OperationKind_OPERATION_KIND_PREVIEW_BUILD,
 	domain.KindRelease:      controlv1.OperationKind_OPERATION_KIND_RELEASE,
 	domain.KindLocalCheck:   controlv1.OperationKind_OPERATION_KIND_LOCAL_CHECK,
+	domain.KindChatTurn:     controlv1.OperationKind_OPERATION_KIND_CHAT_TURN,
 }
 
 var lifecycleToProto = map[domain.Lifecycle]controlv1.Lifecycle{

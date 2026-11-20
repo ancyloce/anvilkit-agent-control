@@ -62,7 +62,9 @@ func Policy() identity.Policy {
 	add("BudgetPoolService", []string{"CreatePool", "AdjustPool", "GetPool", "FindPool", "SetCostCap", "GetCostCap", "CreateCreditPool", "AdjustCreditPool", "FindCreditPool"}, api)
 	// DEC-067: conversations are written and read for a verified user only,
 	// so only the API workload calls them; Control decides ownership.
-	add("ConversationService", []string{"CreateConversation", "GetConversation", "ListConversations", "UpdateConversation", "AppendMessage", "ListMessages"}, api)
+	add("ConversationService", []string{"CreateConversation", "GetConversation", "ListConversations", "UpdateConversation", "AppendMessage", "ListMessages", "GetTurn", "StopTurn"}, api)
+	// DEC-068: the Workflow's fixed chat Activity alone writes replies.
+	add("ConversationExecutionService", []string{"ClaimReplyWriter", "GetTurnContext", "RecordReplyOutcome"}, workflow)
 	add("AuthorizationService", []string{"CheckDisclosure"}, knowledge)
 	add("AuthorizationService", []string{"CheckExecution"}, mcp)
 	for _, m := range []string{"Check", "Watch", "List"} {

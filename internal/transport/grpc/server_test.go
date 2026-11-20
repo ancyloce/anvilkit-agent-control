@@ -493,5 +493,30 @@ func TestConversationServiceIsAPIOnly(t *testing.T) {
 		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
 		_, err = client(cn).AppendMessage(ctx, &controlv1.AppendMessageRequest{})
 		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
+		_, err = client(cn).StopTurn(ctx, &controlv1.StopTurnRequest{})
+		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
+	}
+	_, err = client("anvilkit-agent-api").GetTurn(ctx, &controlv1.GetTurnRequest{})
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "the API reads turns: %v", err)
+
+	// DEC-068: the Workflow's chat Activity alone writes replies.
+	execClient := func(cn string) controlv1.ConversationExecutionServiceClient {
+		cert, key, caFile := identitytest.Files(mount(cn))
+		cr, err := identity.New(identity.Files{CertFile: cert, KeyFile: key, CAFile: caFile}, 0, nil)
+		require.NoError(t, err)
+		creds, err := identity.NewClientCredentials(cr, "anvilkit-agent-control")
+		require.NoError(t, err)
+		conn, err := grpc.NewClient(addr.String(), grpc.WithTransportCredentials(creds))
+		require.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		return controlv1.NewConversationExecutionServiceClient(conn)
+	}
+	_, err = execClient("anvilkit-agent-workflow").RecordReplyOutcome(ctx, &controlv1.RecordReplyOutcomeRequest{})
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "the Workflow passes authorization and reaches validation: %v", err)
+	for _, cn := range []string{"anvilkit-agent-api", "anvilkit-agent-model-proxy"} {
+		_, err = execClient(cn).ClaimReplyWriter(ctx, &controlv1.ClaimReplyWriterRequest{})
+		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
+		_, err = execClient(cn).RecordReplyOutcome(ctx, &controlv1.RecordReplyOutcomeRequest{})
+		require.Equal(t, codes.PermissionDenied, status.Code(err), "%s: %v", cn, err)
 	}
 }

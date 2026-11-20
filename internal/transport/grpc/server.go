@@ -110,7 +110,7 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 			policy = withoutService(policy, "AuthorizationService")
 		}
 		if deps.Conversations == nil {
-			policy = withoutService(policy, "ConversationService")
+			policy = withoutService(policy, "ConversationService", "ConversationExecutionService")
 		}
 		authz, err = identity.NewAuthorizer(id.TrustDomain, policy)
 		if err != nil {
@@ -163,6 +163,7 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 	}
 	if deps.Conversations != nil {
 		controlv1.RegisterConversationServiceServer(s, &conversationServer{conversations: deps.Conversations})
+		controlv1.RegisterConversationExecutionServiceServer(s, &conversationExecutionServer{conversations: deps.Conversations})
 	}
 	if authz != nil {
 		if err := authz.Check(s); err != nil {

@@ -41,6 +41,10 @@ func toStatus(err error) error {
 		return status.Error(codes.InvalidArgument, "INVALID_ARGUMENT: "+err.Error())
 	case errors.Is(err, domain.ErrEffectUncertain):
 		return status.Error(codes.Unavailable, "EFFECT_UNCERTAIN: "+err.Error())
+	case errors.Is(err, domain.ErrTurnBusy):
+		// DEC-068: the API carries it as CAPACITY_EXHAUSTED (retryable) with
+		// this message, which begins TURN_BUSY:.
+		return status.Error(codes.ResourceExhausted, "TURN_BUSY: "+err.Error())
 	case errors.Is(err, domain.ErrCapacityExhausted):
 		return status.Error(codes.ResourceExhausted, "CAPACITY_EXHAUSTED")
 	case errors.Is(err, domain.ErrBudgetExhausted):

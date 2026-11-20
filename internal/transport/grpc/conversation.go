@@ -60,10 +60,55 @@ func toMessage(m *domain.Message) *controlv1.Message {
 	}
 }
 
-func toMessageReceipt(m *domain.Message) *controlv1.MessageReceipt {
-	return &controlv1.MessageReceipt{
+// toMessageReceipt names the turn the message opened, where replies are
+// enabled (DEC-068); the assistant message is named by the turn view once its
+// text is stored.
+func toMessageReceipt(m *domain.Message, turn *domain.Turn) *controlv1.MessageReceipt {
+	r := &controlv1.MessageReceipt{
 		ConversationId: m.ConversationID, MessageId: m.ID, MessageSeq: strconv.FormatUint(m.Seq, 10),
 		ConversationRevision: strconv.FormatUint(m.ConversationRevision, 10), CreatedAt: timestamppb.New(m.CreatedAt),
+	}
+	if turn != nil {
+		r.TurnId, r.OperationId = optString(turn.ID), optString(turn.OperationID)
+	}
+	return r
+}
+
+var turnStateToProto = map[domain.TurnState]controlv1.TurnState{
+	domain.TurnQueued: controlv1.TurnState_TURN_STATE_QUEUED, domain.TurnRunning: controlv1.TurnState_TURN_STATE_RUNNING,
+	domain.TurnCompleted: controlv1.TurnState_TURN_STATE_COMPLETED, domain.TurnFailed: controlv1.TurnState_TURN_STATE_FAILED,
+	domain.TurnCancelPending: controlv1.TurnState_TURN_STATE_CANCEL_PENDING, domain.TurnCanceled: controlv1.TurnState_TURN_STATE_CANCELED,
+	domain.TurnReconciling: controlv1.TurnState_TURN_STATE_RECONCILING,
+}
+
+var contentStatusToProto = map[domain.ContentStatus]controlv1.ContentStatus{
+	domain.ContentComplete: controlv1.ContentStatus_CONTENT_STATUS_COMPLETE, domain.ContentPartial: controlv1.ContentStatus_CONTENT_STATUS_PARTIAL,
+	domain.ContentUnknown: controlv1.ContentStatus_CONTENT_STATUS_UNKNOWN,
+}
+
+var senderStatusToProto = map[domain.SenderStatus]controlv1.SenderStatus{
+	domain.SenderNotStarted: controlv1.SenderStatus_SENDER_STATUS_NOT_STARTED, domain.SenderActive: controlv1.SenderStatus_SENDER_STATUS_ACTIVE,
+	domain.SenderStopped: controlv1.SenderStatus_SENDER_STATUS_STOPPED, domain.SenderUnknown: controlv1.SenderStatus_SENDER_STATUS_UNKNOWN,
+}
+
+var senderStatusFromProto = map[controlv1.SenderStatus]domain.SenderStatus{
+	controlv1.SenderStatus_SENDER_STATUS_NOT_STARTED: domain.SenderNotStarted, controlv1.SenderStatus_SENDER_STATUS_ACTIVE: domain.SenderActive,
+	controlv1.SenderStatus_SENDER_STATUS_STOPPED: domain.SenderStopped, controlv1.SenderStatus_SENDER_STATUS_UNKNOWN: domain.SenderUnknown,
+}
+
+var replyOutcomeFromProto = map[controlv1.ReplyOutcome]domain.ReplyOutcome{
+	controlv1.ReplyOutcome_REPLY_OUTCOME_COMPLETED: domain.ReplyCompleted, controlv1.ReplyOutcome_REPLY_OUTCOME_PARTIAL_FAILED: domain.ReplyPartialFailed,
+	controlv1.ReplyOutcome_REPLY_OUTCOME_CANCELED: domain.ReplyCanceled, controlv1.ReplyOutcome_REPLY_OUTCOME_FAILED: domain.ReplyFailed,
+}
+
+// toTurn is a turn with its operation's finance; the stored writer and
+// outcome command stay Control's.
+func toTurn(t *domain.Turn, finance domain.FinanceState) *controlv1.Turn {
+	return &controlv1.Turn{
+		TurnId: t.ID, ConversationId: t.ConversationID, InputMessageId: t.InputMessageID, AssistantMessageId: optString(t.AssistantMessageID),
+		OperationId: t.OperationID, State: turnStateToProto[t.State], ContentStatus: contentStatusToProto[t.Content],
+		SenderStatus: senderStatusToProto[t.Sender], Finance: financeToProto[finance], FailureCode: optString(t.FailureCode),
+		CreatedAt: timestamppb.New(t.CreatedAt), UpdatedAt: timestamppb.New(t.UpdatedAt),
 	}
 }
 
@@ -124,11 +169,11 @@ func (s *conversationServer) AppendMessage(ctx context.Context, req *controlv1.A
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	m, existing, err := s.conversations.Append(ctx, cmd, scope(ctx, req.GetScope()), req.GetConversationId(), uint64(expected), req.GetText())
+	m, turn, existing, err := s.conversations.Append(ctx, cmd, scope(ctx, req.GetScope()), req.GetConversationId(), uint64(expected), req.GetText())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &controlv1.AppendMessageResponse{Receipt: toMessageReceipt(m), Existing: existing}, nil
+	return &controlv1.AppendMessageResponse{Receipt: toMessageReceipt(m, turn), Existing: existing}, nil
 }
 
 func (s *conversationServer) ListMessages(ctx context.Context, req *controlv1.ListMessagesRequest) (*controlv1.ListMessagesResponse, error) {
@@ -152,4 +197,24 @@ func (s *conversationServer) ListMessages(ctx context.Context, req *controlv1.Li
 		out.NextBeforeMessageSeq = optString(strconv.FormatUint(nextBefore, 10))
 	}
 	return out, nil
+}
+
+func (s *conversationServer) GetTurn(ctx context.Context, req *controlv1.GetTurnRequest) (*controlv1.GetTurnResponse, error) {
+	v, err := s.conversations.GetTurn(ctx, scope(ctx, req.GetScope()), req.GetConversationId(), req.GetTurnId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.GetTurnResponse{Turn: toTurn(v.Turn, v.Finance)}, nil
+}
+
+func (s *conversationServer) StopTurn(ctx context.Context, req *controlv1.StopTurnRequest) (*controlv1.StopTurnResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	v, existing, err := s.conversations.StopTurn(ctx, cmd, scope(ctx, req.GetScope()), req.GetConversationId(), req.GetTurnId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.StopTurnResponse{Turn: toTurn(v.Turn, v.Finance), Existing: existing}, nil
 }
