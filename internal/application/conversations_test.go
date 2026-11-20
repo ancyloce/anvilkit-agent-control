@@ -61,7 +61,7 @@ func TestConversations(t *testing.T) {
 			require.ErrorIs(t, err, domain.ErrNotFound, name)
 			_, _, err = conversations.Messages(ctx, other, conv.ID, 0, 0)
 			require.ErrorIs(t, err, domain.ErrNotFound, name)
-			_, _, err = conversations.Append(ctx, convCmd(other, "conv_intrude_"+other.ActorID+other.ProjectID+other.TenantID, "x"), other, conv.ID, 1, "x")
+			_, _, _, err = conversations.Append(ctx, convCmd(other, "conv_intrude_"+other.ActorID+other.ProjectID+other.TenantID, "x"), other, conv.ID, 1, "x")
 			require.ErrorIs(t, err, domain.ErrNotFound, name)
 			page, _, err := conversations.List(ctx, other, "", "", 0)
 			require.NoError(t, err)
@@ -72,19 +72,19 @@ func TestConversations(t *testing.T) {
 	})
 
 	t.Run("append and replay", func(t *testing.T) {
-		m, existing, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "blue"), convAlice, conv.ID, 1, "Make it blue")
+		m, _, existing, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "blue"), convAlice, conv.ID, 1, "Make it blue")
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Equal(t, uint64(1), m.Seq)
 		require.Equal(t, uint64(2), m.ConversationRevision)
-		replay, existing, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "blue"), convAlice, conv.ID, 1, "Make it blue")
+		replay, _, existing, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "blue"), convAlice, conv.ID, 1, "Make it blue")
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, m.ID, replay.ID)
 		require.Equal(t, uint64(2), replay.ConversationRevision, "the replay answers the original receipt")
-		_, _, err = conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "black"), convAlice, conv.ID, 2, "Make it black")
+		_, _, _, err = conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "black"), convAlice, conv.ID, 2, "Make it black")
 		require.ErrorIs(t, err, domain.ErrIdempotencyConflict)
-		_, _, err = conversations.Append(ctx, convCmd(convAlice, "conv_msg_stale", "stale"), convAlice, conv.ID, 1, "stale")
+		_, _, _, err = conversations.Append(ctx, convCmd(convAlice, "conv_msg_stale", "stale"), convAlice, conv.ID, 1, "stale")
 		var conflict *domain.RevisionConflict
 		require.True(t, errors.As(err, &conflict), "%v", err)
 		require.Equal(t, uint64(1), conflict.Expected)
@@ -106,7 +106,7 @@ func TestConversations(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				_, _, errs[i] = conversations.Append(ctx, convCmd(convAlice, fmt.Sprintf("conv_race_%d", i), fmt.Sprint(i)), convAlice, c.ID, 1, fmt.Sprint("send ", i))
+				_, _, _, errs[i] = conversations.Append(ctx, convCmd(convAlice, fmt.Sprintf("conv_race_%d", i), fmt.Sprint(i)), convAlice, c.ID, 1, fmt.Sprint("send ", i))
 			}(i)
 		}
 		wg.Wait()
@@ -130,7 +130,7 @@ func TestConversations(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				var m *domain.Message
-				if m, _, errs[i] = conversations.Append(ctx, convCmd(convAlice, "conv_race_same", "same"), convAlice, c.ID, 2, "the same command twice"); errs[i] == nil {
+				if m, _, _, errs[i] = conversations.Append(ctx, convCmd(convAlice, "conv_race_same", "same"), convAlice, c.ID, 2, "the same command twice"); errs[i] == nil {
 					ids[i] = m.ID
 				}
 			}(i)
@@ -152,10 +152,10 @@ func TestConversations(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Equal(t, domain.ConversationArchived, archived.Status)
-		_, _, err = conversations.Append(ctx, convCmd(convAlice, "conv_msg_archived", "late"), convAlice, conv.ID, archived.Revision, "late")
+		_, _, _, err = conversations.Append(ctx, convCmd(convAlice, "conv_msg_archived", "late"), convAlice, conv.ID, archived.Revision, "late")
 		require.ErrorIs(t, err, domain.ErrInvalid)
 		require.ErrorContains(t, err, domain.ReasonConversationArchived)
-		replay, existing, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "blue"), convAlice, conv.ID, 1, "Make it blue")
+		replay, _, existing, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_1", "blue"), convAlice, conv.ID, 1, "Make it blue")
 		require.NoError(t, err, "a replay after the archive still answers the original receipt")
 		require.True(t, existing)
 		require.Equal(t, uint64(1), replay.Seq)
@@ -170,7 +170,7 @@ func TestConversations(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, restored.Revision, again.Revision)
-		m, _, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_2", "after"), convAlice, conv.ID, restored.Revision, "And add a search box")
+		m, _, _, err := conversations.Append(ctx, convCmd(convAlice, "conv_msg_2", "after"), convAlice, conv.ID, restored.Revision, "And add a search box")
 		require.NoError(t, err)
 		require.Equal(t, uint64(2), m.Seq)
 	})
@@ -180,7 +180,7 @@ func TestConversations(t *testing.T) {
 		require.NoError(t, err)
 		rev := c.Revision
 		for i := 1; i <= 35; i++ {
-			m, _, err := conversations.Append(ctx, convCmd(convAlice, fmt.Sprintf("conv_history_%d", i), fmt.Sprint(i)), convAlice, c.ID, rev, fmt.Sprintf("message %d", i))
+			m, _, _, err := conversations.Append(ctx, convCmd(convAlice, fmt.Sprintf("conv_history_%d", i), fmt.Sprint(i)), convAlice, c.ID, rev, fmt.Sprintf("message %d", i))
 			require.NoError(t, err)
 			rev = m.ConversationRevision
 		}
@@ -203,7 +203,7 @@ func TestConversations(t *testing.T) {
 		rev = big.Revision
 		text := strings.Repeat("a", domain.MaxUserMessageBytes)
 		for i := 1; i <= 40; i++ {
-			m, _, err := conversations.Append(ctx, convCmd(convAlice, fmt.Sprintf("conv_big_%d", i), fmt.Sprint(i)), convAlice, big.ID, rev, text)
+			m, _, _, err := conversations.Append(ctx, convCmd(convAlice, fmt.Sprintf("conv_big_%d", i), fmt.Sprint(i)), convAlice, big.ID, rev, text)
 			require.NoError(t, err)
 			rev = m.ConversationRevision
 		}

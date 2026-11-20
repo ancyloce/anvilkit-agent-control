@@ -20,6 +20,8 @@ type Conversations struct {
 	store Store
 	clock domain.Clock
 	log   *slog.Logger
+	// replies, when set, opens a turn for each accepted message (DEC-068).
+	replies *replies
 }
 
 func NewConversations(store Store, clock domain.Clock, log *slog.Logger) *Conversations {
@@ -192,11 +194,16 @@ func (s *Conversations) Update(ctx context.Context, cmd domain.CommandIdentity, 
 // Append stores the scope's text message in its active conversation at the
 // expected revision. The same command answers the original message, even
 // after the conversation was archived, while the caller still owns it.
-func (s *Conversations) Append(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, conversationID string, expected uint64, text string) (msg *domain.Message, existing bool, err error) {
+// Where replies are enabled (DEC-068) the message also opens its turn and
+// chat_turn operation in the same transaction, refused with TURN_BUSY while
+// the previous turn is open (nothing is stored then); turn is nil where
+// replies are disabled.
+func (s *Conversations) Append(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, conversationID string, expected uint64, text string) (msg *domain.Message, turn *domain.Turn, existing bool, err error) {
 	if err := conversationCommand(scope, cmd); err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	now := s.clock.Now()
+	var op *domain.Operation
 	err = s.store.Tx(ctx, func(r Repo) error {
 		locked, err := owned(ctx, r, scope, conversationID, true)
 		if err != nil {
@@ -207,11 +214,27 @@ func (s *Conversations) Append(ctx context.Context, cmd domain.CommandIdentity, 
 			return err
 		}
 		if prior != nil {
-			existing = true
-			msg, err = r.GetConversationMessage(ctx, prior.MessageID, scope.TenantID)
+			existing, turn, op = true, nil, nil
+			if msg, err = r.GetConversationMessage(ctx, prior.MessageID, scope.TenantID); err != nil {
+				return err
+			}
+			found, err := r.GetConversationTurnByInput(ctx, msg.ID, scope.TenantID)
+			switch {
+			case errors.Is(err, domain.ErrNotFound):
+				return nil
+			case err != nil:
+				return err
+			}
+			turn = found
+			op, err = r.GetOperationScoped(ctx, found.OperationID, scope.TenantID)
 			return err
 		}
-		msg, existing = nil, false
+		msg, turn, op, existing = nil, nil, nil, false
+		if s.RepliesEnabled() {
+			if err := freeSlot(ctx, r, locked, now); err != nil {
+				return err
+			}
+		}
 		m, err := locked.AppendUserMessage(expected, text, now)
 		if err != nil {
 			return err
@@ -223,6 +246,11 @@ func (s *Conversations) Append(ctx context.Context, cmd domain.CommandIdentity, 
 			return err
 		}
 		msg = m
+		if s.RepliesEnabled() {
+			if turn, op, err = s.openTurn(ctx, r, cmd, scope, m, now); err != nil {
+				return err
+			}
+		}
 		return r.InsertConversationCommand(ctx, &domain.ConversationCommand{
 			TenantID: cmd.TenantID, CommandID: cmd.CommandID, Kind: domain.ConversationCommandAppend, ActorID: cmd.ActorID,
 			RequestDigest: cmd.RequestDigest, ConversationID: conversationID, MessageID: m.ID, AcceptedAt: now,
@@ -231,10 +259,20 @@ func (s *Conversations) Append(ctx context.Context, cmd domain.CommandIdentity, 
 	if errors.Is(err, ErrDuplicateKey) && depthOf(ctx) < duplicateRetries {
 		return s.Append(deeper(ctx), cmd, scope, conversationID, expected, text)
 	}
-	if err == nil && !existing {
-		s.log.Info("conversation message stored", "conversationId", conversationID, "messageId", msg.ID, "messageSeq", msg.Seq, "bytes", len(msg.Text), "actor", cmd.ActorID)
+	if err != nil {
+		return nil, nil, false, err
 	}
-	return msg, existing, err
+	if !existing {
+		if turn != nil {
+			s.log.Info("conversation message stored", "conversationId", conversationID, "messageId", msg.ID, "messageSeq", msg.Seq, "bytes", len(msg.Text), "actor", cmd.ActorID, "turnId", turn.ID, "operationId", turn.OperationID)
+		} else {
+			s.log.Info("conversation message stored", "conversationId", conversationID, "messageId", msg.ID, "messageSeq", msg.Seq, "bytes", len(msg.Text), "actor", cmd.ActorID)
+		}
+	}
+	if err := s.confirmTurn(ctx, op); err != nil {
+		return nil, nil, false, err
+	}
+	return msg, turn, existing, nil
 }
 
 // Messages reads one page of the scope's conversation history before the

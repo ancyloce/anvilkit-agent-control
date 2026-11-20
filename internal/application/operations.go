@@ -102,6 +102,10 @@ func (s *Operations) Create(ctx context.Context, cmd domain.CommandIdentity, sco
 		if subject.SourceRevision == "" || subject.SourceHandle == "" {
 			return nil, false, fmt.Errorf("%w: a preview build names the edited source and the revision it was based on", domain.ErrInvalid)
 		}
+	case domain.KindChatTurn:
+		// DEC-068: a turn's operation is opened by its conversation message
+		// (Conversations.Append), never through CreateOperation.
+		return nil, false, fmt.Errorf("%w: a chat turn is opened by a conversation message, not created directly", domain.ErrInvalid)
 	case domain.KindRelease:
 		if intake != nil || subject.BriefID != "" || subject.SourceHandle != "" {
 			return nil, false, fmt.Errorf("%w: a release names its source operation; Control binds the source artifact itself", domain.ErrInvalid)

@@ -196,6 +196,15 @@ type Repo interface {
 	ListConversationMessages(ctx context.Context, conversationID, tenantID string, before uint64, limit int) ([]*domain.Message, error)
 	GetConversationCommand(ctx context.Context, tenantID, commandID string) (*domain.ConversationCommand, error)
 	InsertConversationCommand(ctx context.Context, c *domain.ConversationCommand) error
+	// Turns (DEC-068; rank 1 with their conversation, read and written under
+	// its lock): one assistant reply per user message; at most one open turn
+	// per conversation (the partial unique index of migration 00022).
+	InsertConversationTurn(ctx context.Context, t *domain.Turn) error
+	GetConversationTurn(ctx context.Context, turnID, tenantID string) (*domain.Turn, error)
+	GetConversationTurnByInput(ctx context.Context, messageID, tenantID string) (*domain.Turn, error)
+	GetConversationTurnByOperation(ctx context.Context, operationID, tenantID string) (*domain.Turn, error)
+	GetOpenConversationTurn(ctx context.Context, conversationID, tenantID string) (*domain.Turn, error)
+	UpdateConversationTurn(ctx context.Context, t *domain.Turn) error
 	InsertAllocationReturn(ctx context.Context, a *domain.Allocation, amount int64, at time.Time) error
 	HasAllocationReturn(ctx context.Context, allocationID string) (bool, error)
 	ListFinanceUnsettled(ctx context.Context, limit int) ([]string, error)
