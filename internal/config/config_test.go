@@ -142,6 +142,26 @@ func TestRequiredValuesAndRanges(t *testing.T) {
 	require.ErrorContains(t, err, "too coarse", "cross-field rule")
 }
 
+// TestChatTurnProfile (DEC-068): replies are off by default, a turn's attempt
+// window stays below its deadline, and its funding is positive.
+func TestChatTurnProfile(t *testing.T) {
+	cfg, err := config.LoadFrom(write(t, minimal), env)
+	require.NoError(t, err)
+	ct := cfg.Profiles.ChatTurn
+	require.False(t, ct.Enabled, "chat runs only in authorized test sessions")
+	require.Equal(t, 150*time.Second, ct.Deadline)
+	require.Equal(t, 120*time.Second, ct.AttemptWindow)
+	require.Equal(t, "100000", ct.Funding.Amount)
+	require.Zero(t, ct.Credits)
+	require.Equal(t, 192000, ct.ContextBytes)
+	_, err = config.LoadFrom(write(t, minimal+"profiles:\n  chat_turn:\n    attempt_window: 150s\n"), env)
+	require.ErrorContains(t, err, "profiles.chat_turn.attempt_window")
+	_, err = config.LoadFrom(write(t, minimal+"profiles:\n  chat_turn:\n    funding:\n      currency: USD\n      amount: \"0\"\n"), env)
+	require.ErrorContains(t, err, "profiles.chat_turn.funding")
+	_, err = config.LoadFrom(write(t, minimal+"profiles:\n  chat_turn:\n    context_bytes: 10\n"), env)
+	require.ErrorContains(t, err, "profiles.chat_turn.context_bytes")
+}
+
 func TestDispatchFixturesAreFileOnlyValidatedAndOffByDefault(t *testing.T) {
 	c, err := config.LoadFrom(filepath.Join("..", "..", "config.yaml"), env)
 	require.NoError(t, err)

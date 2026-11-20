@@ -155,6 +155,22 @@ func (c Config) validate() error {
 	if p.Credits < 0 || p.Credits > maxProfileCredits {
 		errs = append(errs, fmt.Errorf("profiles.preparation.credits %d outside [0, %d]", p.Credits, maxProfileCredits))
 	}
+	ct := c.Profiles.ChatTurn
+	if ct.Deadline < 30*time.Second || ct.Deadline > time.Hour {
+		errs = append(errs, fmt.Errorf("profiles.chat_turn.deadline %s outside [30s, 1h]", ct.Deadline))
+	}
+	if ct.AttemptWindow < 10*time.Second || ct.AttemptWindow >= ct.Deadline {
+		errs = append(errs, fmt.Errorf("profiles.chat_turn.attempt_window %s outside [10s, deadline)", ct.AttemptWindow))
+	}
+	if m, err := domain.ParseMoney(ct.Funding.Currency, ct.Funding.Amount); err != nil || m.Amount <= 0 {
+		errs = append(errs, fmt.Errorf("profiles.chat_turn.funding must be a positive amount (%v)", err))
+	}
+	if ct.Credits < 0 || ct.Credits > maxProfileCredits {
+		errs = append(errs, fmt.Errorf("profiles.chat_turn.credits %d outside [0, %d]", ct.Credits, maxProfileCredits))
+	}
+	if ct.ContextBytes < 1024 || ct.ContextBytes > 1<<20 {
+		errs = append(errs, fmt.Errorf("profiles.chat_turn.context_bytes %d outside [1024, 1048576]", ct.ContextBytes))
+	}
 	g := c.Profiles.Generation
 	if g.QueueDeadline < time.Minute || g.QueueDeadline > 7*24*time.Hour {
 		errs = append(errs, fmt.Errorf("profiles.generation.queue_deadline %s outside [1m, 168h]", g.QueueDeadline))

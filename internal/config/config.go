@@ -230,6 +230,23 @@ type Profiles struct {
 	Generation         GenerationProfile  `koanf:"generation"`
 	PreviewBuild       PreviewProfile     `koanf:"preview_build"`
 	Release            ReleaseProfile     `koanf:"release"`
+	ChatTurn           ChatTurnProfile    `koanf:"chat_turn"`
+}
+
+// ChatTurnProfile: assistant replies (DEC-068, design 0001 D3). enabled makes
+// each accepted conversation message open a turn (off by default: chat runs
+// only in authorized test sessions); deadline bounds the whole turn from
+// intake (the start allowance plus execution) and attempt_window its single
+// attempt below it; funding is the per-turn allocation and credits the
+// credits it debits (zero: a chat turn is not a Generation); context_bytes
+// bounds the text of a turn's context.
+type ChatTurnProfile struct {
+	Enabled       bool          `koanf:"enabled"`
+	Deadline      time.Duration `koanf:"deadline"`
+	AttemptWindow time.Duration `koanf:"attempt_window"`
+	Funding       MoneyValue    `koanf:"funding"`
+	Credits       int64         `koanf:"credits"`
+	ContextBytes  int           `koanf:"context_bytes"`
 }
 
 // ReleaseProfile: the release operation deadline (P21): certification of
@@ -547,6 +564,12 @@ var defaults = map[string]any{
 	"profiles.preview_build.deadline":        "30m",
 	"profiles.release.deadline":              "720h",
 	"profiles.release.attempt_window":        "1h",
+	"profiles.chat_turn.enabled":             false,
+	"profiles.chat_turn.deadline":            "150s",
+	"profiles.chat_turn.attempt_window":      "120s",
+	"profiles.chat_turn.funding":             map[string]any{"currency": "USD", "amount": "100000"},
+	"profiles.chat_turn.credits":             0,
+	"profiles.chat_turn.context_bytes":       192000,
 	"dispatch.authority_freshness":           "30s",
 	"dispatch.reconcile_interval":            "30s",
 	"dispatch.reconcile_age":                 "10m",
