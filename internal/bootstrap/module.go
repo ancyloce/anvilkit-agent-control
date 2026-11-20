@@ -40,6 +40,7 @@ const (
 	GenerationWorkflowName  = "GenerationWorkflow"
 	PreviewWorkflowName     = "PreviewBuildWorkflow"
 	ReleaseWorkflowName     = "ReleaseWorkflow"
+	ChatTurnWorkflowName    = "ChatTurnWorkflow"
 	RecoveryWorkflowName    = "RecoveryWorkflow"
 )
 
@@ -53,6 +54,7 @@ func WorkflowNames() map[domain.OperationKind]string {
 		domain.KindLocalCheck: LocalCheckWorkflowName, domain.KindPreparation: PreparationWorkflowName, domain.KindGeneration: GenerationWorkflowName,
 		domain.KindPreviewBuild: PreviewWorkflowName, domain.KindRelease: ReleaseWorkflowName,
 		domain.KindRefinement: GenerationWorkflowName,
+		domain.KindChatTurn:   ChatTurnWorkflowName,
 	}
 }
 
@@ -62,9 +64,10 @@ func WorkflowNames() map[domain.OperationKind]string {
 // (P21); a profile id that is not listed here is rejected with
 // PROFILE_UNQUALIFIED. The money values were validated by the configuration.
 func Profiles(cfg config.Config) []domain.Profile {
-	prep, gen := cfg.Profiles.Preparation, cfg.Profiles.Generation
+	prep, gen, chat := cfg.Profiles.Preparation, cfg.Profiles.Generation, cfg.Profiles.ChatTurn
 	prepFunding, _ := domain.ParseMoney(prep.Funding.Currency, prep.Funding.Amount)
 	genFunding, _ := domain.ParseMoney(gen.Funding.Currency, gen.Funding.Amount)
+	chatFunding, _ := domain.ParseMoney(chat.Funding.Currency, chat.Funding.Amount)
 	return []domain.Profile{
 		{
 			ID: "local-check-v1", Kind: domain.KindLocalCheck, OperationDeadline: cfg.Profiles.LocalCheckDeadline,
@@ -101,6 +104,14 @@ func Profiles(cfg config.Config) []domain.Profile {
 			// business writes only).
 			ID: "release-v1", Kind: domain.KindRelease, OperationDeadline: cfg.Profiles.Release.Deadline, StepID: "certify",
 			MultiStep: true, AttemptWindow: cfg.Profiles.Release.AttemptWindow,
+		},
+		{
+			// DEC-068: one assistant reply, non-queued like a preparation (no
+			// execution queue or permit), funded per turn from the shared
+			// pools; listed whether or not new turns are enabled, so a turn
+			// opened before is still answered and settled.
+			ID: domain.ChatTurnProfileID, Kind: domain.KindChatTurn, OperationDeadline: chat.Deadline, StepID: domain.ChatTurnStepID,
+			MultiStep: true, AttemptWindow: chat.AttemptWindow, Funding: &chatFunding, Credits: chat.Credits,
 		},
 	}
 }
@@ -199,8 +210,9 @@ func Module() fx.Option {
 			func(store application.Store, clock domain.Clock, log *slog.Logger) *application.GrantPolicies {
 				return application.NewGrantPolicies(store, clock, log)
 			},
-			func(store application.Store, clock domain.Clock, log *slog.Logger) *application.Conversations {
-				return application.NewConversations(store, clock, log)
+			func(cfg config.Config, store application.Store, ops *application.Operations, clock domain.Clock, log *slog.Logger) *application.Conversations {
+				return application.NewConversations(store, clock, log).
+					WithReplies(ops, chatTurnProfile(cfg), cfg.Profiles.ChatTurn.ContextBytes, cfg.Profiles.ChatTurn.Enabled)
 			},
 			func(store application.Store, clock domain.Clock) *application.Previews {
 				return application.NewPreviews(store, clock)
@@ -434,4 +446,14 @@ func (m lifecycleMetrics) stopped(drain time.Duration, forced bool) {
 	if forced {
 		m.forced.Set(1)
 	}
+}
+
+// chatTurnProfile is the chat_turn profile of this build (DEC-068).
+func chatTurnProfile(cfg config.Config) domain.Profile {
+	for _, p := range Profiles(cfg) {
+		if p.ID == domain.ChatTurnProfileID {
+			return p
+		}
+	}
+	panic("bootstrap: the chat_turn profile is missing from Profiles")
 }
