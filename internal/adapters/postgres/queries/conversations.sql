@@ -45,3 +45,29 @@ SELECT * FROM conversation_commands WHERE tenant_id = $1 AND command_id = $2;
 -- name: InsertConversationCommand :exec
 INSERT INTO conversation_commands (tenant_id, command_id, kind, actor_id, request_digest, conversation_id, message_id, accepted_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- Turns (DEC-068, migration 00022): one assistant reply per user message,
+-- rank 1, read and written under the conversation's lock.
+
+-- name: InsertConversationTurn :exec
+INSERT INTO conversation_turns (turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status,
+    assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19);
+
+-- name: GetConversationTurn :one
+SELECT * FROM conversation_turns WHERE turn_id = $1 AND tenant_id = $2;
+
+-- name: GetConversationTurnByInput :one
+SELECT * FROM conversation_turns WHERE input_message_id = $1 AND tenant_id = $2;
+
+-- name: GetConversationTurnByOperation :one
+SELECT * FROM conversation_turns WHERE operation_id = $1 AND tenant_id = $2;
+
+-- name: GetOpenConversationTurn :one
+SELECT * FROM conversation_turns
+WHERE conversation_id = $1 AND tenant_id = $2 AND state IN ('queued', 'running', 'cancel_pending', 'reconciling');
+
+-- name: UpdateConversationTurn :exec
+UPDATE conversation_turns SET state = $2, content_status = $3, sender_status = $4, assistant_message_id = $5, failure_code = $6, activity_key = $7,
+    temporal_attempt = $8, invocation_id = $9, writer_epoch = $10, outcome_command_id = $11, outcome_digest = $12, updated_at = $13
+WHERE turn_id = $1;

@@ -123,3 +123,71 @@ func (r *repo) InsertConversationCommand(ctx context.Context, c *domain.Conversa
 		ConversationID: c.ConversationID, MessageID: strPtr(c.MessageID), AcceptedAt: ts(c.AcceptedAt),
 	}))
 }
+
+// Turns (DEC-068, migration 00022).
+
+func toConversationTurn(m sqlc.ConversationTurn) *domain.Turn {
+	return &domain.Turn{
+		ID: m.TurnID, TenantID: m.TenantID, ConversationID: m.ConversationID, InputMessageID: m.InputMessageID,
+		InputMessageSeq: uint64(m.InputMessageSeq), OperationID: m.OperationID, State: domain.TurnState(m.State),
+		Content: domain.ContentStatus(m.ContentStatus), Sender: domain.SenderStatus(m.SenderStatus),
+		AssistantMessageID: deref(m.AssistantMessageID), FailureCode: deref(m.FailureCode), ActivityKey: deref(m.ActivityKey),
+		TemporalAttempt: uint64(m.TemporalAttempt), InvocationID: deref(m.InvocationID), WriterEpoch: uint64(m.WriterEpoch),
+		OutcomeCommandID: deref(m.OutcomeCommandID), OutcomeDigest: domain.Digest(deref(m.OutcomeDigest)),
+		CreatedAt: fromTs(m.CreatedAt), UpdatedAt: fromTs(m.UpdatedAt),
+	}
+}
+
+func (r *repo) InsertConversationTurn(ctx context.Context, t *domain.Turn) error {
+	return mapErr(r.q.InsertConversationTurn(ctx, sqlc.InsertConversationTurnParams{
+		TurnID: t.ID, TenantID: t.TenantID, ConversationID: t.ConversationID, InputMessageID: t.InputMessageID,
+		InputMessageSeq: int64(t.InputMessageSeq), OperationID: t.OperationID, State: string(t.State),
+		ContentStatus: string(t.Content), SenderStatus: string(t.Sender), AssistantMessageID: strPtr(t.AssistantMessageID),
+		FailureCode: strPtr(t.FailureCode), ActivityKey: strPtr(t.ActivityKey), TemporalAttempt: int64(t.TemporalAttempt),
+		InvocationID: strPtr(t.InvocationID), WriterEpoch: int64(t.WriterEpoch), OutcomeCommandID: strPtr(t.OutcomeCommandID),
+		OutcomeDigest: strPtr(string(t.OutcomeDigest)), CreatedAt: ts(t.CreatedAt), UpdatedAt: ts(t.UpdatedAt),
+	}))
+}
+
+func (r *repo) GetConversationTurn(ctx context.Context, turnID, tenantID string) (*domain.Turn, error) {
+	m, err := r.q.GetConversationTurn(ctx, sqlc.GetConversationTurnParams{TurnID: turnID, TenantID: tenantID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toConversationTurn(m), nil
+}
+
+func (r *repo) GetConversationTurnByInput(ctx context.Context, messageID, tenantID string) (*domain.Turn, error) {
+	m, err := r.q.GetConversationTurnByInput(ctx, sqlc.GetConversationTurnByInputParams{InputMessageID: messageID, TenantID: tenantID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toConversationTurn(m), nil
+}
+
+func (r *repo) GetConversationTurnByOperation(ctx context.Context, operationID, tenantID string) (*domain.Turn, error) {
+	m, err := r.q.GetConversationTurnByOperation(ctx, sqlc.GetConversationTurnByOperationParams{OperationID: operationID, TenantID: tenantID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toConversationTurn(m), nil
+}
+
+// GetOpenConversationTurn reads the conversation's one open turn (the slot
+// the partial unique index keeps); ErrNotFound when the slot is free.
+func (r *repo) GetOpenConversationTurn(ctx context.Context, conversationID, tenantID string) (*domain.Turn, error) {
+	m, err := r.q.GetOpenConversationTurn(ctx, sqlc.GetOpenConversationTurnParams{ConversationID: conversationID, TenantID: tenantID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toConversationTurn(m), nil
+}
+
+func (r *repo) UpdateConversationTurn(ctx context.Context, t *domain.Turn) error {
+	return mapErr(r.q.UpdateConversationTurn(ctx, sqlc.UpdateConversationTurnParams{
+		TurnID: t.ID, State: string(t.State), ContentStatus: string(t.Content), SenderStatus: string(t.Sender),
+		AssistantMessageID: strPtr(t.AssistantMessageID), FailureCode: strPtr(t.FailureCode), ActivityKey: strPtr(t.ActivityKey),
+		TemporalAttempt: int64(t.TemporalAttempt), InvocationID: strPtr(t.InvocationID), WriterEpoch: int64(t.WriterEpoch),
+		OutcomeCommandID: strPtr(t.OutcomeCommandID), OutcomeDigest: strPtr(string(t.OutcomeDigest)), UpdatedAt: ts(t.UpdatedAt),
+	}))
+}

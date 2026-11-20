@@ -176,6 +176,28 @@ type ConversationMessage struct {
 	CreatedAt            pgtype.Timestamptz
 }
 
+type ConversationTurn struct {
+	TurnID             string
+	TenantID           string
+	ConversationID     string
+	InputMessageID     string
+	InputMessageSeq    int64
+	OperationID        string
+	State              string
+	ContentStatus      string
+	SenderStatus       string
+	AssistantMessageID *string
+	FailureCode        *string
+	ActivityKey        *string
+	TemporalAttempt    int64
+	InvocationID       *string
+	WriterEpoch        int64
+	OutcomeCommandID   *string
+	OutcomeDigest      *string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
 type CostCap struct {
 	CapID     string
 	Level     string

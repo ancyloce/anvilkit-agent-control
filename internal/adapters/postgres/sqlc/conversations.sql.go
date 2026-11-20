@@ -90,6 +90,151 @@ func (q *Queries) GetConversationMessage(ctx context.Context, arg GetConversatio
 	return i, err
 }
 
+const getConversationTurn = `-- name: GetConversationTurn :one
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns WHERE turn_id = $1 AND tenant_id = $2
+`
+
+type GetConversationTurnParams struct {
+	TurnID   string
+	TenantID string
+}
+
+func (q *Queries) GetConversationTurn(ctx context.Context, arg GetConversationTurnParams) (ConversationTurn, error) {
+	row := q.db.QueryRow(ctx, getConversationTurn, arg.TurnID, arg.TenantID)
+	var i ConversationTurn
+	err := row.Scan(
+		&i.TurnID,
+		&i.TenantID,
+		&i.ConversationID,
+		&i.InputMessageID,
+		&i.InputMessageSeq,
+		&i.OperationID,
+		&i.State,
+		&i.ContentStatus,
+		&i.SenderStatus,
+		&i.AssistantMessageID,
+		&i.FailureCode,
+		&i.ActivityKey,
+		&i.TemporalAttempt,
+		&i.InvocationID,
+		&i.WriterEpoch,
+		&i.OutcomeCommandID,
+		&i.OutcomeDigest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getConversationTurnByInput = `-- name: GetConversationTurnByInput :one
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns WHERE input_message_id = $1 AND tenant_id = $2
+`
+
+type GetConversationTurnByInputParams struct {
+	InputMessageID string
+	TenantID       string
+}
+
+func (q *Queries) GetConversationTurnByInput(ctx context.Context, arg GetConversationTurnByInputParams) (ConversationTurn, error) {
+	row := q.db.QueryRow(ctx, getConversationTurnByInput, arg.InputMessageID, arg.TenantID)
+	var i ConversationTurn
+	err := row.Scan(
+		&i.TurnID,
+		&i.TenantID,
+		&i.ConversationID,
+		&i.InputMessageID,
+		&i.InputMessageSeq,
+		&i.OperationID,
+		&i.State,
+		&i.ContentStatus,
+		&i.SenderStatus,
+		&i.AssistantMessageID,
+		&i.FailureCode,
+		&i.ActivityKey,
+		&i.TemporalAttempt,
+		&i.InvocationID,
+		&i.WriterEpoch,
+		&i.OutcomeCommandID,
+		&i.OutcomeDigest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getConversationTurnByOperation = `-- name: GetConversationTurnByOperation :one
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns WHERE operation_id = $1 AND tenant_id = $2
+`
+
+type GetConversationTurnByOperationParams struct {
+	OperationID string
+	TenantID    string
+}
+
+func (q *Queries) GetConversationTurnByOperation(ctx context.Context, arg GetConversationTurnByOperationParams) (ConversationTurn, error) {
+	row := q.db.QueryRow(ctx, getConversationTurnByOperation, arg.OperationID, arg.TenantID)
+	var i ConversationTurn
+	err := row.Scan(
+		&i.TurnID,
+		&i.TenantID,
+		&i.ConversationID,
+		&i.InputMessageID,
+		&i.InputMessageSeq,
+		&i.OperationID,
+		&i.State,
+		&i.ContentStatus,
+		&i.SenderStatus,
+		&i.AssistantMessageID,
+		&i.FailureCode,
+		&i.ActivityKey,
+		&i.TemporalAttempt,
+		&i.InvocationID,
+		&i.WriterEpoch,
+		&i.OutcomeCommandID,
+		&i.OutcomeDigest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOpenConversationTurn = `-- name: GetOpenConversationTurn :one
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns
+WHERE conversation_id = $1 AND tenant_id = $2 AND state IN ('queued', 'running', 'cancel_pending', 'reconciling')
+`
+
+type GetOpenConversationTurnParams struct {
+	ConversationID string
+	TenantID       string
+}
+
+func (q *Queries) GetOpenConversationTurn(ctx context.Context, arg GetOpenConversationTurnParams) (ConversationTurn, error) {
+	row := q.db.QueryRow(ctx, getOpenConversationTurn, arg.ConversationID, arg.TenantID)
+	var i ConversationTurn
+	err := row.Scan(
+		&i.TurnID,
+		&i.TenantID,
+		&i.ConversationID,
+		&i.InputMessageID,
+		&i.InputMessageSeq,
+		&i.OperationID,
+		&i.State,
+		&i.ContentStatus,
+		&i.SenderStatus,
+		&i.AssistantMessageID,
+		&i.FailureCode,
+		&i.ActivityKey,
+		&i.TemporalAttempt,
+		&i.InvocationID,
+		&i.WriterEpoch,
+		&i.OutcomeCommandID,
+		&i.OutcomeDigest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertConversation = `-- name: InsertConversation :exec
 
 INSERT INTO conversations (conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at)
@@ -190,6 +335,62 @@ func (q *Queries) InsertConversationMessage(ctx context.Context, arg InsertConve
 		arg.ContentDigest,
 		arg.ConversationRevision,
 		arg.CreatedAt,
+	)
+	return err
+}
+
+const insertConversationTurn = `-- name: InsertConversationTurn :exec
+
+INSERT INTO conversation_turns (turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status,
+    assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+`
+
+type InsertConversationTurnParams struct {
+	TurnID             string
+	TenantID           string
+	ConversationID     string
+	InputMessageID     string
+	InputMessageSeq    int64
+	OperationID        string
+	State              string
+	ContentStatus      string
+	SenderStatus       string
+	AssistantMessageID *string
+	FailureCode        *string
+	ActivityKey        *string
+	TemporalAttempt    int64
+	InvocationID       *string
+	WriterEpoch        int64
+	OutcomeCommandID   *string
+	OutcomeDigest      *string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+// Turns (DEC-068, migration 00022): one assistant reply per user message,
+// rank 1, read and written under the conversation's lock.
+func (q *Queries) InsertConversationTurn(ctx context.Context, arg InsertConversationTurnParams) error {
+	_, err := q.db.Exec(ctx, insertConversationTurn,
+		arg.TurnID,
+		arg.TenantID,
+		arg.ConversationID,
+		arg.InputMessageID,
+		arg.InputMessageSeq,
+		arg.OperationID,
+		arg.State,
+		arg.ContentStatus,
+		arg.SenderStatus,
+		arg.AssistantMessageID,
+		arg.FailureCode,
+		arg.ActivityKey,
+		arg.TemporalAttempt,
+		arg.InvocationID,
+		arg.WriterEpoch,
+		arg.OutcomeCommandID,
+		arg.OutcomeDigest,
+		arg.CreatedAt,
+		arg.UpdatedAt,
 	)
 	return err
 }
@@ -350,6 +551,47 @@ func (q *Queries) UpdateConversation(ctx context.Context, arg UpdateConversation
 		arg.Title,
 		arg.Revision,
 		arg.LastMessageSeq,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const updateConversationTurn = `-- name: UpdateConversationTurn :exec
+UPDATE conversation_turns SET state = $2, content_status = $3, sender_status = $4, assistant_message_id = $5, failure_code = $6, activity_key = $7,
+    temporal_attempt = $8, invocation_id = $9, writer_epoch = $10, outcome_command_id = $11, outcome_digest = $12, updated_at = $13
+WHERE turn_id = $1
+`
+
+type UpdateConversationTurnParams struct {
+	TurnID             string
+	State              string
+	ContentStatus      string
+	SenderStatus       string
+	AssistantMessageID *string
+	FailureCode        *string
+	ActivityKey        *string
+	TemporalAttempt    int64
+	InvocationID       *string
+	WriterEpoch        int64
+	OutcomeCommandID   *string
+	OutcomeDigest      *string
+	UpdatedAt          pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateConversationTurn(ctx context.Context, arg UpdateConversationTurnParams) error {
+	_, err := q.db.Exec(ctx, updateConversationTurn,
+		arg.TurnID,
+		arg.State,
+		arg.ContentStatus,
+		arg.SenderStatus,
+		arg.AssistantMessageID,
+		arg.FailureCode,
+		arg.ActivityKey,
+		arg.TemporalAttempt,
+		arg.InvocationID,
+		arg.WriterEpoch,
+		arg.OutcomeCommandID,
+		arg.OutcomeDigest,
 		arg.UpdatedAt,
 	)
 	return err
