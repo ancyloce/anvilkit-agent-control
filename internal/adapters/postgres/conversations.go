@@ -165,6 +165,18 @@ func (r *repo) GetConversationTurnByInput(ctx context.Context, messageID, tenant
 	return toConversationTurn(m), nil
 }
 
+func (r *repo) ListConversationTurnsByInputs(ctx context.Context, conversationID, tenantID string, messageIDs []string) ([]*domain.Turn, error) {
+	rows, err := r.q.ListConversationTurnsByInputs(ctx, sqlc.ListConversationTurnsByInputsParams{TenantID: tenantID, ConversationID: conversationID, InputMessageIds: messageIDs})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	turns := make([]*domain.Turn, 0, len(rows))
+	for _, m := range rows {
+		turns = append(turns, toConversationTurn(m))
+	}
+	return turns, nil
+}
+
 func (r *repo) GetConversationTurnByOperation(ctx context.Context, operationID, tenantID string) (*domain.Turn, error) {
 	m, err := r.q.GetConversationTurnByOperation(ctx, sqlc.GetConversationTurnByOperationParams{OperationID: operationID, TenantID: tenantID})
 	if err != nil {

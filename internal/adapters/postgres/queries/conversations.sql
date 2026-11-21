@@ -63,6 +63,14 @@ SELECT * FROM conversation_turns WHERE input_message_id = $1 AND tenant_id = $2;
 -- name: GetConversationTurnByOperation :one
 SELECT * FROM conversation_turns WHERE operation_id = $1 AND tenant_id = $2;
 
+-- The turns answering the given messages of one conversation, through the
+-- unique input_message_id index: a turn's context leaves out the inputs of
+-- turns stopped before their send (DEC-069).
+-- name: ListConversationTurnsByInputs :many
+SELECT * FROM conversation_turns
+WHERE tenant_id = sqlc.arg(tenant_id)::text AND conversation_id = sqlc.arg(conversation_id)::text
+  AND input_message_id = ANY(sqlc.arg(input_message_ids)::text[]);
+
 -- name: GetOpenConversationTurn :one
 SELECT * FROM conversation_turns
 WHERE conversation_id = $1 AND tenant_id = $2 AND state IN ('queued', 'running', 'cancel_pending', 'reconciling');

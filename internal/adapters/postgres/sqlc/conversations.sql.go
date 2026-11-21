@@ -445,6 +445,61 @@ func (q *Queries) ListConversationMessages(ctx context.Context, arg ListConversa
 	return items, nil
 }
 
+const listConversationTurnsByInputs = `-- name: ListConversationTurnsByInputs :many
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns
+WHERE tenant_id = $1::text AND conversation_id = $2::text
+  AND input_message_id = ANY($3::text[])
+`
+
+type ListConversationTurnsByInputsParams struct {
+	TenantID        string
+	ConversationID  string
+	InputMessageIds []string
+}
+
+// The turns answering the given messages of one conversation, through the
+// unique input_message_id index: a turn's context leaves out the inputs of
+// turns stopped before their send (DEC-069).
+func (q *Queries) ListConversationTurnsByInputs(ctx context.Context, arg ListConversationTurnsByInputsParams) ([]ConversationTurn, error) {
+	rows, err := q.db.Query(ctx, listConversationTurnsByInputs, arg.TenantID, arg.ConversationID, arg.InputMessageIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ConversationTurn{}
+	for rows.Next() {
+		var i ConversationTurn
+		if err := rows.Scan(
+			&i.TurnID,
+			&i.TenantID,
+			&i.ConversationID,
+			&i.InputMessageID,
+			&i.InputMessageSeq,
+			&i.OperationID,
+			&i.State,
+			&i.ContentStatus,
+			&i.SenderStatus,
+			&i.AssistantMessageID,
+			&i.FailureCode,
+			&i.ActivityKey,
+			&i.TemporalAttempt,
+			&i.InvocationID,
+			&i.WriterEpoch,
+			&i.OutcomeCommandID,
+			&i.OutcomeDigest,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConversations = `-- name: ListConversations :many
 SELECT conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at FROM conversations
 WHERE tenant_id = $1::text AND project_id = $2::text AND owner_actor_id = $3::text
