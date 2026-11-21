@@ -306,6 +306,24 @@ func (rec ReplyRecord) Seals() bool {
 	}
 }
 
+// UnderCancel applies an accepted stop to a sealing record (design 0001 §7.4
+// and §11.3; B-016): once op carries a cancel intent, no completion was
+// accepted before the stop, so the record seals the turn canceled and keeps
+// its text, if any, as the canceled message. This is the rule the operation
+// settles by (a cancel intent dominates any outcome, SettleOperation), so a
+// stopped turn and its operation agree. The sender stays the record's own; a
+// record that does not seal is unchanged and keeps the turn reconciling.
+func (rec ReplyRecord) UnderCancel(op *Operation) ReplyRecord {
+	if op.Control != ControlCancelPending && op.Control != ControlCancelApplied {
+		return rec
+	}
+	if !rec.Seals() || rec.Outcome == ReplyCanceled {
+		return rec
+	}
+	rec.Outcome, rec.FailureCode = ReplyCanceled, FailureCanceled
+	return rec
+}
+
 // MessageState is the stored assistant message's state for a sealed record
 // with text.
 func (rec ReplyRecord) MessageState() MessageState {
@@ -366,15 +384,26 @@ func (c *Conversation) AppendAssistantMessage(state MessageState, text string, n
 	}, nil
 }
 
+// StoppedBeforeSend reports whether the turn ended canceled before its
+// sender started: nothing was sent and no reply exists, so its input message
+// stays in the conversation's history but out of later turns' contexts
+// (DEC-069). A failed turn's message, and a message whose reply was stopped
+// after the send began, stay in the context.
+func (t *Turn) StoppedBeforeSend() bool {
+	return t.State == TurnCanceled && t.Sender == SenderNotStarted
+}
+
 // SelectTurnContext keeps, from messages ordered newest first, the ones up to
 // and including the input message whose text fits the budget, and returns
-// them in ascending sequence. The input message is always kept, so the same
-// turn always yields the same context.
-func SelectTurnContext(newestFirst []*Message, inputSeq uint64, budget int) []*Message {
+// them in ascending sequence. Messages named in leftOut (the inputs of turns
+// stopped before their send) are skipped and use no budget. The input
+// message is always kept; earlier turns are sealed before a turn opens, so
+// the same turn always yields the same context.
+func SelectTurnContext(newestFirst []*Message, inputSeq uint64, budget int, leftOut map[string]bool) []*Message {
 	kept := make([]*Message, 0, len(newestFirst))
 	bytes := 0
 	for _, m := range newestFirst {
-		if m.Seq > inputSeq {
+		if m.Seq > inputSeq || (m.Seq < inputSeq && leftOut[m.ID]) {
 			continue
 		}
 		if len(kept) > 0 && bytes+len(m.Text) > budget {

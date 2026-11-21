@@ -226,18 +226,123 @@ func TestSelectTurnContext(t *testing.T) {
 		return &Message{ID: "msg_" + string(rune('a'+seq)), Seq: seq, Text: text, ContentDigest: TextDigest(text)}
 	}
 	newestFirst := []*Message{msg(5, "later"), msg(4, "input"), msg(3, "ccc"), msg(2, "bbbbbbbbbb"), msg(1, "a")}
-	got := SelectTurnContext(newestFirst, 4, 9)
+	got := SelectTurnContext(newestFirst, 4, 9, nil)
 	if len(got) != 2 || got[0].Seq != 3 || got[1].Seq != 4 {
 		t.Fatalf("newest messages within the budget, ascending, nothing after the input: %+v", got)
 	}
-	if got := SelectTurnContext(newestFirst, 4, 1); len(got) != 1 || got[0].Seq != 4 {
+	if got := SelectTurnContext(newestFirst, 4, 1, nil); len(got) != 1 || got[0].Seq != 4 {
 		t.Fatalf("the input message is always kept: %+v", got)
 	}
-	all := SelectTurnContext(newestFirst, 4, 1000)
+	all := SelectTurnContext(newestFirst, 4, 1000, nil)
 	if len(all) != 4 || all[0].Seq != 1 {
 		t.Fatalf("a large budget keeps the whole history up to the input: %+v", all)
 	}
-	if ContextDigest(all) != ContextDigest(SelectTurnContext(newestFirst, 4, 1000)) || ContextDigest(all) == ContextDigest(got) {
+	if ContextDigest(all) != ContextDigest(SelectTurnContext(newestFirst, 4, 1000, nil)) || ContextDigest(all) == ContextDigest(got) {
 		t.Fatal("the context digest is stable for the same context and differs for another")
+	}
+}
+
+// TestReplyRecordUnderCancel (B-016, design 0001 §7.4 and §11.3): once the
+// turn's operation carries a cancel intent, every sealing record seals the
+// turn canceled with its text kept as the canceled message, so a stopped turn
+// agrees with its operation; without the intent, and for a record that does
+// not seal, the record is unchanged.
+func TestReplyRecordUnderCancel(t *testing.T) {
+	text := "Black, with a search box on the right."
+	completed := ReplyRecord{Outcome: ReplyCompleted, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderStopped}
+	if got := completed.UnderCancel(&Operation{Control: ControlNone}); got != completed {
+		t.Fatalf("without a cancel intent the record is unchanged: %+v", got)
+	}
+	stopping := &Operation{Control: ControlCancelPending}
+	cases := []struct {
+		name string
+		rec  ReplyRecord
+		want ReplyRecord
+	}{
+		{"a completed reply after the stop", completed,
+			ReplyRecord{Outcome: ReplyCanceled, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderStopped, FailureCode: FailureCanceled}},
+		{"a partial failure after the stop", ReplyRecord{Outcome: ReplyPartialFailed, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderStopped, FailureCode: "UPSTREAM_FINISH_LENGTH"},
+			ReplyRecord{Outcome: ReplyCanceled, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderStopped, FailureCode: FailureCanceled}},
+		{"a refusal before the send", ReplyRecord{Outcome: ReplyFailed, Sender: SenderNotStarted, FailureCode: "BUDGET_EXHAUSTED"},
+			ReplyRecord{Outcome: ReplyCanceled, Sender: SenderNotStarted, FailureCode: FailureCanceled}},
+		{"the Activity's own stop", ReplyRecord{Outcome: ReplyCanceled, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderActive, FailureCode: FailureCanceled},
+			ReplyRecord{Outcome: ReplyCanceled, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderActive, FailureCode: FailureCanceled}},
+		{"an unknown sender does not seal", ReplyRecord{Outcome: ReplyPartialFailed, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderUnknown, FailureCode: "SENDER_LOST"},
+			ReplyRecord{Outcome: ReplyPartialFailed, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderUnknown, FailureCode: "SENDER_LOST"}},
+	}
+	for _, c := range cases {
+		got := c.rec.UnderCancel(stopping)
+		if got != c.want {
+			t.Errorf("%s: got %+v, want %+v", c.name, got, c.want)
+		}
+		if err := got.Check(); err != nil {
+			t.Errorf("%s: the record stays valid: %v", c.name, err)
+		}
+		if got.Seals() != c.rec.Seals() {
+			t.Errorf("%s: the stop never changes whether the record seals", c.name)
+		}
+	}
+	if got := completed.UnderCancel(&Operation{Control: ControlCancelApplied}); got.Outcome != ReplyCanceled {
+		t.Fatalf("an applied cancel is a cancel intent too: %+v", got)
+	}
+
+	_, _, turn, now := turnFixture(t)
+	if _, err := turn.ClaimWriter("chat/trn/run/act", 1, "inv_1", now); err != nil {
+		t.Fatal(err)
+	}
+	turn.RequestStop(false, now)
+	rec := completed.UnderCancel(stopping)
+	cmd := CommandIdentity{TenantID: "tenant_a", CommandID: "trn:outcome", ActorID: "anvilkit-agent-workflow", RequestDigest: Digest("sha256:" + strings.Repeat("a", 64))}
+	turn.Record(rec, "msg_2", cmd, now)
+	if turn.State != TurnCanceled || turn.Content != ContentPartial || turn.FailureCode != FailureCanceled || turn.Open() || rec.MessageState() != MessageCanceled {
+		t.Fatalf("a completed reply after an accepted stop seals the turn canceled with a canceled message: %+v", turn)
+	}
+}
+
+// TestStoppedMessageLeavesLaterContexts (DEC-069): the input of a turn
+// stopped before its send stays out of later contexts and uses no budget;
+// a failed turn and a reply stopped after its send began keep their message.
+func TestStoppedMessageLeavesLaterContexts(t *testing.T) {
+	_, _, queued, now := turnFixture(t)
+	queued.RequestStop(true, now)
+	_, _, failed, _ := turnFixture(t)
+	failed.EndWithOperation(&Operation{Lifecycle: LifecycleFailed, FailureCode: "BUDGET_EXHAUSTED"}, now)
+	_, _, midReply, _ := turnFixture(t)
+	if _, err := midReply.ClaimWriter("a", 1, "i", now); err != nil {
+		t.Fatal(err)
+	}
+	midReply.RequestStop(false, now)
+	text := "Black."
+	cmd := CommandIdentity{TenantID: "tenant_a", CommandID: "trn:outcome", ActorID: "anvilkit-agent-workflow", RequestDigest: Digest("sha256:" + strings.Repeat("a", 64))}
+	midReply.Record(ReplyRecord{Outcome: ReplyCanceled, HasText: true, Text: text, Digest: TextDigest(text), Sender: SenderActive, FailureCode: FailureCanceled}, "msg_r", cmd, now)
+	_, _, claimedNotSent, _ := turnFixture(t)
+	if _, err := claimedNotSent.ClaimWriter("a", 1, "i", now); err != nil {
+		t.Fatal(err)
+	}
+	claimedNotSent.Record(ReplyRecord{Outcome: ReplyCanceled, Sender: SenderNotStarted, FailureCode: FailureCanceled}, "", cmd, now)
+	for _, c := range []struct {
+		name string
+		turn *Turn
+		want bool
+	}{{"stopped while queued", queued, true}, {"failed", failed, false}, {"stopped mid-reply", midReply, false}, {"stopped after the claim, before the call", claimedNotSent, true}} {
+		if got := c.turn.StoppedBeforeSend(); got != c.want {
+			t.Errorf("%s: StoppedBeforeSend=%v, want %v (%+v)", c.name, got, c.want, c.turn)
+		}
+	}
+
+	msg := func(seq uint64, text string) *Message {
+		return &Message{ID: "msg_" + string(rune('a'+seq)), Seq: seq, Text: text, ContentDigest: TextDigest(text)}
+	}
+	newestFirst := []*Message{msg(4, "input"), msg(3, "stopped message"), msg(2, "reply"), msg(1, "first")}
+	leftOut := map[string]bool{msg(3, "").ID: true}
+	got := SelectTurnContext(newestFirst, 4, 15, leftOut)
+	if len(got) != 3 || got[0].Seq != 1 || got[1].Seq != 2 || got[2].Seq != 4 {
+		t.Fatalf("the stopped message is left out and uses no budget: %+v", got)
+	}
+	if got := SelectTurnContext(newestFirst, 4, 15, nil); len(got) != 1 || got[0].Seq != 4 {
+		t.Fatalf("without the left-out set the stopped message takes the budget and crowds the older ones out: %+v", got)
+	}
+	if got := SelectTurnContext(newestFirst, 4, 1000, map[string]bool{msg(4, "").ID: true}); len(got) != 4 {
+		t.Fatalf("the input message is always kept: %+v", got)
 	}
 }
