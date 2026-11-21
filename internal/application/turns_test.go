@@ -142,4 +142,63 @@ func TestConversationTurns(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, none)
 	})
+
+	// DEC-069 and B-016: the message stopped before its send (turn_msg_2)
+	// leaves this turn's context but not the history, and a stop accepted
+	// while the reply runs wins over the completion the Activity records
+	// afterwards: the turn seals canceled, as its operation settles.
+	t.Run("a stopped message leaves later contexts; an accepted stop wins", func(t *testing.T) {
+		got, err := conversations.Get(ctx, convAlice, conv.ID)
+		require.NoError(t, err)
+		_, last, _, err := conversations.Append(ctx, convCmd(convAlice, "turn_msg_4", "d"), convAlice, conv.ID, got.Revision, "Thanks")
+		require.NoError(t, err)
+		require.NotNil(t, last)
+		wf4 := func(id string) domain.CommandIdentity {
+			return domain.CommandIdentity{TenantID: convAlice.TenantID, CommandID: last.OperationID + ":" + id, ActorID: "anvilkit-agent-workflow", RequestDigest: application.DigestOf([]byte(id))}
+		}
+		lastAt, _, err := exec.OpenAttempt(ctx, wf4("open"), last.OperationID, domain.ChatTurnStepID, 0, chat.ID)
+		require.NoError(t, err)
+		lb := application.ReplyBinding{OperationID: last.OperationID, AttemptID: lastAt.ID, ExecutionEpoch: 1}
+		_, _, err = conversations.ClaimReplyWriter(ctx, wf4("claim"), lb, "chat/"+last.ID, 1, "inv_4")
+		require.NoError(t, err)
+
+		messages, _, err := conversations.GetTurnContext(ctx, convAlice.TenantID, lb, last.ID, 1)
+		require.NoError(t, err)
+		texts := make([]string, 0, len(messages))
+		for _, msg := range messages {
+			texts = append(texts, msg.Text)
+		}
+		require.Equal(t, []string{"Black, with a search box on the right.", "No reply needed", "Thanks"}, texts,
+			"the stopped message is left out and uses none of the 64-byte bound")
+		history, _, err := conversations.Messages(ctx, convAlice, conv.ID, 0, 10)
+		require.NoError(t, err)
+		kept := false
+		for _, msg := range history {
+			kept = kept || msg.Text == "And a search box"
+		}
+		require.True(t, kept, "the history keeps the stopped message")
+
+		view, _, err := conversations.StopTurn(ctx, convCmd(convAlice, "turn_stop_4", "s"), convAlice, conv.ID, last.ID)
+		require.NoError(t, err)
+		require.Equal(t, domain.TurnCancelPending, view.Turn.State, "a running reply's stop waits for its outcome")
+		text := "You are welcome."
+		rec := domain.ReplyRecord{Outcome: domain.ReplyCompleted, HasText: true, Text: text, Digest: domain.TextDigest(text), Sender: domain.SenderStopped}
+		sealed, stored, existing, err := conversations.RecordReplyOutcome(ctx, wf4("outcome"), lb, last.ID, 1, domain.ReplyCallID(last.OperationID), rec)
+		require.NoError(t, err)
+		require.False(t, existing)
+		require.Equal(t, domain.TurnCanceled, sealed.State, "the accepted stop wins over the completion recorded after it")
+		require.Equal(t, domain.FailureCanceled, sealed.FailureCode)
+		require.False(t, sealed.Open(), "the slot is free")
+		require.NotNil(t, stored)
+		require.Equal(t, domain.MessageCanceled, stored.State, "the text is kept as the canceled message")
+		require.Equal(t, text, stored.Text)
+		require.Equal(t, stored.ID, sealed.AssistantMessageID)
+		_, replayed, existing, err := conversations.RecordReplyOutcome(ctx, wf4("outcome"), lb, last.ID, 1, domain.ReplyCallID(last.OperationID), rec)
+		require.NoError(t, err)
+		require.True(t, existing)
+		require.Equal(t, stored.ID, replayed.ID, "the Activity's retry replays the canceled seal")
+		op, err := ops.Get(ctx, convAlice, last.OperationID)
+		require.NoError(t, err)
+		require.Equal(t, domain.ControlCancelPending, op.Control, "the operation carries the same cancel intent, so it settles canceled")
+	})
 }

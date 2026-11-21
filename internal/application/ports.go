@@ -203,6 +203,7 @@ type Repo interface {
 	GetConversationTurn(ctx context.Context, turnID, tenantID string) (*domain.Turn, error)
 	GetConversationTurnByInput(ctx context.Context, messageID, tenantID string) (*domain.Turn, error)
 	GetConversationTurnByOperation(ctx context.Context, operationID, tenantID string) (*domain.Turn, error)
+	ListConversationTurnsByInputs(ctx context.Context, conversationID, tenantID string, messageIDs []string) ([]*domain.Turn, error)
 	GetOpenConversationTurn(ctx context.Context, conversationID, tenantID string) (*domain.Turn, error)
 	UpdateConversationTurn(ctx context.Context, t *domain.Turn) error
 	InsertAllocationReturn(ctx context.Context, a *domain.Allocation, amount int64, at time.Time) error

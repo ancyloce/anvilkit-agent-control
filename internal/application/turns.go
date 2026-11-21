@@ -252,27 +252,28 @@ func lockTurn(ctx context.Context, r Repo, tenantID, turnID string) (*domain.Con
 // checkBinding locks the turn's operation (rank 2) and the bound attempt
 // (rank 3) and verifies the binding: the turn's operation, an open attempt of
 // it under the current execution epoch, and an operation that has not ended.
-func checkBinding(ctx context.Context, r Repo, tenantID string, turn *domain.Turn, b ReplyBinding) error {
+// It answers the locked operation.
+func checkBinding(ctx context.Context, r Repo, tenantID string, turn *domain.Turn, b ReplyBinding) (*domain.Operation, error) {
 	if b.OperationID != turn.OperationID {
-		return fmt.Errorf("%w: turn %s is answered by operation %s, not %s", domain.ErrStaleExecution, turn.ID, turn.OperationID, b.OperationID)
+		return nil, fmt.Errorf("%w: turn %s is answered by operation %s, not %s", domain.ErrStaleExecution, turn.ID, turn.OperationID, b.OperationID)
 	}
 	op, at, err := lockOperationThenAttempt(ctx, r, b.AttemptID, tenantID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	switch {
 	case at.OperationID != op.ID || op.ID != turn.OperationID:
-		return fmt.Errorf("%w: attempt %s is not an attempt of operation %s", domain.ErrStaleExecution, at.ID, turn.OperationID)
+		return nil, fmt.Errorf("%w: attempt %s is not an attempt of operation %s", domain.ErrStaleExecution, at.ID, turn.OperationID)
 	case op.Kind != domain.KindChatTurn:
-		return fmt.Errorf("%w: operation %s is not a chat turn", domain.ErrStaleExecution, op.ID)
+		return nil, fmt.Errorf("%w: operation %s is not a chat turn", domain.ErrStaleExecution, op.ID)
 	case b.ExecutionEpoch != op.ExecutionEpoch:
-		return fmt.Errorf("%w: binding epoch %d, operation epoch %d", domain.ErrStaleExecution, b.ExecutionEpoch, op.ExecutionEpoch)
+		return nil, fmt.Errorf("%w: binding epoch %d, operation epoch %d", domain.ErrStaleExecution, b.ExecutionEpoch, op.ExecutionEpoch)
 	case at.State != domain.AttemptOpen:
-		return fmt.Errorf("%w: attempt %s is %s", domain.ErrStaleExecution, at.ID, at.State)
+		return nil, fmt.Errorf("%w: attempt %s is %s", domain.ErrStaleExecution, at.ID, at.State)
 	case op.Lifecycle.Terminal():
-		return fmt.Errorf("%w: operation %s is %s", domain.ErrStaleExecution, op.ID, op.Lifecycle)
+		return nil, fmt.Errorf("%w: operation %s is %s", domain.ErrStaleExecution, op.ID, op.Lifecycle)
 	}
-	return nil
+	return op, nil
 }
 
 // ClaimReplyWriter claims the reply writer of the binding's chat_turn
@@ -296,7 +297,7 @@ func (s *Conversations) ClaimReplyWriter(ctx context.Context, cmd domain.Command
 			existing = true
 			return nil
 		}
-		if err := checkBinding(ctx, r, cmd.TenantID, locked, b); err != nil {
+		if _, err := checkBinding(ctx, r, cmd.TenantID, locked, b); err != nil {
 			return err
 		}
 		if existing, err = locked.ClaimWriter(activityKey, attempt, invocation, now); err != nil {
@@ -316,8 +317,10 @@ func (s *Conversations) ClaimReplyWriter(ctx context.Context, cmd domain.Command
 // GetTurnContext reads the turn's context for the current writer: the
 // conversation's messages up to and including the input message, newest
 // first within the context bound, in ascending sequence, with their digest.
-// The same turn always yields the same context (messages are append-only and
-// a reply is stored after it).
+// The input of an earlier turn stopped before its send is left out (DEC-069)
+// and stays in the history. The same turn always yields the same context
+// (messages are append-only, a reply is stored after it, and every earlier
+// turn was sealed before this one opened).
 func (s *Conversations) GetTurnContext(ctx context.Context, tenantID string, b ReplyBinding, turnID string, epoch uint64) (messages []*domain.Message, digest domain.Digest, err error) {
 	budget := domain.DefaultTurnContextBytes
 	if s.replies != nil {
@@ -328,13 +331,14 @@ func (s *Conversations) GetTurnContext(ctx context.Context, tenantID string, b R
 		if err != nil {
 			return err
 		}
-		if err := checkBinding(ctx, r, tenantID, turn, b); err != nil {
+		if _, err := checkBinding(ctx, r, tenantID, turn, b); err != nil {
 			return err
 		}
 		if err := turn.CheckWriter(epoch); err != nil {
 			return err
 		}
 		var newestFirst []*domain.Message
+		leftOut := map[string]bool{}
 		before, bytes := turn.InputMessageSeq+1, 0
 		for before > 1 && bytes <= budget {
 			page, err := r.ListConversationMessages(ctx, turn.ConversationID, tenantID, before, domain.MaxHistoryPage)
@@ -344,8 +348,13 @@ func (s *Conversations) GetTurnContext(ctx context.Context, tenantID string, b R
 			if len(page) == 0 {
 				break
 			}
+			if err := markStoppedInputs(ctx, r, turn, page, leftOut); err != nil {
+				return err
+			}
 			for _, m := range page {
-				bytes += len(m.Text)
+				if !leftOut[m.ID] {
+					bytes += len(m.Text)
+				}
 			}
 			newestFirst = append(newestFirst, page...)
 			before = page[len(page)-1].Seq
@@ -353,22 +362,49 @@ func (s *Conversations) GetTurnContext(ctx context.Context, tenantID string, b R
 		if len(newestFirst) == 0 || newestFirst[0].ID != turn.InputMessageID {
 			return fmt.Errorf("%w: turn %s's input message is missing from its conversation", domain.ErrIntegrity, turn.ID)
 		}
-		messages = domain.SelectTurnContext(newestFirst, turn.InputMessageSeq, budget)
+		messages = domain.SelectTurnContext(newestFirst, turn.InputMessageSeq, budget, leftOut)
 		digest = domain.ContextDigest(messages)
 		return nil
 	})
 	return messages, digest, err
 }
 
+// markStoppedInputs adds to leftOut the page's user messages, other than the
+// turn's own input, whose turns were stopped before their send (DEC-069).
+func markStoppedInputs(ctx context.Context, r Repo, turn *domain.Turn, page []*domain.Message, leftOut map[string]bool) error {
+	ids := make([]string, 0, len(page))
+	for _, m := range page {
+		if m.Role == domain.MessageRoleUser && m.ID != turn.InputMessageID {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	turns, err := r.ListConversationTurnsByInputs(ctx, turn.ConversationID, turn.TenantID, ids)
+	if err != nil {
+		return err
+	}
+	for _, earlier := range turns {
+		if earlier.StoppedBeforeSend() {
+			leftOut[earlier.InputMessageID] = true
+		}
+	}
+	return nil
+}
+
 // RecordReplyOutcome seals or reconciles the turn's reply under the current
 // writer epoch (design 0001 §7.4). A sealing record with text stores it as
 // the next assistant message in the same transaction; a record whose sender
-// is unknown keeps the turn reconciling, holding the slot. A sealed turn
-// replays the command that sealed it and refuses any other.
-func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.CommandIdentity, b ReplyBinding, turnID string, epoch uint64, callID string, rec domain.ReplyRecord) (turn *domain.Turn, reply *domain.Message, existing bool, err error) {
-	if err := rec.Check(); err != nil {
+// is unknown keeps the turn reconciling, holding the slot. An accepted stop
+// wins (B-016): when the operation carries a cancel intent, a sealing record
+// seals the turn canceled and its text is stored as the canceled message. A
+// sealed turn replays the command that sealed it and refuses any other.
+func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.CommandIdentity, b ReplyBinding, turnID string, epoch uint64, callID string, reported domain.ReplyRecord) (turn *domain.Turn, reply *domain.Message, existing bool, err error) {
+	if err := reported.Check(); err != nil {
 		return nil, nil, false, err
 	}
+	rec := reported
 	now := s.clock.Now()
 	err = s.store.Tx(ctx, func(r Repo) error {
 		conv, locked, err := lockTurn(ctx, r, cmd.TenantID, turnID)
@@ -386,7 +422,8 @@ func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.Comma
 			}
 			return err
 		}
-		if err := checkBinding(ctx, r, cmd.TenantID, locked, b); err != nil {
+		op, err := checkBinding(ctx, r, cmd.TenantID, locked, b)
+		if err != nil {
 			return err
 		}
 		if err := locked.CheckWriter(epoch); err != nil {
@@ -395,6 +432,7 @@ func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.Comma
 		if callID != domain.ReplyCallID(locked.OperationID) {
 			return fmt.Errorf("%w: call %s is not turn %s's reply call", domain.ErrInvalid, callID, locked.ID)
 		}
+		rec = reported.UnderCancel(op)
 		var messageID string
 		if rec.Seals() && rec.HasText {
 			m, err := conv.AppendAssistantMessage(rec.MessageState(), rec.Text, now)
@@ -413,14 +451,14 @@ func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.Comma
 		return r.UpdateConversationTurn(ctx, locked)
 	})
 	if errors.Is(err, ErrDuplicateKey) && depthOf(ctx) < duplicateRetries {
-		return s.RecordReplyOutcome(deeper(ctx), cmd, b, turnID, epoch, callID, rec)
+		return s.RecordReplyOutcome(deeper(ctx), cmd, b, turnID, epoch, callID, reported)
 	}
 	if err == nil && !existing {
 		bytes := 0
 		if reply != nil {
 			bytes = len(reply.Text)
 		}
-		s.log.Info("conversation reply recorded", "turnId", turn.ID, "operationId", turn.OperationID, "state", turn.State, "outcome", rec.Outcome, "sender", rec.Sender, "failureCode", rec.FailureCode, "bytes", bytes)
+		s.log.Info("conversation reply recorded", "turnId", turn.ID, "operationId", turn.OperationID, "state", turn.State, "outcome", rec.Outcome, "reportedOutcome", reported.Outcome, "sender", rec.Sender, "failureCode", rec.FailureCode, "bytes", bytes)
 	}
 	return turn, reply, existing, err
 }
