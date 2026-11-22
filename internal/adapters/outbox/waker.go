@@ -59,7 +59,7 @@ func (w *Waker) Run(ctx context.Context) {
 	backoff := w.retry
 	for ctx.Err() == nil {
 		cons, err := w.js.OrderedConsumer(ctx, Stream, jetstream.OrderedConsumerConfig{
-			FilterSubjects: []string{domain.SubjectOperationChanged}, DeliverPolicy: jetstream.DeliverNewPolicy,
+			FilterSubjects: []string{domain.SubjectOperationChanged, domain.SubjectConversationChanged}, DeliverPolicy: jetstream.DeliverNewPolicy,
 		})
 		if err == nil {
 			var cc jetstream.ConsumeContext
@@ -99,8 +99,9 @@ func (w *Waker) handle(data []byte) {
 	w.wake(opID)
 }
 
-// WakeTarget validates a message as an operation.changed envelope of this
-// producer and answers the operation it names.
+// WakeTarget validates a message as an operation.changed or (D4a)
+// conversation.changed envelope of this producer and answers the operation
+// or conversation it names.
 func WakeTarget(data []byte) (string, error) {
 	if len(data) > maxEnvelopeBytes {
 		return "", errors.New("envelope over the bound")
@@ -112,9 +113,20 @@ func WakeTarget(data []byte) (string, error) {
 	switch {
 	case env.SchemaVersion != 1:
 		return "", errors.New("schemaVersion is not 1")
-	case env.EventType != domain.EventOperationChanged || env.Subject != domain.SubjectOperationChanged:
-		return "", errors.New("not operation.changed")
-	case env.Producer != domain.EventProducer || env.AggregateType != domain.AggregateOperation:
+	case env.EventType == domain.EventOperationChanged && env.Subject == domain.SubjectOperationChanged:
+		if env.AggregateType != domain.AggregateOperation {
+			return "", errors.New("producer or aggregate type mismatch")
+		}
+	case env.EventType == domain.EventConversationChangedType && env.Subject == domain.SubjectConversationChanged:
+		// D4a (DEC-070): a conversation's events committed; wake its streams.
+		if env.AggregateType != domain.AggregateConversation {
+			return "", errors.New("producer or aggregate type mismatch")
+		}
+	default:
+		return "", errors.New("not operation.changed or conversation.changed")
+	}
+	switch {
+	case env.Producer != domain.EventProducer:
 		return "", errors.New("producer or aggregate type mismatch")
 	case !idPattern.MatchString(env.AggregateID) || !idPattern.MatchString(env.TenantID):
 		return "", errors.New("malformed identity")

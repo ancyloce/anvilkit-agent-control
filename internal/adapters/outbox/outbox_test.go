@@ -357,3 +357,29 @@ func TestWakeTargetRejectsForeignMessages(t *testing.T) {
 	_, err = domain.OperationChangedEnvelope(domain.Event{EventType: "attempt.result-accepted"}, "tenant_a")
 	require.Error(t, err)
 }
+
+// D4a (DEC-070): the waker also wakes for a well-formed conversation.changed
+// of Control, naming the conversation, and refuses one that mixes the two
+// types' subject, aggregate or producer.
+func TestWakeTargetAcceptsConversationChanged(t *testing.T) {
+	env, err := domain.ConversationChangedEnvelope("cnv_WAKE1", "tenant_a", 12, time.Now())
+	require.NoError(t, err)
+	raw, err := jsonMarshal(env)
+	require.NoError(t, err)
+	target, err := outbox.WakeTarget(raw)
+	require.NoError(t, err)
+	require.Equal(t, "cnv_WAKE1", target)
+	for name, mutate := range map[string]func(e *domain.Envelope){
+		"the operation subject":   func(e *domain.Envelope) { e.Subject = domain.SubjectOperationChanged },
+		"the operation aggregate": func(e *domain.Envelope) { e.AggregateType = domain.AggregateOperation },
+		"another producer":        func(e *domain.Envelope) { e.Producer = "anvilkit-agent-knowledge" },
+		"malformed id":            func(e *domain.Envelope) { e.AggregateID = "cnv 1; drop" },
+	} {
+		e := env
+		mutate(&e)
+		raw, err := jsonMarshal(e)
+		require.NoError(t, err)
+		_, err = outbox.WakeTarget(raw)
+		require.Error(t, err, name)
+	}
+}

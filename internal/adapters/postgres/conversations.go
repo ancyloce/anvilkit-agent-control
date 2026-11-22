@@ -2,8 +2,14 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"math"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/outbox"
 
 	"github.com/ancyloce/anvilkit-agent-control/internal/adapters/postgres/sqlc"
 	"github.com/ancyloce/anvilkit-agent-control/internal/domain"
@@ -15,7 +21,7 @@ func toConversation(m sqlc.Conversation) *domain.Conversation {
 	return &domain.Conversation{
 		ID: m.ConversationID, TenantID: m.TenantID, ProjectID: m.ProjectID, OwnerActorID: m.OwnerActorID,
 		Status: domain.ConversationStatus(m.Status), Title: deref(m.Title), Revision: uint64(m.Revision),
-		LastMessageSeq: uint64(m.LastMessageSeq), CreatedAt: fromTs(m.CreatedAt), UpdatedAt: fromTs(m.UpdatedAt),
+		LastMessageSeq: uint64(m.LastMessageSeq), NextEventSeq: uint64(m.NextEventSeq), CreatedAt: fromTs(m.CreatedAt), UpdatedAt: fromTs(m.UpdatedAt),
 	}
 }
 
@@ -24,6 +30,7 @@ func toConversationMessage(m sqlc.ConversationMessage) *domain.Message {
 		ID: m.MessageID, TenantID: m.TenantID, ConversationID: m.ConversationID, Seq: uint64(m.MessageSeq),
 		Role: domain.MessageRole(m.Role), State: domain.MessageState(m.State), Text: m.Body,
 		ContentDigest: domain.Digest(m.ContentDigest), ConversationRevision: uint64(m.ConversationRevision), CreatedAt: fromTs(m.CreatedAt),
+		ContentRevision: uint64(m.ContentRevision), ThroughChunkSeq: uint64(m.ThroughChunkSeq),
 	}
 }
 
@@ -31,6 +38,7 @@ func (r *repo) InsertConversation(ctx context.Context, c *domain.Conversation) e
 	return mapErr(r.q.InsertConversation(ctx, sqlc.InsertConversationParams{
 		ConversationID: c.ID, TenantID: c.TenantID, ProjectID: c.ProjectID, OwnerActorID: c.OwnerActorID, Status: string(c.Status),
 		Title: strPtr(c.Title), Revision: int64(c.Revision), LastMessageSeq: int64(c.LastMessageSeq), CreatedAt: ts(c.CreatedAt), UpdatedAt: ts(c.UpdatedAt),
+		NextEventSeq: int64(eventSeqOrFirst(c.NextEventSeq)),
 	}))
 }
 
@@ -53,7 +61,7 @@ func (r *repo) LockConversation(ctx context.Context, conversationID, tenantID st
 func (r *repo) UpdateConversation(ctx context.Context, c *domain.Conversation) error {
 	return mapErr(r.q.UpdateConversation(ctx, sqlc.UpdateConversationParams{
 		ConversationID: c.ID, Status: string(c.Status), Title: strPtr(c.Title), Revision: int64(c.Revision),
-		LastMessageSeq: int64(c.LastMessageSeq), UpdatedAt: ts(c.UpdatedAt),
+		LastMessageSeq: int64(c.LastMessageSeq), UpdatedAt: ts(c.UpdatedAt), NextEventSeq: int64(eventSeqOrFirst(c.NextEventSeq)),
 	}))
 }
 
@@ -77,6 +85,7 @@ func (r *repo) InsertConversationMessage(ctx context.Context, m *domain.Message)
 	return mapErr(r.q.InsertConversationMessage(ctx, sqlc.InsertConversationMessageParams{
 		MessageID: m.ID, TenantID: m.TenantID, ConversationID: m.ConversationID, MessageSeq: int64(m.Seq), Role: string(m.Role),
 		State: string(m.State), Body: m.Text, ContentDigest: string(m.ContentDigest), ConversationRevision: int64(m.ConversationRevision), CreatedAt: ts(m.CreatedAt),
+		ContentRevision: int64(max(m.ContentRevision, 1)), ThroughChunkSeq: int64(m.ThroughChunkSeq),
 	}))
 }
 
@@ -134,8 +143,28 @@ func toConversationTurn(m sqlc.ConversationTurn) *domain.Turn {
 		AssistantMessageID: deref(m.AssistantMessageID), FailureCode: deref(m.FailureCode), ActivityKey: deref(m.ActivityKey),
 		TemporalAttempt: uint64(m.TemporalAttempt), InvocationID: deref(m.InvocationID), WriterEpoch: uint64(m.WriterEpoch),
 		OutcomeCommandID: deref(m.OutcomeCommandID), OutcomeDigest: domain.Digest(deref(m.OutcomeDigest)),
-		CreatedAt: fromTs(m.CreatedAt), UpdatedAt: fromTs(m.UpdatedAt),
+		OriginalStreamID: deref(m.OriginalStreamID), LastProviderSeq: u64Ptr(m.LastProviderSeq), LastBatchSeq: uint64(m.LastBatchSeq),
+		LastChunkSeq: uint64(m.LastChunkSeq), CommittedBytes: uint64(m.CommittedBytes), ReservedMessageID: deref(m.ReservedMessageID),
+		ReservedMessageSeq: uint64(derefInt(m.ReservedMessageSeq)),
+		CreatedAt:          fromTs(m.CreatedAt), UpdatedAt: fromTs(m.UpdatedAt),
 	}
+}
+
+func u64Ptr(v *int64) *uint64 {
+	if v == nil {
+		return nil
+	}
+	u := uint64(*v)
+	return &u
+}
+
+// eventSeqOrFirst keeps a conversation built before D4a (NextEventSeq 0) at
+// the first event sequence.
+func eventSeqOrFirst(v uint64) uint64 {
+	if v == 0 {
+		return 1
+	}
+	return v
 }
 
 func (r *repo) InsertConversationTurn(ctx context.Context, t *domain.Turn) error {
@@ -201,5 +230,120 @@ func (r *repo) UpdateConversationTurn(ctx context.Context, t *domain.Turn) error
 		AssistantMessageID: strPtr(t.AssistantMessageID), FailureCode: strPtr(t.FailureCode), ActivityKey: strPtr(t.ActivityKey),
 		TemporalAttempt: int64(t.TemporalAttempt), InvocationID: strPtr(t.InvocationID), WriterEpoch: int64(t.WriterEpoch),
 		OutcomeCommandID: strPtr(t.OutcomeCommandID), OutcomeDigest: strPtr(string(t.OutcomeDigest)), UpdatedAt: ts(t.UpdatedAt),
+		OriginalStreamID: strPtr(t.OriginalStreamID), LastProviderSeq: lastProviderSeq(t.LastProviderSeq), LastBatchSeq: int64(t.LastBatchSeq),
+		LastChunkSeq: int64(t.LastChunkSeq), CommittedBytes: int64(t.CommittedBytes), ReservedMessageID: strPtr(t.ReservedMessageID),
+		ReservedMessageSeq: int64Ptr(t.ReservedMessageSeq, t.ReservedMessageID != ""),
 	}))
+}
+
+func lastProviderSeq(v *uint64) *int64 {
+	if v == nil {
+		return nil
+	}
+	i := int64(*v)
+	return &i
+}
+
+func (r *repo) GetConversationTurnByReservedMessage(ctx context.Context, messageID, tenantID string) (*domain.Turn, error) {
+	m, err := r.q.GetConversationTurnByReservedMessage(ctx, sqlc.GetConversationTurnByReservedMessageParams{ReservedMessageID: &messageID, TenantID: tenantID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return toConversationTurn(m), nil
+}
+
+// Reply batches and the conversation event log (DEC-070, migration 00023).
+
+func (r *repo) InsertReplyChunk(ctx context.Context, c *domain.ReplyChunk) error {
+	return mapErr(r.q.InsertReplyChunk(ctx, sqlc.InsertReplyChunkParams{
+		TurnID: c.TurnID, TenantID: c.TenantID, BatchSeq: int64(c.BatchSeq), ChunkSeq: int64Ptr(c.ChunkSeq, c.ChunkSeq > 0),
+		ProviderFromSeq: int64(c.From), ProviderThroughSeq: int64(c.Through), SourceFramesDigest: string(c.SourceFramesDigest),
+		Text: strPtr(c.Text), TextDigest: strPtr(string(c.TextDigest)), CreatedAt: ts(c.CreatedAt),
+	}))
+}
+
+// GetReplyChunkByFrom reads the committed batch of the turn starting at the
+// provider sequence; ErrNotFound when none does.
+func (r *repo) GetReplyChunkByFrom(ctx context.Context, turnID string, from uint64) (*domain.ReplyChunk, error) {
+	m, err := r.q.GetReplyChunkByFrom(ctx, sqlc.GetReplyChunkByFromParams{TurnID: turnID, ProviderFromSeq: int64(from)})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &domain.ReplyChunk{
+		TurnID: m.TurnID, TenantID: m.TenantID, BatchSeq: uint64(m.BatchSeq), ChunkSeq: uint64(derefInt(m.ChunkSeq)),
+		From: uint64(m.ProviderFromSeq), Through: uint64(m.ProviderThroughSeq), SourceFramesDigest: domain.Digest(m.SourceFramesDigest),
+		Text: deref(m.Text), TextDigest: domain.Digest(deref(m.TextDigest)), CreatedAt: fromTs(m.CreatedAt),
+	}, nil
+}
+
+// ReplyText is the turn's committed text: its chunks in order.
+func (r *repo) ReplyText(ctx context.Context, turnID string) (string, error) {
+	rows, err := r.q.ListReplyChunkTexts(ctx, turnID)
+	if err != nil {
+		return "", mapErr(err)
+	}
+	var text []byte
+	for _, row := range rows {
+		text = append(text, deref(row.Text)...)
+	}
+	return string(text), nil
+}
+
+// InsertConversationEvents appends a commit's conversation events and, in
+// the same transaction, the conversation.changed wake-up through the last of
+// them (outbox, design 0001 §8.5) and a NOTIFY with the conversation id on
+// the event channel, which the operation streams share (ids never collide).
+func (r *repo) InsertConversationEvents(ctx context.Context, events []*domain.ConversationEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	tx, ok := r.db.(pgx.Tx)
+	if !ok {
+		return errors.New("conversation events are inserted inside a transaction")
+	}
+	for _, ev := range events {
+		payload, err := json.Marshal(ev.Payload)
+		if err != nil {
+			return err
+		}
+		if err := r.q.InsertConversationEvent(ctx, sqlc.InsertConversationEventParams{
+			ConversationID: ev.ConversationID, TenantID: ev.TenantID, EventSeq: int64(ev.Seq), EventType: string(ev.Type),
+			MessageID: strPtr(ev.MessageID), TurnID: strPtr(ev.TurnID), ChunkSeq: int64Ptr(ev.ChunkSeq, ev.ChunkSeq > 0),
+			Payload: payload, OccurredAt: ts(ev.OccurredAt),
+		}); err != nil {
+			return mapErr(err)
+		}
+	}
+	last := events[len(events)-1]
+	env, err := domain.ConversationChangedEnvelope(last.ConversationID, last.TenantID, last.Seq, last.OccurredAt)
+	if err != nil {
+		return err
+	}
+	if err := outbox.Publish(ctx, tx, env); err != nil {
+		return err
+	}
+	_, err = r.db.Exec(ctx, "SELECT pg_notify($1, $2)", EventChannel, last.ConversationID)
+	return err
+}
+
+// ListConversationEvents reads up to limit events after the cursor, each
+// message.delta with its chunk's text.
+func (r *repo) ListConversationEvents(ctx context.Context, conversationID, tenantID string, after uint64, limit int) ([]*domain.ConversationEvent, error) {
+	rows, err := r.q.ListConversationEvents(ctx, sqlc.ListConversationEventsParams{ConversationID: conversationID, TenantID: tenantID, AfterSeq: int64(after), RowLimit: int32(limit)})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]*domain.ConversationEvent, 0, len(rows))
+	for _, m := range rows {
+		ev := &domain.ConversationEvent{
+			ConversationID: conversationID, TenantID: tenantID, Seq: uint64(m.EventSeq), Type: domain.ConversationEventType(m.EventType),
+			MessageID: deref(m.MessageID), TurnID: deref(m.TurnID), ChunkSeq: uint64(derefInt(m.ChunkSeq)), OccurredAt: fromTs(m.OccurredAt),
+			Text: deref(m.ChunkText),
+		}
+		if err := json.Unmarshal(m.Payload, &ev.Payload); err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, nil
 }

@@ -150,6 +150,7 @@ type Conversation struct {
 	LastMessageSeq int64
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	NextEventSeq   int64
 }
 
 type ConversationCommand struct {
@@ -163,6 +164,18 @@ type ConversationCommand struct {
 	AcceptedAt     pgtype.Timestamptz
 }
 
+type ConversationEvent struct {
+	ConversationID string
+	TenantID       string
+	EventSeq       int64
+	EventType      string
+	MessageID      *string
+	TurnID         *string
+	ChunkSeq       *int64
+	Payload        []byte
+	OccurredAt     pgtype.Timestamptz
+}
+
 type ConversationMessage struct {
 	MessageID            string
 	TenantID             string
@@ -174,6 +187,21 @@ type ConversationMessage struct {
 	ContentDigest        string
 	ConversationRevision int64
 	CreatedAt            pgtype.Timestamptz
+	ContentRevision      int64
+	ThroughChunkSeq      int64
+}
+
+type ConversationReplyChunk struct {
+	TurnID             string
+	TenantID           string
+	BatchSeq           int64
+	ChunkSeq           *int64
+	ProviderFromSeq    int64
+	ProviderThroughSeq int64
+	SourceFramesDigest string
+	Text               *string
+	TextDigest         *string
+	CreatedAt          pgtype.Timestamptz
 }
 
 type ConversationTurn struct {
@@ -196,6 +224,13 @@ type ConversationTurn struct {
 	OutcomeDigest      *string
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
+	OriginalStreamID   *string
+	LastProviderSeq    *int64
+	LastBatchSeq       int64
+	LastChunkSeq       int64
+	CommittedBytes     int64
+	ReservedMessageID  *string
+	ReservedMessageSeq *int64
 }
 
 type CostCap struct {

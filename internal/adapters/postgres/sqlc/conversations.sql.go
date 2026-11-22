@@ -12,7 +12,7 @@ import (
 )
 
 const getConversation = `-- name: GetConversation :one
-SELECT conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at FROM conversations WHERE conversation_id = $1 AND tenant_id = $2
+SELECT conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at, next_event_seq FROM conversations WHERE conversation_id = $1 AND tenant_id = $2
 `
 
 type GetConversationParams struct {
@@ -34,6 +34,7 @@ func (q *Queries) GetConversation(ctx context.Context, arg GetConversationParams
 		&i.LastMessageSeq,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NextEventSeq,
 	)
 	return i, err
 }
@@ -64,7 +65,7 @@ func (q *Queries) GetConversationCommand(ctx context.Context, arg GetConversatio
 }
 
 const getConversationMessage = `-- name: GetConversationMessage :one
-SELECT message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at FROM conversation_messages WHERE message_id = $1 AND tenant_id = $2
+SELECT message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at, content_revision, through_chunk_seq FROM conversation_messages WHERE message_id = $1 AND tenant_id = $2
 `
 
 type GetConversationMessageParams struct {
@@ -86,12 +87,14 @@ func (q *Queries) GetConversationMessage(ctx context.Context, arg GetConversatio
 		&i.ContentDigest,
 		&i.ConversationRevision,
 		&i.CreatedAt,
+		&i.ContentRevision,
+		&i.ThroughChunkSeq,
 	)
 	return i, err
 }
 
 const getConversationTurn = `-- name: GetConversationTurn :one
-SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns WHERE turn_id = $1 AND tenant_id = $2
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at, original_stream_id, last_provider_seq, last_batch_seq, last_chunk_seq, committed_bytes, reserved_message_id, reserved_message_seq FROM conversation_turns WHERE turn_id = $1 AND tenant_id = $2
 `
 
 type GetConversationTurnParams struct {
@@ -122,12 +125,19 @@ func (q *Queries) GetConversationTurn(ctx context.Context, arg GetConversationTu
 		&i.OutcomeDigest,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OriginalStreamID,
+		&i.LastProviderSeq,
+		&i.LastBatchSeq,
+		&i.LastChunkSeq,
+		&i.CommittedBytes,
+		&i.ReservedMessageID,
+		&i.ReservedMessageSeq,
 	)
 	return i, err
 }
 
 const getConversationTurnByInput = `-- name: GetConversationTurnByInput :one
-SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns WHERE input_message_id = $1 AND tenant_id = $2
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at, original_stream_id, last_provider_seq, last_batch_seq, last_chunk_seq, committed_bytes, reserved_message_id, reserved_message_seq FROM conversation_turns WHERE input_message_id = $1 AND tenant_id = $2
 `
 
 type GetConversationTurnByInputParams struct {
@@ -158,12 +168,19 @@ func (q *Queries) GetConversationTurnByInput(ctx context.Context, arg GetConvers
 		&i.OutcomeDigest,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OriginalStreamID,
+		&i.LastProviderSeq,
+		&i.LastBatchSeq,
+		&i.LastChunkSeq,
+		&i.CommittedBytes,
+		&i.ReservedMessageID,
+		&i.ReservedMessageSeq,
 	)
 	return i, err
 }
 
 const getConversationTurnByOperation = `-- name: GetConversationTurnByOperation :one
-SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns WHERE operation_id = $1 AND tenant_id = $2
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at, original_stream_id, last_provider_seq, last_batch_seq, last_chunk_seq, committed_bytes, reserved_message_id, reserved_message_seq FROM conversation_turns WHERE operation_id = $1 AND tenant_id = $2
 `
 
 type GetConversationTurnByOperationParams struct {
@@ -194,12 +211,62 @@ func (q *Queries) GetConversationTurnByOperation(ctx context.Context, arg GetCon
 		&i.OutcomeDigest,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OriginalStreamID,
+		&i.LastProviderSeq,
+		&i.LastBatchSeq,
+		&i.LastChunkSeq,
+		&i.CommittedBytes,
+		&i.ReservedMessageID,
+		&i.ReservedMessageSeq,
+	)
+	return i, err
+}
+
+const getConversationTurnByReservedMessage = `-- name: GetConversationTurnByReservedMessage :one
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at, original_stream_id, last_provider_seq, last_batch_seq, last_chunk_seq, committed_bytes, reserved_message_id, reserved_message_seq FROM conversation_turns WHERE reserved_message_id = $1 AND tenant_id = $2
+`
+
+type GetConversationTurnByReservedMessageParams struct {
+	ReservedMessageID *string
+	TenantID          string
+}
+
+func (q *Queries) GetConversationTurnByReservedMessage(ctx context.Context, arg GetConversationTurnByReservedMessageParams) (ConversationTurn, error) {
+	row := q.db.QueryRow(ctx, getConversationTurnByReservedMessage, arg.ReservedMessageID, arg.TenantID)
+	var i ConversationTurn
+	err := row.Scan(
+		&i.TurnID,
+		&i.TenantID,
+		&i.ConversationID,
+		&i.InputMessageID,
+		&i.InputMessageSeq,
+		&i.OperationID,
+		&i.State,
+		&i.ContentStatus,
+		&i.SenderStatus,
+		&i.AssistantMessageID,
+		&i.FailureCode,
+		&i.ActivityKey,
+		&i.TemporalAttempt,
+		&i.InvocationID,
+		&i.WriterEpoch,
+		&i.OutcomeCommandID,
+		&i.OutcomeDigest,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OriginalStreamID,
+		&i.LastProviderSeq,
+		&i.LastBatchSeq,
+		&i.LastChunkSeq,
+		&i.CommittedBytes,
+		&i.ReservedMessageID,
+		&i.ReservedMessageSeq,
 	)
 	return i, err
 }
 
 const getOpenConversationTurn = `-- name: GetOpenConversationTurn :one
-SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at, original_stream_id, last_provider_seq, last_batch_seq, last_chunk_seq, committed_bytes, reserved_message_id, reserved_message_seq FROM conversation_turns
 WHERE conversation_id = $1 AND tenant_id = $2 AND state IN ('queued', 'running', 'cancel_pending', 'reconciling')
 `
 
@@ -231,14 +298,48 @@ func (q *Queries) GetOpenConversationTurn(ctx context.Context, arg GetOpenConver
 		&i.OutcomeDigest,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OriginalStreamID,
+		&i.LastProviderSeq,
+		&i.LastBatchSeq,
+		&i.LastChunkSeq,
+		&i.CommittedBytes,
+		&i.ReservedMessageID,
+		&i.ReservedMessageSeq,
+	)
+	return i, err
+}
+
+const getReplyChunkByFrom = `-- name: GetReplyChunkByFrom :one
+SELECT turn_id, tenant_id, batch_seq, chunk_seq, provider_from_seq, provider_through_seq, source_frames_digest, text, text_digest, created_at FROM conversation_reply_chunks WHERE turn_id = $1 AND provider_from_seq = $2
+`
+
+type GetReplyChunkByFromParams struct {
+	TurnID          string
+	ProviderFromSeq int64
+}
+
+func (q *Queries) GetReplyChunkByFrom(ctx context.Context, arg GetReplyChunkByFromParams) (ConversationReplyChunk, error) {
+	row := q.db.QueryRow(ctx, getReplyChunkByFrom, arg.TurnID, arg.ProviderFromSeq)
+	var i ConversationReplyChunk
+	err := row.Scan(
+		&i.TurnID,
+		&i.TenantID,
+		&i.BatchSeq,
+		&i.ChunkSeq,
+		&i.ProviderFromSeq,
+		&i.ProviderThroughSeq,
+		&i.SourceFramesDigest,
+		&i.Text,
+		&i.TextDigest,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const insertConversation = `-- name: InsertConversation :exec
 
-INSERT INTO conversations (conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO conversations (conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at, next_event_seq)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `
 
 type InsertConversationParams struct {
@@ -252,6 +353,7 @@ type InsertConversationParams struct {
 	LastMessageSeq int64
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	NextEventSeq   int64
 }
 
 // Conversations (DEC-067, migration 00021): personal conversations, their
@@ -271,6 +373,7 @@ func (q *Queries) InsertConversation(ctx context.Context, arg InsertConversation
 		arg.LastMessageSeq,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.NextEventSeq,
 	)
 	return err
 }
@@ -305,9 +408,42 @@ func (q *Queries) InsertConversationCommand(ctx context.Context, arg InsertConve
 	return err
 }
 
+const insertConversationEvent = `-- name: InsertConversationEvent :exec
+INSERT INTO conversation_events (conversation_id, tenant_id, event_seq, event_type, message_id, turn_id, chunk_seq, payload, occurred_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+`
+
+type InsertConversationEventParams struct {
+	ConversationID string
+	TenantID       string
+	EventSeq       int64
+	EventType      string
+	MessageID      *string
+	TurnID         *string
+	ChunkSeq       *int64
+	Payload        []byte
+	OccurredAt     pgtype.Timestamptz
+}
+
+func (q *Queries) InsertConversationEvent(ctx context.Context, arg InsertConversationEventParams) error {
+	_, err := q.db.Exec(ctx, insertConversationEvent,
+		arg.ConversationID,
+		arg.TenantID,
+		arg.EventSeq,
+		arg.EventType,
+		arg.MessageID,
+		arg.TurnID,
+		arg.ChunkSeq,
+		arg.Payload,
+		arg.OccurredAt,
+	)
+	return err
+}
+
 const insertConversationMessage = `-- name: InsertConversationMessage :exec
-INSERT INTO conversation_messages (message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO conversation_messages (message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at,
+    content_revision, through_chunk_seq)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 `
 
 type InsertConversationMessageParams struct {
@@ -321,6 +457,8 @@ type InsertConversationMessageParams struct {
 	ContentDigest        string
 	ConversationRevision int64
 	CreatedAt            pgtype.Timestamptz
+	ContentRevision      int64
+	ThroughChunkSeq      int64
 }
 
 func (q *Queries) InsertConversationMessage(ctx context.Context, arg InsertConversationMessageParams) error {
@@ -335,6 +473,8 @@ func (q *Queries) InsertConversationMessage(ctx context.Context, arg InsertConve
 		arg.ContentDigest,
 		arg.ConversationRevision,
 		arg.CreatedAt,
+		arg.ContentRevision,
+		arg.ThroughChunkSeq,
 	)
 	return err
 }
@@ -395,8 +535,107 @@ func (q *Queries) InsertConversationTurn(ctx context.Context, arg InsertConversa
 	return err
 }
 
+const insertReplyChunk = `-- name: InsertReplyChunk :exec
+
+INSERT INTO conversation_reply_chunks (turn_id, tenant_id, batch_seq, chunk_seq, provider_from_seq, provider_through_seq, source_frames_digest, text, text_digest, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+`
+
+type InsertReplyChunkParams struct {
+	TurnID             string
+	TenantID           string
+	BatchSeq           int64
+	ChunkSeq           *int64
+	ProviderFromSeq    int64
+	ProviderThroughSeq int64
+	SourceFramesDigest string
+	Text               *string
+	TextDigest         *string
+	CreatedAt          pgtype.Timestamptz
+}
+
+// Reply batches and the conversation event log (DEC-070, migration 00023):
+// append-only, written under the conversation's lock.
+func (q *Queries) InsertReplyChunk(ctx context.Context, arg InsertReplyChunkParams) error {
+	_, err := q.db.Exec(ctx, insertReplyChunk,
+		arg.TurnID,
+		arg.TenantID,
+		arg.BatchSeq,
+		arg.ChunkSeq,
+		arg.ProviderFromSeq,
+		arg.ProviderThroughSeq,
+		arg.SourceFramesDigest,
+		arg.Text,
+		arg.TextDigest,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const listConversationEvents = `-- name: ListConversationEvents :many
+SELECT e.event_seq, e.event_type, e.message_id, e.turn_id, e.chunk_seq, e.payload, e.occurred_at, c.text AS chunk_text
+FROM conversation_events e
+LEFT JOIN conversation_reply_chunks c ON c.turn_id = e.turn_id AND c.chunk_seq = e.chunk_seq
+WHERE e.conversation_id = $1::text AND e.tenant_id = $2::text AND e.event_seq > $3::bigint
+ORDER BY e.event_seq
+LIMIT $4::int
+`
+
+type ListConversationEventsParams struct {
+	ConversationID string
+	TenantID       string
+	AfterSeq       int64
+	RowLimit       int32
+}
+
+type ListConversationEventsRow struct {
+	EventSeq   int64
+	EventType  string
+	MessageID  *string
+	TurnID     *string
+	ChunkSeq   *int64
+	Payload    []byte
+	OccurredAt pgtype.Timestamptz
+	ChunkText  *string
+}
+
+// A message.delta's text is its chunk's, joined at read; the event row holds none.
+func (q *Queries) ListConversationEvents(ctx context.Context, arg ListConversationEventsParams) ([]ListConversationEventsRow, error) {
+	rows, err := q.db.Query(ctx, listConversationEvents,
+		arg.ConversationID,
+		arg.TenantID,
+		arg.AfterSeq,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConversationEventsRow{}
+	for rows.Next() {
+		var i ListConversationEventsRow
+		if err := rows.Scan(
+			&i.EventSeq,
+			&i.EventType,
+			&i.MessageID,
+			&i.TurnID,
+			&i.ChunkSeq,
+			&i.Payload,
+			&i.OccurredAt,
+			&i.ChunkText,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConversationMessages = `-- name: ListConversationMessages :many
-SELECT message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at FROM conversation_messages
+SELECT message_id, tenant_id, conversation_id, message_seq, role, state, body, content_digest, conversation_revision, created_at, content_revision, through_chunk_seq FROM conversation_messages
 WHERE conversation_id = $1::text AND tenant_id = $2::text AND message_seq < $3::bigint
 ORDER BY message_seq DESC
 LIMIT $4::int
@@ -434,6 +673,8 @@ func (q *Queries) ListConversationMessages(ctx context.Context, arg ListConversa
 			&i.ContentDigest,
 			&i.ConversationRevision,
 			&i.CreatedAt,
+			&i.ContentRevision,
+			&i.ThroughChunkSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -446,7 +687,7 @@ func (q *Queries) ListConversationMessages(ctx context.Context, arg ListConversa
 }
 
 const listConversationTurnsByInputs = `-- name: ListConversationTurnsByInputs :many
-SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at FROM conversation_turns
+SELECT turn_id, tenant_id, conversation_id, input_message_id, input_message_seq, operation_id, state, content_status, sender_status, assistant_message_id, failure_code, activity_key, temporal_attempt, invocation_id, writer_epoch, outcome_command_id, outcome_digest, created_at, updated_at, original_stream_id, last_provider_seq, last_batch_seq, last_chunk_seq, committed_bytes, reserved_message_id, reserved_message_seq FROM conversation_turns
 WHERE tenant_id = $1::text AND conversation_id = $2::text
   AND input_message_id = ANY($3::text[])
 `
@@ -489,6 +730,13 @@ func (q *Queries) ListConversationTurnsByInputs(ctx context.Context, arg ListCon
 			&i.OutcomeDigest,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OriginalStreamID,
+			&i.LastProviderSeq,
+			&i.LastBatchSeq,
+			&i.LastChunkSeq,
+			&i.CommittedBytes,
+			&i.ReservedMessageID,
+			&i.ReservedMessageSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -501,7 +749,7 @@ func (q *Queries) ListConversationTurnsByInputs(ctx context.Context, arg ListCon
 }
 
 const listConversations = `-- name: ListConversations :many
-SELECT conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at FROM conversations
+SELECT conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at, next_event_seq FROM conversations
 WHERE tenant_id = $1::text AND project_id = $2::text AND owner_actor_id = $3::text
   AND ($4::text = '' OR status = $4::text)
   AND ($5::text = '' OR (created_at, conversation_id) < ($6::timestamptz, $5::text))
@@ -547,6 +795,7 @@ func (q *Queries) ListConversations(ctx context.Context, arg ListConversationsPa
 			&i.LastMessageSeq,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.NextEventSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -558,8 +807,39 @@ func (q *Queries) ListConversations(ctx context.Context, arg ListConversationsPa
 	return items, nil
 }
 
+const listReplyChunkTexts = `-- name: ListReplyChunkTexts :many
+SELECT chunk_seq, text FROM conversation_reply_chunks
+WHERE turn_id = $1 AND chunk_seq IS NOT NULL
+ORDER BY chunk_seq
+`
+
+type ListReplyChunkTextsRow struct {
+	ChunkSeq *int64
+	Text     *string
+}
+
+func (q *Queries) ListReplyChunkTexts(ctx context.Context, turnID string) ([]ListReplyChunkTextsRow, error) {
+	rows, err := q.db.Query(ctx, listReplyChunkTexts, turnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReplyChunkTextsRow{}
+	for rows.Next() {
+		var i ListReplyChunkTextsRow
+		if err := rows.Scan(&i.ChunkSeq, &i.Text); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockConversation = `-- name: LockConversation :one
-SELECT conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at FROM conversations WHERE conversation_id = $1 AND tenant_id = $2 FOR UPDATE
+SELECT conversation_id, tenant_id, project_id, owner_actor_id, status, title, revision, last_message_seq, created_at, updated_at, next_event_seq FROM conversations WHERE conversation_id = $1 AND tenant_id = $2 FOR UPDATE
 `
 
 type LockConversationParams struct {
@@ -581,12 +861,13 @@ func (q *Queries) LockConversation(ctx context.Context, arg LockConversationPara
 		&i.LastMessageSeq,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NextEventSeq,
 	)
 	return i, err
 }
 
 const updateConversation = `-- name: UpdateConversation :exec
-UPDATE conversations SET status = $2, title = $3, revision = $4, last_message_seq = $5, updated_at = $6
+UPDATE conversations SET status = $2, title = $3, revision = $4, last_message_seq = $5, updated_at = $6, next_event_seq = $7
 WHERE conversation_id = $1
 `
 
@@ -597,6 +878,7 @@ type UpdateConversationParams struct {
 	Revision       int64
 	LastMessageSeq int64
 	UpdatedAt      pgtype.Timestamptz
+	NextEventSeq   int64
 }
 
 func (q *Queries) UpdateConversation(ctx context.Context, arg UpdateConversationParams) error {
@@ -607,13 +889,16 @@ func (q *Queries) UpdateConversation(ctx context.Context, arg UpdateConversation
 		arg.Revision,
 		arg.LastMessageSeq,
 		arg.UpdatedAt,
+		arg.NextEventSeq,
 	)
 	return err
 }
 
 const updateConversationTurn = `-- name: UpdateConversationTurn :exec
 UPDATE conversation_turns SET state = $2, content_status = $3, sender_status = $4, assistant_message_id = $5, failure_code = $6, activity_key = $7,
-    temporal_attempt = $8, invocation_id = $9, writer_epoch = $10, outcome_command_id = $11, outcome_digest = $12, updated_at = $13
+    temporal_attempt = $8, invocation_id = $9, writer_epoch = $10, outcome_command_id = $11, outcome_digest = $12, updated_at = $13,
+    original_stream_id = $14, last_provider_seq = $15, last_batch_seq = $16, last_chunk_seq = $17, committed_bytes = $18,
+    reserved_message_id = $19, reserved_message_seq = $20
 WHERE turn_id = $1
 `
 
@@ -631,6 +916,13 @@ type UpdateConversationTurnParams struct {
 	OutcomeCommandID   *string
 	OutcomeDigest      *string
 	UpdatedAt          pgtype.Timestamptz
+	OriginalStreamID   *string
+	LastProviderSeq    *int64
+	LastBatchSeq       int64
+	LastChunkSeq       int64
+	CommittedBytes     int64
+	ReservedMessageID  *string
+	ReservedMessageSeq *int64
 }
 
 func (q *Queries) UpdateConversationTurn(ctx context.Context, arg UpdateConversationTurnParams) error {
@@ -648,6 +940,13 @@ func (q *Queries) UpdateConversationTurn(ctx context.Context, arg UpdateConversa
 		arg.OutcomeCommandID,
 		arg.OutcomeDigest,
 		arg.UpdatedAt,
+		arg.OriginalStreamID,
+		arg.LastProviderSeq,
+		arg.LastBatchSeq,
+		arg.LastChunkSeq,
+		arg.CommittedBytes,
+		arg.ReservedMessageID,
+		arg.ReservedMessageSeq,
 	)
 	return err
 }
