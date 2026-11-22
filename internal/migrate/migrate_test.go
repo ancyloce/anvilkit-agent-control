@@ -246,6 +246,7 @@ func turnSchema(ctx context.Context, t *testing.T, db *sql.DB, digest string) {
 	_, err = db.ExecContext(ctx, `UPDATE conversation_turns SET state = 'completed', content_status = 'complete', sender_status = 'stopped', outcome_command_id = 'cmd_outcome', outcome_digest = $1 WHERE turn_id = 'trn_schema_1'`, digest)
 	require.NoError(t, err)
 	require.NoError(t, insertTurn("trn_schema_2", "msg_schema_turn", "op_turn_2", "queued", "unknown"), "a sealed turn frees the slot")
+	replySchema(ctx, t, db, digest)
 }
 
 // grantPolicyBarrier: 00010 keeps one registration per (tenant, command),
@@ -304,4 +305,58 @@ func forwardMigrateExistingStage(ctx context.Context, t *testing.T, db *sql.DB) 
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT result_manifest::text, result_manifest_bytes FROM stage_manifests WHERE stage_id = 'stg_legacy'").Scan(&jsonb, &bytes))
 	require.Nil(t, bytes, "existing accepted stages have no original bytes after the forward migration")
 	require.JSONEq(t, `{"verdict": "certified", "schemaVersion": 1}`, jsonb, "the normalized copy is intact")
+}
+
+// replySchema: 00023 (DEC-070, D4a) keeps reply chunks and conversation
+// events append-only for the runtime role, ties a turn's stream to its
+// watermark and its chunks to a reserved message (unique across turns), keeps
+// a chunk's text, digest and number together within the reply bound, and lets
+// only a message.delta name a chunk.
+func replySchema(ctx context.Context, t *testing.T, db *sql.DB, digest string) {
+	t.Helper()
+	for _, table := range []string{"conversation_reply_chunks", "conversation_events"} {
+		var insert, update, del bool
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege('anvilkit_control_app', $1, 'INSERT'),
+			has_table_privilege('anvilkit_control_app', $1, 'UPDATE'), has_table_privilege('anvilkit_control_app', $1, 'DELETE')`, table).Scan(&insert, &update, &del))
+		require.True(t, insert, table)
+		require.False(t, update, table)
+		require.False(t, del, table)
+	}
+	var next int64
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT next_event_seq FROM conversations WHERE conversation_id = 'cnv_schema'`).Scan(&next))
+	require.Equal(t, int64(1), next, "a conversation's events start at 1")
+	exec := func(query string, args ...any) error {
+		_, err := db.ExecContext(ctx, query, args...)
+		return err
+	}
+	require.Error(t, exec(`UPDATE conversation_turns SET original_stream_id = 'str_1' WHERE turn_id = 'trn_schema_2'`), "a stream names its watermark")
+	require.Error(t, exec(`UPDATE conversation_turns SET last_chunk_seq = 1 WHERE turn_id = 'trn_schema_2'`), "chunks need a reserved message")
+	require.Error(t, exec(`UPDATE conversation_turns SET committed_bytes = 32769 WHERE turn_id = 'trn_schema_2'`), "a reply is at most 32768 bytes")
+	require.NoError(t, exec(`UPDATE conversation_turns SET original_stream_id = 'str_1', last_provider_seq = 4, last_batch_seq = 2, last_chunk_seq = 1,
+		committed_bytes = 5, reserved_message_id = 'msg_reserved_1', reserved_message_seq = 100 WHERE turn_id = 'trn_schema_2'`))
+	require.Error(t, exec(`UPDATE conversation_turns SET reserved_message_id = 'msg_reserved_1', reserved_message_seq = 101, last_chunk_seq = 1 WHERE turn_id = 'trn_schema_1'`),
+		"a reserved message id belongs to one turn")
+	chunk := func(batch int, chunkSeq any, from, through int, text, textDigest any) error {
+		return exec(`INSERT INTO conversation_reply_chunks (turn_id, tenant_id, batch_seq, chunk_seq, provider_from_seq, provider_through_seq, source_frames_digest, text, text_digest, created_at)
+			VALUES ('trn_schema_2', 'tenant_s', $1, $2, $3, $4, $5, $6, $7, now())`, batch, chunkSeq, from, through, digest, text, textDigest)
+	}
+	require.NoError(t, chunk(1, nil, 0, 0, nil, nil), "a textless batch has no chunk")
+	require.NoError(t, chunk(2, 1, 1, 4, "Hello", digest))
+	require.Error(t, chunk(3, 2, 1, 5, "again", digest), "one batch per provider start")
+	require.Error(t, chunk(3, 2, 5, 4, "back", digest), "a range does not run backwards")
+	require.Error(t, chunk(3, 2, 5, 5, nil, nil), "a chunk has text")
+	require.Error(t, chunk(3, nil, 5, 5, "x", digest), "text is a chunk")
+	require.Error(t, chunk(3, 2, 5, 5, "x", nil), "text has its digest")
+	require.Error(t, chunk(3, 2, 5, 5, strings.Repeat("a", 32769), digest), "a chunk is within the reply bound")
+	event := func(seq int, tenant, kind string, turn, chunkSeq any) error {
+		return exec(`INSERT INTO conversation_events (conversation_id, tenant_id, event_seq, event_type, message_id, turn_id, chunk_seq, payload, occurred_at)
+			VALUES ('cnv_schema', $1, $2, $3, 'msg_reserved_1', $4, $5, '{}', now())`, tenant, seq, kind, turn, chunkSeq)
+	}
+	require.NoError(t, event(1, "tenant_s", "message.delta", "trn_schema_2", 1))
+	require.NoError(t, event(2, "tenant_s", "turn.changed", "trn_schema_2", nil))
+	require.Error(t, event(2, "tenant_s", "turn.changed", "trn_schema_2", nil), "one event per sequence")
+	require.Error(t, event(3, "tenant_s", "message.delta", "trn_schema_2", nil), "a delta names its chunk")
+	require.Error(t, event(3, "tenant_s", "turn.changed", "trn_schema_2", 1), "only a delta names a chunk")
+	require.Error(t, event(3, "tenant_s", "message.edited", nil, nil), "the event types are closed")
+	require.Error(t, event(3, "tenant_other", "turn.changed", nil, nil), "an event belongs to a conversation of its own tenant")
 }
