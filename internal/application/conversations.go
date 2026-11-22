@@ -174,7 +174,11 @@ func (s *Conversations) Update(ctx context.Context, cmd domain.CommandIdentity, 
 		if err := locked.Update(expected, title, status, now); err != nil {
 			return err
 		}
-		if err := r.UpdateConversation(ctx, locked); err != nil {
+		ev, err := locked.ConversationChangedEvent(now)
+		if err != nil {
+			return err
+		}
+		if err := emit(ctx, r, locked, []*domain.ConversationEvent{ev}); err != nil {
 			return err
 		}
 		return r.InsertConversationCommand(ctx, &domain.ConversationCommand{
@@ -230,9 +234,14 @@ func (s *Conversations) Append(ctx context.Context, cmd domain.CommandIdentity, 
 			return err
 		}
 		msg, turn, op, existing = nil, nil, nil, false
+		var events []*domain.ConversationEvent
 		if s.RepliesEnabled() {
-			if err := freeSlot(ctx, r, locked, now); err != nil {
+			ev, err := freeSlot(ctx, r, locked, now)
+			if err != nil {
 				return err
+			}
+			if ev != nil {
+				events = append(events, ev)
 			}
 		}
 		m, err := locked.AppendUserMessage(expected, text, now)
@@ -246,10 +255,27 @@ func (s *Conversations) Append(ctx context.Context, cmd domain.CommandIdentity, 
 			return err
 		}
 		msg = m
+		turnID := ""
 		if s.RepliesEnabled() {
 			if turn, op, err = s.openTurn(ctx, r, cmd, scope, m, now); err != nil {
 				return err
 			}
+			turnID = turn.ID
+		}
+		ev, err := locked.MessageAcceptedEvent(m, turnID, now)
+		if err != nil {
+			return err
+		}
+		events = append(events, ev)
+		if turn != nil {
+			ev, err := locked.TurnChangedEvent(turn, op.Finance, now)
+			if err != nil {
+				return err
+			}
+			events = append(events, ev)
+		}
+		if err := emit(ctx, r, locked, events); err != nil {
+			return err
 		}
 		return r.InsertConversationCommand(ctx, &domain.ConversationCommand{
 			TenantID: cmd.TenantID, CommandID: cmd.CommandID, Kind: domain.ConversationCommandAppend, ActorID: cmd.ActorID,

@@ -204,6 +204,13 @@ type Repo interface {
 	GetConversationTurnByInput(ctx context.Context, messageID, tenantID string) (*domain.Turn, error)
 	GetConversationTurnByOperation(ctx context.Context, operationID, tenantID string) (*domain.Turn, error)
 	ListConversationTurnsByInputs(ctx context.Context, conversationID, tenantID string, messageIDs []string) ([]*domain.Turn, error)
+	GetConversationTurnByReservedMessage(ctx context.Context, messageID, tenantID string) (*domain.Turn, error)
+	// Reply batches and conversation events (DEC-070).
+	InsertReplyChunk(ctx context.Context, c *domain.ReplyChunk) error
+	GetReplyChunkByFrom(ctx context.Context, turnID string, from uint64) (*domain.ReplyChunk, error)
+	ReplyText(ctx context.Context, turnID string) (string, error)
+	InsertConversationEvents(ctx context.Context, events []*domain.ConversationEvent) error
+	ListConversationEvents(ctx context.Context, conversationID, tenantID string, after uint64, limit int) ([]*domain.ConversationEvent, error)
 	GetOpenConversationTurn(ctx context.Context, conversationID, tenantID string) (*domain.Turn, error)
 	UpdateConversationTurn(ctx context.Context, t *domain.Turn) error
 	InsertAllocationReturn(ctx context.Context, a *domain.Allocation, amount int64, at time.Time) error

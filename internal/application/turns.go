@@ -67,24 +67,28 @@ func viewOf(t *domain.Turn, op *domain.Operation) *TurnView {
 }
 
 // freeSlot checks the conversation's reply slot under its lock: an open turn
-// whose operation already ended is sealed now; any other open turn refuses
-// the message with TURN_BUSY, so nothing is stored.
-func freeSlot(ctx context.Context, r Repo, conv *domain.Conversation, now time.Time) error {
+// whose operation already ended is sealed now (its turn.changed event is
+// answered); any other open turn refuses the message with TURN_BUSY, so
+// nothing is stored.
+func freeSlot(ctx context.Context, r Repo, conv *domain.Conversation, now time.Time) (*domain.ConversationEvent, error) {
 	open, err := r.GetOpenConversationTurn(ctx, conv.ID, conv.TenantID)
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		return nil
+		return nil, nil
 	case err != nil:
-		return err
+		return nil, err
 	}
 	op, err := r.LockOperation(ctx, open.OperationID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !open.EndWithOperation(op, now) {
-		return fmt.Errorf("%w: conversation %s is answering turn %s; send the message once it ends", domain.ErrTurnBusy, conv.ID, open.ID)
+		return nil, fmt.Errorf("%w: conversation %s is answering turn %s; send the message once it ends", domain.ErrTurnBusy, conv.ID, open.ID)
 	}
-	return r.UpdateConversationTurn(ctx, open)
+	if err := r.UpdateConversationTurn(ctx, open); err != nil {
+		return nil, err
+	}
+	return conv.TurnChangedEvent(open, op.Finance, now)
 }
 
 // openTurn opens the turn answering the stored message and its chat_turn
@@ -208,8 +212,27 @@ func (s *Conversations) StopTurn(ctx context.Context, cmd domain.CommandIdentity
 			if err != nil {
 				return err
 			}
-			if turn.RequestStop(current.Lifecycle == domain.LifecycleCanceled, now) {
+			// D4a (DEC-070 Q3 A): a reply whose writer is claimed is sealed
+			// at once with its committed chunks; otherwise the turn ends with
+			// an operation canceled at once, or waits in cancel_pending.
+			if turn.Open() && current.Lifecycle != domain.LifecycleCanceled && turn.CanSealAtStop() {
+				events, err := sealAtStop(ctx, r, conv, turn, cmd, current.Finance, now)
+				if err != nil {
+					return err
+				}
+				if err := emit(ctx, r, conv, events); err != nil {
+					return err
+				}
+				s.log.Info("conversation turn stop recorded", "conversationId", conv.ID, "turnId", turn.ID, "state", turn.State, "operationId", turn.OperationID, "sealed", true)
+			} else if turn.RequestStop(current.Lifecycle == domain.LifecycleCanceled, now) {
 				if err := r.UpdateConversationTurn(ctx, turn); err != nil {
+					return err
+				}
+				ev, err := conv.TurnChangedEvent(turn, current.Finance, now)
+				if err != nil {
+					return err
+				}
+				if err := emit(ctx, r, conv, []*domain.ConversationEvent{ev}); err != nil {
 					return err
 				}
 				s.log.Info("conversation turn stop recorded", "conversationId", conv.ID, "turnId", turn.ID, "state", turn.State, "operationId", turn.OperationID)
@@ -288,7 +311,7 @@ func (s *Conversations) ClaimReplyWriter(ctx context.Context, cmd domain.Command
 		if err != nil {
 			return err
 		}
-		_, locked, err := lockTurn(ctx, r, cmd.TenantID, peek.ID)
+		conv, locked, err := lockTurn(ctx, r, cmd.TenantID, peek.ID)
 		if err != nil {
 			return err
 		}
@@ -297,7 +320,8 @@ func (s *Conversations) ClaimReplyWriter(ctx context.Context, cmd domain.Command
 			existing = true
 			return nil
 		}
-		if _, err := checkBinding(ctx, r, cmd.TenantID, locked, b); err != nil {
+		op, err := checkBinding(ctx, r, cmd.TenantID, locked, b)
+		if err != nil {
 			return err
 		}
 		if existing, err = locked.ClaimWriter(activityKey, attempt, invocation, now); err != nil {
@@ -306,7 +330,14 @@ func (s *Conversations) ClaimReplyWriter(ctx context.Context, cmd domain.Command
 		if existing {
 			return nil
 		}
-		return r.UpdateConversationTurn(ctx, locked)
+		if err := r.UpdateConversationTurn(ctx, locked); err != nil {
+			return err
+		}
+		ev, err := conv.TurnChangedEvent(locked, op.Finance, now)
+		if err != nil {
+			return err
+		}
+		return emit(ctx, r, conv, []*domain.ConversationEvent{ev})
 	})
 	if err == nil && !existing {
 		s.log.Info("conversation reply writer claimed", "turnId", turn.ID, "operationId", turn.OperationID, "writerEpoch", turn.WriterEpoch, "temporalAttempt", turn.TemporalAttempt)
@@ -400,9 +431,19 @@ func markStoppedInputs(ctx context.Context, r Repo, turn *domain.Turn, page []*d
 // wins (B-016): when the operation carries a cancel intent, a sealing record
 // seals the turn canceled and its text is stored as the canceled message. A
 // sealed turn replays the command that sealed it and refuses any other.
-func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.CommandIdentity, b ReplyBinding, turnID string, epoch uint64, callID string, reported domain.ReplyRecord) (turn *domain.Turn, reply *domain.Message, existing bool, err error) {
-	if err := reported.Check(); err != nil {
-		return nil, nil, false, err
+//
+// D4a (DEC-070): with fromBatches the reply's text is its committed batches,
+// checked against the record's digest when it carries one; a reply with
+// committed batches is always sealed from them. A turn sealed by its stop answers a later record
+// with the sealed turn, never a conflict.
+func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.CommandIdentity, b ReplyBinding, turnID string, epoch uint64, callID string, reported domain.ReplyRecord, fromBatches bool) (turn *domain.Turn, reply *domain.Message, existing bool, err error) {
+	if fromBatches && reported.HasText {
+		return nil, nil, false, fmt.Errorf("%w: a record sealed from its batches carries no text", domain.ErrInvalid)
+	}
+	if !fromBatches {
+		if err := reported.Check(); err != nil {
+			return nil, nil, false, err
+		}
 	}
 	rec := reported
 	now := s.clock.Now()
@@ -413,8 +454,10 @@ func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.Comma
 		}
 		turn, reply = locked, nil
 		if !locked.Open() {
-			if err := locked.Replays(cmd); err != nil {
-				return err
+			if !locked.SealedByStop() {
+				if err := locked.Replays(cmd); err != nil {
+					return err
+				}
 			}
 			existing = true
 			if locked.AssistantMessageID != "" {
@@ -432,10 +475,31 @@ func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.Comma
 		if callID != domain.ReplyCallID(locked.OperationID) {
 			return fmt.Errorf("%w: call %s is not turn %s's reply call", domain.ErrInvalid, callID, locked.ID)
 		}
-		rec = reported.UnderCancel(op)
+		full := reported
+		if fromBatches {
+			text, err := r.ReplyText(ctx, locked.ID)
+			if err != nil {
+				return err
+			}
+			if text != "" {
+				full.HasText, full.Text = true, text
+				// Without a digest the writer seals the batches as they
+				// stand (it lost track of them after an inconsistent stream).
+				if full.Digest == "" {
+					full.Digest = domain.TextDigest(text)
+				}
+			}
+			if err := full.Check(); err != nil {
+				return err
+			}
+		} else if locked.LastBatchSeq > 0 {
+			return fmt.Errorf("%w: turn %s has committed batches; its reply is sealed from them", domain.ErrInvalid, locked.ID)
+		}
+		rec = full.UnderCancel(op)
 		var messageID string
+		var events []*domain.ConversationEvent
 		if rec.Seals() && rec.HasText {
-			m, err := conv.AppendAssistantMessage(rec.MessageState(), rec.Text, now)
+			m, err := conv.SealReply(locked, rec.MessageState(), rec.Text, now)
 			if err != nil {
 				return err
 			}
@@ -448,10 +512,24 @@ func (s *Conversations) RecordReplyOutcome(ctx context.Context, cmd domain.Comma
 			reply, messageID = m, m.ID
 		}
 		locked.Record(rec, messageID, cmd, now)
-		return r.UpdateConversationTurn(ctx, locked)
+		if err := r.UpdateConversationTurn(ctx, locked); err != nil {
+			return err
+		}
+		if reply != nil {
+			ev, err := conv.MessageSealedEvent(locked, reply, now)
+			if err != nil {
+				return err
+			}
+			events = append(events, ev)
+		}
+		ev, err := conv.TurnChangedEvent(locked, op.Finance, now)
+		if err != nil {
+			return err
+		}
+		return emit(ctx, r, conv, append(events, ev))
 	})
 	if errors.Is(err, ErrDuplicateKey) && depthOf(ctx) < duplicateRetries {
-		return s.RecordReplyOutcome(deeper(ctx), cmd, b, turnID, epoch, callID, reported)
+		return s.RecordReplyOutcome(deeper(ctx), cmd, b, turnID, epoch, callID, reported, fromBatches)
 	}
 	if err == nil && !existing {
 		bytes := 0

@@ -89,9 +89,9 @@ func TestConversationTurns(t *testing.T) {
 
 		text := "Black, with a search box on the right."
 		rec := domain.ReplyRecord{Outcome: domain.ReplyCompleted, HasText: true, Text: text, Digest: domain.TextDigest(text), Sender: domain.SenderStopped}
-		_, _, _, err = conversations.RecordReplyOutcome(ctx, wf("outcome"), b, turn.ID, 1, "op_other:reply:1", rec)
+		_, _, _, err = conversations.RecordReplyOutcome(ctx, wf("outcome"), b, turn.ID, 1, "op_other:reply:1", rec, false)
 		require.ErrorIs(t, err, domain.ErrInvalid, "only the turn's reply call")
-		sealed, reply, existing, err := conversations.RecordReplyOutcome(ctx, wf("outcome"), b, turn.ID, 1, domain.ReplyCallID(turn.OperationID), rec)
+		sealed, reply, existing, err := conversations.RecordReplyOutcome(ctx, wf("outcome"), b, turn.ID, 1, domain.ReplyCallID(turn.OperationID), rec, false)
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Equal(t, domain.TurnCompleted, sealed.State)
@@ -100,12 +100,12 @@ func TestConversationTurns(t *testing.T) {
 		require.Equal(t, domain.MessageRoleAssistant, reply.Role)
 		require.Equal(t, m.Seq+1, reply.Seq)
 		require.Equal(t, reply.ID, sealed.AssistantMessageID)
-		_, replayed, existing, err := conversations.RecordReplyOutcome(ctx, wf("outcome"), b, turn.ID, 1, domain.ReplyCallID(turn.OperationID), rec)
+		_, replayed, existing, err := conversations.RecordReplyOutcome(ctx, wf("outcome"), b, turn.ID, 1, domain.ReplyCallID(turn.OperationID), rec, false)
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, reply.ID, replayed.ID, "the sealing command replays")
 		other := domain.ReplyRecord{Outcome: domain.ReplyFailed, Sender: domain.SenderStopped, FailureCode: "UPSTREAM_UNREACHABLE"}
-		_, _, _, err = conversations.RecordReplyOutcome(ctx, wf("outcome2"), b, turn.ID, 1, domain.ReplyCallID(turn.OperationID), other)
+		_, _, _, err = conversations.RecordReplyOutcome(ctx, wf("outcome2"), b, turn.ID, 1, domain.ReplyCallID(turn.OperationID), other, false)
 		require.ErrorIs(t, err, domain.ErrIdempotencyConflict, "a sealed turn refuses another outcome")
 		got, err := conversations.Get(ctx, convAlice, conv.ID)
 		require.NoError(t, err)
@@ -183,7 +183,7 @@ func TestConversationTurns(t *testing.T) {
 		require.Equal(t, domain.TurnCancelPending, view.Turn.State, "a running reply's stop waits for its outcome")
 		text := "You are welcome."
 		rec := domain.ReplyRecord{Outcome: domain.ReplyCompleted, HasText: true, Text: text, Digest: domain.TextDigest(text), Sender: domain.SenderStopped}
-		sealed, stored, existing, err := conversations.RecordReplyOutcome(ctx, wf4("outcome"), lb, last.ID, 1, domain.ReplyCallID(last.OperationID), rec)
+		sealed, stored, existing, err := conversations.RecordReplyOutcome(ctx, wf4("outcome"), lb, last.ID, 1, domain.ReplyCallID(last.OperationID), rec, false)
 		require.NoError(t, err)
 		require.False(t, existing)
 		require.Equal(t, domain.TurnCanceled, sealed.State, "the accepted stop wins over the completion recorded after it")
@@ -193,7 +193,7 @@ func TestConversationTurns(t *testing.T) {
 		require.Equal(t, domain.MessageCanceled, stored.State, "the text is kept as the canceled message")
 		require.Equal(t, text, stored.Text)
 		require.Equal(t, stored.ID, sealed.AssistantMessageID)
-		_, replayed, existing, err := conversations.RecordReplyOutcome(ctx, wf4("outcome"), lb, last.ID, 1, domain.ReplyCallID(last.OperationID), rec)
+		_, replayed, existing, err := conversations.RecordReplyOutcome(ctx, wf4("outcome"), lb, last.ID, 1, domain.ReplyCallID(last.OperationID), rec, false)
 		require.NoError(t, err)
 		require.True(t, existing)
 		require.Equal(t, stored.ID, replayed.ID, "the Activity's retry replays the canceled seal")
