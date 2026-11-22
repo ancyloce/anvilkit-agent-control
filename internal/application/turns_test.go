@@ -159,6 +159,12 @@ func TestConversationTurns(t *testing.T) {
 		lastAt, _, err := exec.OpenAttempt(ctx, wf4("open"), last.OperationID, domain.ChatTurnStepID, 0, chat.ID)
 		require.NoError(t, err)
 		lb := application.ReplyBinding{OperationID: last.OperationID, AttemptID: lastAt.ID, ExecutionEpoch: 1}
+		// A stop before the reply's writer is claimed waits for its outcome
+		// (DEC-069); since D4a a stop after the claim seals at once
+		// (DEC-070 Q3 A, reply_batches_test.go).
+		view, _, err := conversations.StopTurn(ctx, convCmd(convAlice, "turn_stop_4", "s"), convAlice, conv.ID, last.ID)
+		require.NoError(t, err)
+		require.Equal(t, domain.TurnCancelPending, view.Turn.State, "an unclaimed reply's stop waits for its outcome")
 		_, _, err = conversations.ClaimReplyWriter(ctx, wf4("claim"), lb, "chat/"+last.ID, 1, "inv_4")
 		require.NoError(t, err)
 
@@ -178,9 +184,6 @@ func TestConversationTurns(t *testing.T) {
 		}
 		require.True(t, kept, "the history keeps the stopped message")
 
-		view, _, err := conversations.StopTurn(ctx, convCmd(convAlice, "turn_stop_4", "s"), convAlice, conv.ID, last.ID)
-		require.NoError(t, err)
-		require.Equal(t, domain.TurnCancelPending, view.Turn.State, "a running reply's stop waits for its outcome")
 		text := "You are welcome."
 		rec := domain.ReplyRecord{Outcome: domain.ReplyCompleted, HasText: true, Text: text, Digest: domain.TextDigest(text), Sender: domain.SenderStopped}
 		sealed, stored, existing, err := conversations.RecordReplyOutcome(ctx, wf4("outcome"), lb, last.ID, 1, domain.ReplyCallID(last.OperationID), rec, false)
