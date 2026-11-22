@@ -784,6 +784,69 @@ func (s *Dispatch) ConfirmNotSentLocked(ctx context.Context, r Repo, operationID
 	return locked, false, s.settleFinance(ctx, r, op, locked, true, now)
 }
 
+// RetainExposureLocked closes an unknown call on an operator's verified
+// disposition inside the caller's transaction (DEC-071): its reservation,
+// less any cost already charged, is charged as actual cost and the
+// reservation is then released, so the call holds no exposure and the
+// operation's finance can settle; overspend already charged stays. It
+// takes the same locks in the same rank order as ConfirmNotSentLocked, and
+// guard runs under the operation lock first. A call that is not unknown
+// under the lock (observed meanwhile, or never reported) is left as it is:
+// changed reports whether anything was charged.
+func (s *Dispatch) RetainExposureLocked(ctx context.Context, r Repo, operationID, dispatchID, evidenceRef string, guard func(*domain.Operation) error) (changed bool, err error) {
+	b, err := lockBudget(ctx, r, operationID)
+	if err != nil {
+		return false, err
+	}
+	op, err := r.LockOperation(ctx, operationID)
+	if err != nil {
+		return false, err
+	}
+	if guard != nil {
+		if err := guard(op); err != nil {
+			return false, err
+		}
+	}
+	locked, err := r.LockDispatch(ctx, dispatchID)
+	if err != nil {
+		return false, err
+	}
+	if locked.State != domain.DispatchUnknown {
+		return false, nil
+	}
+	now := s.clock.Now()
+	charged, actualID, err := r.ChargedCost(ctx, locked.ID)
+	if err != nil {
+		return false, err
+	}
+	if delta := locked.Reserved.Amount - charged; delta > 0 {
+		entry := &domain.CostEntry{ID: domain.NewID("cost"), OperationID: locked.OperationID, DispatchID: locked.ID, Kind: domain.CostActual, Amount: domain.Money{Currency: locked.Reserved.Currency, Amount: delta}, CreatedAt: now}
+		if actualID != "" {
+			entry.Kind, entry.CorrectionOf = domain.CostCorrection, actualID
+		}
+		if err := r.InsertCostEntry(ctx, entry); err != nil {
+			return false, err
+		}
+		if err := b.charge(entry.Amount, locked.Reserved, false); err != nil {
+			return false, err
+		}
+	}
+	if err := b.release(locked.Reserved); err != nil {
+		return false, err
+	}
+	if err := b.save(ctx, r); err != nil {
+		return false, err
+	}
+	if err := locked.RetainExposure(evidenceRef); err != nil {
+		return false, err
+	}
+	if err := r.UpdateDispatch(ctx, locked); err != nil {
+		return false, err
+	}
+	s.log.Info("unknown dispatch closed with its reservation charged as its cost", "dispatchId", locked.ID, "operationId", locked.OperationID, "reserved", locked.Reserved.String())
+	return true, s.settleFinance(ctx, r, op, locked, true, now)
+}
+
 // ReconcileUnresolved asks the senders' original identities about the
 // AUTHORIZED and UNKNOWN dispatches that have waited since admission for at
 // least age (P1.5, CTL-APP-05), outside any recovery run: a known outcome

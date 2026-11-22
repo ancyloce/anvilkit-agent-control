@@ -32,9 +32,10 @@ type DispositionRequest struct {
 // or conflicting disposition therefore returns its error with no partial
 // change: no effect is resolved, no exposure released, no finding settled.
 // A not-sent confirmation releases exposure, an outcome resolution records
-// the attested outcome, a retained exposure changes the obligation not at
-// all. The same command returns the original disposition; there is no
-// bulk form.
+// the attested outcome, a retained exposure charges an unknown model or
+// tool send's reservation as its final cost (DEC-071) and changes any
+// other obligation not at all. The same command returns the original
+// disposition; there is no bulk form.
 func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, scope domain.Scope, req DispositionRequest) (d *domain.Disposition, existing bool, err error) {
 	if err := validClass(req.Class); err != nil {
 		return nil, false, err
@@ -158,6 +159,12 @@ func (s *Recovery) Dispose(ctx context.Context, cmd domain.CommandIdentity, scop
 			// in rank order; the guard runs under the operation lock before
 			// the change.
 			if _, _, err := s.dispatch.ConfirmNotSentLocked(ctx, r, op.ID, dispatch.ID, req.EvidenceRef, guard); err != nil {
+				return err
+			}
+		case dispatch != nil && req.Decision == domain.DisposeRetainExposure:
+			// An unknown send's reservation becomes its final cost
+			// (DEC-071), under the same locks and guard.
+			if _, err := s.dispatch.RetainExposureLocked(ctx, r, op.ID, dispatch.ID, req.EvidenceRef, guard); err != nil {
 				return err
 			}
 		default:

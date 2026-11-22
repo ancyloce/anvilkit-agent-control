@@ -998,9 +998,30 @@ func TestRecovery(t *testing.T) {
 		require.Equal(t, d.ID, same.ID)
 		_, _, err = p1.recovery.Dispose(ctx, opCmd("dsp_twice"), opScope(opCmd("dsp_twice")), req)
 		require.ErrorIs(t, err, domain.ErrIdempotencyConflict, "one disposition per obligation")
+		// DEC-071: the unknown send is closed with its whole reservation
+		// charged as its final cost; nothing is released and its outcome
+		// stays unknown, so the operation's finance settles.
 		retained, err := p1.dispatch.Get(ctx, application.Reader{}, g.Dispatch.ID, "", "")
 		require.NoError(t, err)
-		require.Equal(t, domain.DispatchUnknown, retained.State, "the obligation keeps its identity and exposure")
+		require.Equal(t, domain.DispatchObserved, retained.State, "the retained call holds no exposure")
+		require.Equal(t, domain.DispatchOutcomeUnknown, retained.Outcome, "unknown never becomes success")
+		require.Equal(t, evidenceKey, retained.EvidenceRef)
+		costOfG := func() int64 {
+			var n int64
+			require.NoError(t, p1.pool.QueryRow(ctx, "SELECT coalesce(sum(amount), 0) FROM cost_entries WHERE dispatch_id = $1 AND kind IN ('actual', 'correction')", g.Dispatch.ID).Scan(&n))
+			return n
+		}
+		require.Equal(t, int64(10_000), costOfG(), "the reservation is the call's cost")
+		var reserved, consumed int64
+		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT max(reserved), min(consumed) FROM allocations WHERE operation_id = $1", opG.ID).Scan(&reserved, &consumed))
+		require.Zero(t, reserved, "no exposure is left reserved")
+		require.Equal(t, int64(10_000), consumed)
+		var finance string
+		require.NoError(t, p1.pool.QueryRow(ctx, "SELECT finance_state FROM operations WHERE operation_id = $1", opG.ID).Scan(&finance))
+		require.Equal(t, string(domain.FinanceFunded), finance, "no unknown exposure is left")
+		_, _, err = p1.dispatch.Observe(ctx, application.Reader{}, g.Dispatch.ID, "proxy-1", 2, domain.DispatchSucceeded, reported(domain.Usage{Output: 1}), "", time.Now())
+		require.NoError(t, err)
+		require.Equal(t, int64(10_000), costOfG(), "a late report below the charged reservation adds nothing and refunds nothing")
 		require.Equal(t, domain.FindingDisposed, findingOf("model-dispatch", g.Dispatch.ID).Status)
 	})
 
@@ -1047,7 +1068,14 @@ func TestRecovery(t *testing.T) {
 		require.Equal(t, h.Dispatch.ID, missing[0].ObligationID)
 		disposed, _, _, err := p2.recovery.Findings(ctx, run2.ID, domain.FindingDisposed, "", 10)
 		require.NoError(t, err)
-		require.Len(t, disposed, 2, "the earlier dispositions of G's dispatch and the malformed object stand in the new run")
+		require.Len(t, disposed, 1, "the malformed object's disposition stands in the new run")
+		present, _, _, err := p2.recovery.Findings(ctx, run2.ID, domain.FindingPresent, "", 100)
+		require.NoError(t, err)
+		settledG := false
+		for _, f := range present {
+			settledG = settledG || (f.Class == "model-dispatch" && f.ObligationID == g.Dispatch.ID)
+		}
+		require.True(t, settledG, "G's retained call is settled in the database (DEC-071)")
 		f, err := p2.recovery.Reconcile(ctx, run2.ID, missing[0].ID)
 		require.NoError(t, err)
 		require.Equal(t, domain.FindingUnresolved, f.Status)
