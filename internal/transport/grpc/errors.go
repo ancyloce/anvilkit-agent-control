@@ -189,6 +189,8 @@ const (
 	healthService   = "/grpc.health.v1.Health/"
 	submitCommand   = "/anvilkit.control.v1.OperationService/SubmitCommand"
 	streamEventsRPC = "/anvilkit.control.v1.OperationService/StreamOperationEvents"
+	// D4a (DEC-070): conversation event streams share the streams pool.
+	streamConversationEventsRPC = "/anvilkit.control.v1.ConversationService/StreamConversationEvents"
 )
 
 var executionPrefixes = []string{"/anvilkit.control.v1.ExecutionService/", "/anvilkit.control.v1.DispatchService/", "/anvilkit.control.v1.EffectService/", "/anvilkit.control.v1.ArtifactService/", "/anvilkit.control.v1.GenerationService/"}
@@ -198,7 +200,7 @@ func (c *capacity) pool(method string) *pool {
 	if strings.HasPrefix(method, healthService) {
 		return nil
 	}
-	if method == streamEventsRPC {
+	if method == streamEventsRPC || method == streamConversationEventsRPC {
 		return c.streams
 	}
 	for _, prefix := range executionPrefixes {

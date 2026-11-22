@@ -3,7 +3,9 @@ package grpc
 import (
 	"context"
 	"strconv"
+	"time"
 
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	controlv1 "github.com/ancyloce/anvilkit-agent-contracts/go/anvilkit/control/v1"
@@ -17,6 +19,11 @@ import (
 type conversationServer struct {
 	controlv1.UnimplementedConversationServiceServer
 	conversations *application.Conversations
+	// streams bounds the open event streams per tenant, shared with the
+	// operation streams (D4a); notifier wakes a stream when an event of its
+	// conversation commits on any replica; the poll is the fallback.
+	streams  *tenantStreams
+	notifier application.EventNotifier
 }
 
 var conversationStatusToProto = map[domain.ConversationStatus]controlv1.ConversationStatus{
@@ -57,6 +64,7 @@ func toMessage(m *domain.Message) *controlv1.Message {
 		MessageId: m.ID, ConversationId: m.ConversationID, MessageSeq: strconv.FormatUint(m.Seq, 10),
 		Role: messageRoleToProto[m.Role], State: messageStateToProto[m.State], Text: m.Text,
 		ContentDigest: string(m.ContentDigest), CreatedAt: timestamppb.New(m.CreatedAt),
+		ContentRevision: strconv.FormatUint(max(m.ContentRevision, 1), 10), ThroughChunkSeq: strconv.FormatUint(m.ThroughChunkSeq, 10),
 	}
 }
 
@@ -105,7 +113,7 @@ var replyOutcomeFromProto = map[controlv1.ReplyOutcome]domain.ReplyOutcome{
 // outcome command stay Control's.
 func toTurn(t *domain.Turn, finance domain.FinanceState) *controlv1.Turn {
 	return &controlv1.Turn{
-		TurnId: t.ID, ConversationId: t.ConversationID, InputMessageId: t.InputMessageID, AssistantMessageId: optString(t.AssistantMessageID),
+		TurnId: t.ID, ConversationId: t.ConversationID, InputMessageId: t.InputMessageID, AssistantMessageId: optString(t.PublicMessageID()),
 		OperationId: t.OperationID, State: turnStateToProto[t.State], ContentStatus: contentStatusToProto[t.Content],
 		SenderStatus: senderStatusToProto[t.Sender], Finance: financeToProto[finance], FailureCode: optString(t.FailureCode),
 		CreatedAt: timestamppb.New(t.CreatedAt), UpdatedAt: timestamppb.New(t.UpdatedAt),
@@ -125,11 +133,15 @@ func (s *conversationServer) CreateConversation(ctx context.Context, req *contro
 }
 
 func (s *conversationServer) GetConversation(ctx context.Context, req *controlv1.GetConversationRequest) (*controlv1.GetConversationResponse, error) {
-	c, err := s.conversations.Get(ctx, scope(ctx, req.GetScope()), req.GetConversationId())
+	snap, err := s.conversations.Snapshot(ctx, scope(ctx, req.GetScope()), req.GetConversationId())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &controlv1.GetConversationResponse{Conversation: toConversation(c)}, nil
+	out := &controlv1.GetConversationResponse{Conversation: toConversation(snap.Conversation), CoveredEventSeq: strconv.FormatUint(snap.CoveredEventSeq, 10)}
+	if snap.ActiveTurn != nil {
+		out.ActiveTurn = toTurn(snap.ActiveTurn.Turn, snap.ActiveTurn.Finance)
+	}
+	return out, nil
 }
 
 func (s *conversationServer) ListConversations(ctx context.Context, req *controlv1.ListConversationsRequest) (*controlv1.ListConversationsResponse, error) {
@@ -217,4 +229,129 @@ func (s *conversationServer) StopTurn(ctx context.Context, req *controlv1.StopTu
 		return nil, toStatus(err)
 	}
 	return &controlv1.StopTurnResponse{Turn: toTurn(v.Turn, v.Finance), Existing: existing}, nil
+}
+
+func (s *conversationServer) GetMessage(ctx context.Context, req *controlv1.GetMessageRequest) (*controlv1.GetMessageResponse, error) {
+	m, err := s.conversations.GetMessage(ctx, scope(ctx, req.GetScope()), req.GetConversationId(), req.GetMessageId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &controlv1.GetMessageResponse{Message: toMessage(m)}, nil
+}
+
+// toConversationEvent maps a stored event; a message.delta carries its
+// chunk's text, served only here.
+func toConversationEvent(ev *domain.ConversationEvent) *controlv1.ConversationEvent {
+	out := &controlv1.ConversationEvent{
+		ConversationId: ev.ConversationID, EventSeq: strconv.FormatUint(ev.Seq, 10), EventType: string(ev.Type), OccurredAt: timestamppb.New(ev.OccurredAt),
+	}
+	p := ev.Payload
+	switch ev.Type {
+	case domain.EventMessageAccepted:
+		out.Payload = &controlv1.ConversationEvent_MessageAccepted{MessageAccepted: &controlv1.MessageAcceptedPayload{
+			MessageId: ev.MessageID, MessageSeq: strconv.FormatUint(p.MessageSeq, 10), Role: messageRoleToProto[p.Role], TurnId: optString(ev.TurnID)}}
+	case domain.EventMessageStarted:
+		out.Payload = &controlv1.ConversationEvent_MessageStarted{MessageStarted: &controlv1.MessageStartedPayload{MessageId: ev.MessageID, TurnId: ev.TurnID}}
+	case domain.EventMessageDelta:
+		out.Payload = &controlv1.ConversationEvent_MessageDelta{MessageDelta: &controlv1.MessageDeltaPayload{
+			MessageId: ev.MessageID, ChunkSeq: strconv.FormatUint(ev.ChunkSeq, 10), ContentRevision: strconv.FormatUint(p.ContentRevision, 10), Text: ev.Text}}
+	case domain.EventMessageCompleted, domain.EventMessageFailed, domain.EventMessageCanceled:
+		out.Payload = &controlv1.ConversationEvent_MessageSealed{MessageSealed: &controlv1.MessageSealedPayload{
+			MessageId: ev.MessageID, State: messageStateToProto[p.State], ContentRevision: strconv.FormatUint(max(p.ContentRevision, 1), 10),
+			ThroughChunkSeq: strconv.FormatUint(p.ThroughChunkSeq, 10), ContentDigest: string(p.ContentDigest), TurnState: turnStateToProto[p.TurnState],
+			FailureCode: optString(p.FailureCode)}}
+	case domain.EventTurnChanged:
+		if t := p.Turn; t != nil {
+			out.Payload = &controlv1.ConversationEvent_TurnChanged{TurnChanged: &controlv1.TurnChangedPayload{Turn: &controlv1.Turn{
+				TurnId: t.TurnID, ConversationId: ev.ConversationID, InputMessageId: t.InputMessageID, AssistantMessageId: optString(t.AssistantMessageID),
+				OperationId: t.OperationID, State: turnStateToProto[t.State], ContentStatus: contentStatusToProto[t.Content],
+				SenderStatus: senderStatusToProto[t.Sender], Finance: financeToProto[t.Finance], FailureCode: optString(t.FailureCode),
+				CreatedAt: timestamppb.New(t.CreatedAt), UpdatedAt: timestamppb.New(t.UpdatedAt),
+			}}}
+		}
+	case domain.EventConversationChanged:
+		out.Payload = &controlv1.ConversationEvent_ConversationChanged{ConversationChanged: &controlv1.ConversationChangedPayload{
+			ConversationRevision: strconv.FormatUint(p.ConversationRevision, 10), Status: conversationStatusToProto[p.Status]}}
+	}
+	return out
+}
+
+func (s *conversationServer) ListConversationEvents(ctx context.Context, req *controlv1.ListConversationEventsRequest) (*controlv1.ListConversationEventsResponse, error) {
+	after, err := parseAfter(req.GetAfterEventSeq())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	page, err := s.conversations.ListEvents(ctx, scope(ctx, req.GetScope()), req.GetConversationId(), after, int(req.GetLimit()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	out := &controlv1.ListConversationEventsResponse{CoveredEventSeq: strconv.FormatUint(page.CoveredEventSeq, 10), ResetRequired: page.ResetRequired}
+	for _, ev := range page.Events {
+		out.Events = append(out.Events, toConversationEvent(ev))
+	}
+	return out, nil
+}
+
+// StreamConversationEvents re-reads committed events after the cursor until
+// the client goes away or the server drains (D4a): a conversation has no
+// terminal state. It never buffers beyond one page, so a slow consumer only
+// delays itself, and a cursor it cannot honor ends the stream INVALID_ARGUMENT
+// (the API answers reset_required).
+func (s *conversationServer) StreamConversationEvents(req *controlv1.StreamConversationEventsRequest, stream controlv1.ConversationService_StreamConversationEventsServer) error {
+	ctx := stream.Context()
+	after, err := parseAfter(req.GetAfterEventSeq())
+	if err != nil {
+		return toStatus(err)
+	}
+	sc := scope(ctx, req.GetScope())
+	first, err := s.conversations.ListEvents(ctx, sc, req.GetConversationId(), after, 1)
+	if err != nil {
+		return toStatus(err)
+	}
+	if first.ResetRequired {
+		return toStatus(domain.ErrInvalid)
+	}
+	if s.streams != nil {
+		release, err := s.streams.acquire(req.GetScope().GetTenantId())
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	if err := stream.SendHeader(metadata.Pairs("anvilkit-stream", "admitted")); err != nil {
+		return err
+	}
+	var wake <-chan struct{}
+	if s.notifier != nil {
+		var cancel func()
+		wake, cancel = s.notifier.Subscribe(req.GetConversationId())
+		defer cancel()
+	}
+	for {
+		page, err := s.conversations.ListEvents(ctx, sc, req.GetConversationId(), after, 200)
+		if err != nil {
+			return toStatus(err)
+		}
+		if page.ResetRequired {
+			return toStatus(domain.ErrInvalid)
+		}
+		for _, ev := range page.Events {
+			if err := stream.Send(&controlv1.StreamConversationEventsResponse{Event: toConversationEvent(ev)}); err != nil {
+				return err
+			}
+			after = ev.Seq
+		}
+		if len(page.Events) == 200 {
+			continue
+		}
+		poll := time.NewTimer(streamPoll)
+		select {
+		case <-ctx.Done():
+			poll.Stop()
+			return toStatus(ctx.Err())
+		case <-wake:
+			poll.Stop()
+		case <-poll.C:
+		}
+	}
 }

@@ -162,7 +162,7 @@ func NewServerWithIdentity(listen string, id *Identity, capacity Capacity, deps 
 		controlv1.RegisterAuthorizationServiceServer(s, &authorizationServer{authorization: deps.Authorization})
 	}
 	if deps.Conversations != nil {
-		controlv1.RegisterConversationServiceServer(s, &conversationServer{conversations: deps.Conversations})
+		controlv1.RegisterConversationServiceServer(s, &conversationServer{conversations: deps.Conversations, streams: cap.tenants, notifier: deps.Notifier})
 		controlv1.RegisterConversationExecutionServiceServer(s, &conversationExecutionServer{conversations: deps.Conversations})
 	}
 	if authz != nil {

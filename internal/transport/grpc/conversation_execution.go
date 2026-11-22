@@ -65,7 +65,12 @@ func (s *conversationExecutionServer) ClaimReplyWriter(ctx context.Context, req 
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &controlv1.ClaimReplyWriterResponse{WriterEpoch: strconv.FormatUint(turn.WriterEpoch, 10), Turn: toTurn(view.Turn, view.Finance), Existing: existing}, nil
+	out := &controlv1.ClaimReplyWriterResponse{WriterEpoch: strconv.FormatUint(turn.WriterEpoch, 10), Turn: toTurn(view.Turn, view.Finance), Existing: existing}
+	if turn.LastProviderSeq != nil {
+		seq, stream := strconv.FormatUint(*turn.LastProviderSeq, 10), turn.OriginalStreamID
+		out.LastProviderSeq, out.OriginalStreamId = &seq, &stream
+	}
+	return out, nil
 }
 
 func (s *conversationExecutionServer) GetTurnContext(ctx context.Context, req *controlv1.GetTurnContextRequest) (*controlv1.GetTurnContextResponse, error) {
@@ -110,7 +115,7 @@ func (s *conversationExecutionServer) RecordReplyOutcome(ctx context.Context, re
 		return nil, toStatus(fmt.Errorf("%w: sender status %s", domain.ErrInvalid, req.GetSenderStatus()))
 	}
 	rec := domain.ReplyRecord{Outcome: outcome, HasText: req.Text != nil, Text: req.GetText(), Digest: domain.Digest(req.GetContentDigest()), Sender: sender, FailureCode: req.GetFailureCode()}
-	turn, reply, existing, err := s.conversations.RecordReplyOutcome(ctx, cmd, b, req.GetTurnId(), epoch, req.GetCallId(), rec)
+	turn, reply, existing, err := s.conversations.RecordReplyOutcome(ctx, cmd, b, req.GetTurnId(), epoch, req.GetCallId(), rec, req.GetFromBatches())
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -121,6 +126,67 @@ func (s *conversationExecutionServer) RecordReplyOutcome(ctx context.Context, re
 	out := &controlv1.RecordReplyOutcomeResponse{Turn: toTurn(view.Turn, view.Finance), Existing: existing}
 	if reply != nil {
 		out.AssistantMessage = toMessage(reply)
+	}
+	return out, nil
+}
+
+// sequence reads a canonical decimal from 0 (a provider sequence, already
+// pattern-checked by the validator).
+func sequence(s, what string) (uint64, error) {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || v > math.MaxInt64 {
+		return 0, fmt.Errorf("%w: %s %q", domain.ErrInvalid, what, s)
+	}
+	return v, nil
+}
+
+// AppendReplyBatch commits one batch of the reply's original frames (D4a,
+// DEC-070). A sealed turn answers sealed=true with nothing stored; an
+// inconsistent batch is refused DATA_LOSS (RESULT_INTEGRITY:
+// STREAM_INCONSISTENT) after the turn went reconciling.
+func (s *conversationExecutionServer) AppendReplyBatch(ctx context.Context, req *controlv1.AppendReplyBatchRequest) (*controlv1.AppendReplyBatchResponse, error) {
+	cmd, err := commandIdentity(req.GetCommand())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	b, err := replyBinding(req.GetBinding())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	epoch, err := positive(req.GetWriterEpoch(), "writer epoch")
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	from, err := sequence(req.GetFromProviderSeq(), "from provider sequence")
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	through, err := sequence(req.GetThroughProviderSeq(), "through provider sequence")
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	batch := domain.ReplyBatch{
+		OriginalStreamID: req.GetOriginalStreamId(), From: from, Through: through, SourceFramesDigest: domain.Digest(req.GetSourceFramesDigest()),
+		HasText: req.Text != nil, Text: req.GetText(), TextDigest: domain.Digest(req.GetTextDigest()),
+	}
+	rec, err := s.conversations.AppendReplyBatch(ctx, cmd, b, req.GetTurnId(), epoch, req.GetCallId(), batch)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	view, err := s.conversations.GetTurnForWorkflow(ctx, cmd.TenantID, rec.Turn)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	out := &controlv1.AppendReplyBatchResponse{Turn: toTurn(view.Turn, view.Finance), Existing: rec.Existing, Sealed: rec.Sealed}
+	if rec.Turn.LastProviderSeq != nil {
+		out.AcceptedThroughProviderSeq = strconv.FormatUint(*rec.Turn.LastProviderSeq, 10)
+	}
+	if rec.Chunk != nil && rec.Chunk.ChunkSeq > 0 {
+		chunk := strconv.FormatUint(rec.Chunk.ChunkSeq, 10)
+		out.ChunkSeq = &chunk
+	}
+	if id := rec.Turn.PublicMessageID(); id != "" {
+		out.AssistantMessageId = &id
 	}
 	return out, nil
 }
