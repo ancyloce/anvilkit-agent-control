@@ -68,8 +68,11 @@ type Conversation struct {
 	Title          string
 	Revision       uint64
 	LastMessageSeq uint64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// NextEventSeq is the sequence of the next conversation event (D4a);
+	// the conversation's covered event is the one before it.
+	NextEventSeq uint64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // NewConversation is a new active conversation owned by the scope's actor
@@ -83,7 +86,7 @@ func NewConversation(scope Scope, title string, now time.Time) (*Conversation, e
 	}
 	return &Conversation{
 		ID: NewID("cnv"), TenantID: scope.TenantID, ProjectID: scope.ProjectID, OwnerActorID: scope.ActorID,
-		Status: ConversationActive, Title: title, Revision: 1, CreatedAt: now, UpdatedAt: now,
+		Status: ConversationActive, Title: title, Revision: 1, NextEventSeq: 1, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -154,7 +157,7 @@ func (c *Conversation) AppendUserMessage(expected uint64, text string, now time.
 	return &Message{
 		ID: NewID("msg"), TenantID: c.TenantID, ConversationID: c.ID, Seq: c.LastMessageSeq,
 		Role: MessageRoleUser, State: MessageCompleted, Text: text, ContentDigest: TextDigest(text),
-		ConversationRevision: c.Revision, CreatedAt: now,
+		ConversationRevision: c.Revision, CreatedAt: now, ContentRevision: 1,
 	}, nil
 }
 
@@ -173,6 +176,12 @@ type Message struct {
 	// message: the receipt a replay of its command answers.
 	ConversationRevision uint64
 	CreatedAt            time.Time
+	// ContentRevision is the text's version: 1 for a user message and a
+	// reply stored whole, the last chunk for a reply sealed from its chunks
+	// or still streaming (D4a). ThroughChunkSeq is the last chunk the text
+	// covers, 0 without chunks.
+	ContentRevision uint64
+	ThroughChunkSeq uint64
 }
 
 // TextDigest is the SHA-256 of the text's UTF-8 bytes.

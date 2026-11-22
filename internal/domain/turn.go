@@ -111,11 +111,23 @@ type Turn struct {
 	InvocationID    string
 	WriterEpoch     uint64
 	// The command and request digest that sealed the turn: a retry of it
-	// replays, anything else conflicts.
+	// replays, anything else conflicts. A stop's seal names the stop
+	// (StopSealPrefix).
 	OutcomeCommandID string
 	OutcomeDigest    Digest
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// The reply stream (D4a, design 0001 §8.2): the Model Proxy's original
+	// stream, the last committed provider sequence (nil before the first
+	// batch), the batch and chunk counters, the committed text's bytes, and
+	// the assistant message reserved at the first text.
+	OriginalStreamID   string
+	LastProviderSeq    *uint64
+	LastBatchSeq       uint64
+	LastChunkSeq       uint64
+	CommittedBytes     uint64
+	ReservedMessageID  string
+	ReservedMessageSeq uint64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // NewTurn opens the turn answering the stored user message.
@@ -380,7 +392,7 @@ func (c *Conversation) AppendAssistantMessage(state MessageState, text string, n
 	return &Message{
 		ID: NewID("msg"), TenantID: c.TenantID, ConversationID: c.ID, Seq: c.LastMessageSeq,
 		Role: MessageRoleAssistant, State: state, Text: text, ContentDigest: TextDigest(text),
-		ConversationRevision: c.Revision, CreatedAt: now,
+		ConversationRevision: c.Revision, CreatedAt: now, ContentRevision: 1,
 	}, nil
 }
 
