@@ -156,8 +156,10 @@ const (
 	DisposeResolveSucceeded DispositionDecision = "resolve_succeeded"
 	DisposeResolveFailed    DispositionDecision = "resolve_failed"
 	// DisposeRetainExposure: the operator accepts that the outcome cannot be
-	// established; the obligation stays unknown with its exposure retained,
-	// and only the finding is settled so the scope can reopen.
+	// established. An unknown model or tool dispatch is closed with its whole
+	// reservation charged as its final cost (DEC-071), so its operation can
+	// settle; any other obligation stays unknown with its exposure retained.
+	// The finding is settled either way, so the scope can reopen.
 	DisposeRetainExposure DispositionDecision = "retain_exposure"
 )
 

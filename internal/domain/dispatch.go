@@ -471,3 +471,17 @@ func (d *Dispatch) ConfirmNotSent(evidenceRef string, charged Money, usageReport
 	d.State, d.EvidenceRef = DispatchConfirmedNotSent, evidenceRef
 	return nil
 }
+
+// RetainExposure closes an unknown call on an operator's evidence-bound
+// disposition when no evidence can establish its outcome (DEC-071): the
+// call was or may have been sent, so its whole reservation becomes its
+// final cost and nothing is released. The outcome stays unknown; a later
+// observation of the original identity can only add the cost above what is
+// charged.
+func (d *Dispatch) RetainExposure(evidenceRef string) error {
+	if d.State != DispatchUnknown {
+		return fmt.Errorf("%w: dispatch %s is %s; only an unknown call's exposure is retained as its cost", ErrStaleExecution, d.ID, d.State)
+	}
+	d.State, d.EvidenceRef = DispatchObserved, evidenceRef
+	return nil
+}
